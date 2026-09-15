@@ -43,6 +43,48 @@ func buildSignedELF(seg []byte) []byte {
 	return append(b, seg...)
 }
 
+// buildSignedELF32 is the ELFCLASS32 counterpart: p_offset@4, p_filesz@16,
+// p_flags@24 in the 32-byte program header.
+func buildSignedELF32(seg []byte) []byte {
+	b := make([]byte, 128)
+	copy(b, []byte{0x7f, 'E', 'L', 'F', 1})     // EI_MAG + 32-bit
+	binary.LittleEndian.PutUint32(b[0x1c:], 52) // e_phoff
+	binary.LittleEndian.PutUint16(b[0x2a:], 32) // e_phentsize
+	binary.LittleEndian.PutUint16(b[0x2c:], 1)  // e_phnum
+	o := 52
+	binary.LittleEndian.PutUint32(b[o+4:], 128)               // p_offset
+	binary.LittleEndian.PutUint32(b[o+16:], uint32(len(seg))) // p_filesz
+	binary.LittleEndian.PutUint32(b[o+24:], 0x02000000)       // p_flags: type nibble 2
+	return append(b, seg...)
+}
+
+// A 32-bit signed programmer must parse identically to a 64-bit one — older QC
+// SoCs ship ELFCLASS32 loaders (e.g. bkerler's 000ba0e1 fhprg).
+func TestFromELF32(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := makeCert(t, pkix.Name{
+		CommonName: "Motorola Attestation 719-1-3",
+		OrganizationalUnit: []string{
+			"04 02E8 OEM_ID",
+			"02 000BA0E102E80000 HW_ID",
+			"01 0000000000000000 SW_ID",
+		},
+	}, key)
+	root := makeCert(t, pkix.Name{CommonName: "Root CA 719"}, key)
+	elf := buildSignedELF32(append(make([]byte, 64), append(leaf, root...)...))
+
+	id, err := FromELF(elf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.HWID != "000BA0E102E80000" || id.JTAGID != "000BA0E1" || id.OEMID != "02E8" {
+		t.Errorf("32-bit identity: HW_ID=%q JTAG=%q OEM=%q", id.HWID, id.JTAGID, id.OEMID)
+	}
+}
+
 func TestFromELF(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

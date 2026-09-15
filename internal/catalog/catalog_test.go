@@ -68,6 +68,27 @@ func TestSoCByCPUName(t *testing.T) {
 	}
 }
 
+func TestJTAGIDsParsedAndNormalized(t *testing.T) {
+	src := "devices:\n  - {codename: rhode, vendor: motorola, cpu_name: SM_STRAIT, name: X, jtag_id: [0016f0e1, 001B80E1]}\n"
+	c, err := Load(writeCatalog(t, map[string]string{"a.yaml": src}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := c.Device("rhode")
+	if len(d.JTAGIDs) != 2 || d.JTAGIDs[0] != "0016F0E1" || d.JTAGIDs[1] != "001B80E1" {
+		t.Errorf("jtag_id not parsed/uppercased: %v", d.JTAGIDs)
+	}
+}
+
+func TestBadJTAGIDRejected(t *testing.T) {
+	for _, bad := range []string{"[0016F0E]", "[zzzzzzzz]", "[0016F0E100]"} {
+		src := "devices:\n  - {codename: x, vendor: m, cpu_name: c, jtag_id: " + bad + "}\n"
+		if _, err := Load(writeCatalog(t, map[string]string{"a.yaml": src})); err == nil {
+			t.Errorf("expected error for jtag_id %s", bad)
+		}
+	}
+}
+
 func TestDuplicateCodenameRejected(t *testing.T) {
 	dup := moto + `  - {codename: fogona, vendor: motorola, cpu_name: SM_X, name: dup}` + "\n"
 	if _, err := Load(writeCatalog(t, map[string]string{"a.yaml": dup})); err == nil {

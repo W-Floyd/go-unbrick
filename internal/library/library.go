@@ -360,6 +360,35 @@ func (l *Library) LoadersForCPU(vendor, cpu string) []LoaderRef {
 	return out
 }
 
+// LoadersForJTAGs returns every stored loader under the given JTAG_ID families
+// for a vendor, lowest-SW_ID first. This is the authoritative device↔loader
+// resolution: a loader in a device's JTAG family authenticates by the fused
+// HW_ID the PBL checks, independent of the lossy cpu_name label. Preferred over
+// LoadersForCPU whenever the device's JTAG_ID is known.
+func (l *Library) LoadersForJTAGs(vendor string, jtags []string) []LoaderRef {
+	var out []LoaderRef
+	for _, j := range jtags {
+		out = append(out, l.Builds(catalog.Family{Vendor: vendor, JTAGID: strings.ToUpper(j)})...)
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].Meta.SWID != out[k].Meta.SWID {
+			return out[i].Meta.SWID < out[k].Meta.SWID
+		}
+		return out[i].Build < out[k].Build
+	})
+	return out
+}
+
+// CandidateLoaders resolves a device to its candidate loaders, lowest-SW_ID
+// first: by the authoritative JTAG_ID key when the device records one, else via
+// the cpu_name bridge. The single point where derive and `catalog list` agree.
+func (l *Library) CandidateLoaders(d *catalog.Device) []LoaderRef {
+	if len(d.JTAGIDs) > 0 {
+		return l.LoadersForJTAGs(d.Vendor, d.JTAGIDs)
+	}
+	return l.LoadersForCPU(d.Vendor, d.CPUName)
+}
+
 // HasLoaderForCPU reports whether any stored loader serves a device's cpu_name.
 func (l *Library) HasLoaderForCPU(vendor, cpu string) bool {
 	return len(l.LoadersForCPU(vendor, cpu)) > 0

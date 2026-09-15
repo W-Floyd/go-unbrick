@@ -4,8 +4,9 @@
 // authenticates a loader, so it is the real key to whether a sibling's loader
 // will run on a given device.
 //
-// The signed image is an aarch64 ELF (program headers only) carrying a Qualcomm
-// hash-table segment (program-header flags with segment-type nibble 2): a SHA
+// The signed image is an ELF (program headers only) — aarch64, or the 32-bit ARM
+// of older programmers — carrying a Qualcomm hash-table segment (program-header
+// flags with segment-type nibble 2): a SHA
 // table, an RSA signature, then an X.509 chain leaf -> attestation CA -> root.
 // The leaf's Subject packs the enforced fields as OU strings of the form
 // "NN <hexvalue> NAME" (e.g. "04 02E8 OEM_ID", "01 …0002 SW_ID").
@@ -41,25 +42,44 @@ func IsELF(b []byte) bool {
 	return len(b) >= 4 && b[0] == 0x7f && b[1] == 'E' && b[2] == 'L' && b[3] == 'F'
 }
 
-// hashSegment returns the Qualcomm hash-table segment (pflags type nibble == 2).
+// hashSegment returns the Qualcomm hash-table segment (program-header flags with
+// segment-type nibble 2). Handles both ELFCLASS64 (aarch64 loaders) and ELFCLASS32
+// (older 32-bit programmers); the nibble-2 convention is identical, only the ELF
+// header and program-header field offsets differ. Little-endian only — every QC
+// image is.
 func hashSegment(b []byte) ([]byte, error) {
-	if !IsELF(b) || b[4] != 2 { // 64-bit only
-		return nil, fmt.Errorf("not a 64-bit ELF")
+	if !IsELF(b) || len(b) < 0x34 {
+		return nil, fmt.Errorf("not an ELF")
 	}
-	phoff := binary.LittleEndian.Uint64(b[0x20:])
-	phentsize := int(binary.LittleEndian.Uint16(b[0x36:]))
-	phnum := int(binary.LittleEndian.Uint16(b[0x38:]))
+	var phoff uint64
+	var phentsize, phnum int
+	var pOffset, pFilesz, pFlags func(o int) uint64
+	switch b[4] {
+	case 1: // ELFCLASS32: p_offset@4, p_filesz@16, p_flags@24
+		phoff = uint64(binary.LittleEndian.Uint32(b[0x1c:]))
+		phentsize = int(binary.LittleEndian.Uint16(b[0x2a:]))
+		phnum = int(binary.LittleEndian.Uint16(b[0x2c:]))
+		pOffset = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+4:])) }
+		pFilesz = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+16:])) }
+		pFlags = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+24:])) }
+	case 2: // ELFCLASS64: p_flags@4, p_offset@8, p_filesz@32
+		phoff = binary.LittleEndian.Uint64(b[0x20:])
+		phentsize = int(binary.LittleEndian.Uint16(b[0x36:]))
+		phnum = int(binary.LittleEndian.Uint16(b[0x38:]))
+		pOffset = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+8:]) }
+		pFilesz = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+32:]) }
+		pFlags = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+4:])) }
+	default:
+		return nil, fmt.Errorf("unknown ELF class %d", b[4])
+	}
 	for i := 0; i < phnum; i++ {
 		o := int(phoff) + i*phentsize
-		if o+0x38 > len(b) {
+		if o < 0 || o+phentsize > len(b) {
 			break
 		}
-		flags := binary.LittleEndian.Uint32(b[o+4:])
-		off := binary.LittleEndian.Uint64(b[o+8:])
-		filesz := binary.LittleEndian.Uint64(b[o+32:])
-		if (flags>>24)&0xf == 2 {
-			end := off + filesz
-			if end > uint64(len(b)) {
+		if (pFlags(o)>>24)&0xf == 2 {
+			off, end := pOffset(o), pOffset(o)+pFilesz(o)
+			if off > uint64(len(b)) || end > uint64(len(b)) || end < off {
 				return nil, fmt.Errorf("hash segment out of range")
 			}
 			return b[off:end], nil

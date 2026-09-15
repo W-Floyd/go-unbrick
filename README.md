@@ -87,19 +87,26 @@ map: collect loaders once, then derive a blankflash for any sibling that lacks o
 
 - **Catalog** (`catalog/*.yaml`, **version-controlled** — this is the mapping, not
   firmware): a flat master list of devices, one entry each carrying `vendor`,
-  `cpu_name`, `soc`, `name`, `models`, `storage`. The loader-signing family is
-  `(vendor, cpu_name)`: every device sharing that pair shares a loader. `soc` is a
-  cosmetic marketing name (may be blank); `models` is an array (a device ships
+  `cpu_name`, `soc`, `name`, `models`, `storage`, and optional `jtag_id`. A loader
+  authenticates by the fused **JTAG_ID** the PBL checks, not by `cpu_name` (a lossy
+  qboot packaging label: one `cpu_name` spans several JTAG_IDs and vice-versa). A
+  device that records its `jtag_id`(s) resolves loaders exactly; one that omits it
+  falls back to the `cpu_name` bridge (a loader carrying both links the two). `soc`
+  is a cosmetic marketing name (may be blank); `models` is an array (a device ships
   several model numbers); `storage` is **advisory only** — real storage is inferred
   from the actual GPT/recipe at harvest time. `unbrick catalog stub` appends flat
-  stubs for library families not yet listed.
+  stubs for library families not yet listed (with `jtag_id` from the loader cert),
+  and `unbrick catalog backfill` fills `jtag_id` on existing devices from library
+  loaders whose source names them — never from the lossy cpu_name bridge. Read a
+  device's own `jtag_id` from any signed image with `unbrick inspect`.
 - **Library** (`library/`, **gitignored** — never commit firmware): signed loaders
   indexed by family, and harvested stock indexed by device. The folder skeleton
   is kept via `.gitkeep`; everything else inside is ignored.
-  - `loaders/<vendor>/<cpu_name>/<build>/` — one dir per distinct loader build
-    (deduped by SHA256). A family can hold several: the signed loader is *not* one
-    fixed blob per SoC — each device build ships its own. `derive` uses the newest
-    by default, or `--loader <build>` to pin one (matters against anti-rollback).
+  - `loaders/<vendor>/<jtag_id>/<build>/` — one dir per distinct loader build
+    (deduped by SHA256), keyed on the JTAG_ID the loader authenticates against. A
+    family can hold several: the signed loader is *not* one fixed blob per SoC —
+    each device build ships its own. `derive` uses the lowest SW_ID by default, or
+    `--loader <build>` to pin one (matters against anti-rollback).
   - `stock/<vendor>/<codename>/` — a device's own boot chain + GPT.
   - `donors/` — a convenient stash for the raw blankflash zips you ingest.
 

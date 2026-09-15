@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -544,7 +545,7 @@ func newInspectCmd() *cobra.Command {
 
 func newCatalogCmd() *cobra.Command {
 	c := &cobra.Command{Use: "catalog", Short: "browse the vendor/SoC/device catalog"}
-	c.AddCommand(newCatalogListCmd(), newCatalogFamilyCmd(), newCatalogStubCmd())
+	c.AddCommand(newCatalogListCmd(), newCatalogFamilyCmd(), newCatalogStubCmd(), newCatalogBackfillCmd())
 	return c
 }
 
@@ -568,6 +569,14 @@ func codenameFromSource(src string) string {
 
 func modelFromSource(src string) string {
 	return strings.ToUpper(reModel.FindString(filepath.Base(src)))
+}
+
+// isRealJTAG accepts only a genuine fused MSM id: 8 hex digits, not all-zero.
+// It rejects both the wildcard id a generic fhprg carries and the cpu_name a
+// loader is keyed on when its cert is unparseable (library add-loader fallback),
+// neither of which is a device's silicon id.
+func isRealJTAG(j string) bool {
+	return len(j) == 8 && strings.TrimLeft(strings.ToUpper(j), "0123456789ABCDEF") == "" && strings.Trim(j, "0") != ""
 }
 
 func newCatalogStubCmd() *cobra.Command {
@@ -598,6 +607,11 @@ func newCatalogStubCmd() *cobra.Command {
 						d = &catalog.Device{Codename: code, Vendor: fam.Vendor, CPUName: b.Meta.CPUName}
 						byCode[code] = d
 					}
+					// The loader's family JTAG_ID is this device's own silicon (the
+					// source names the device), so pin it exactly.
+					if isRealJTAG(fam.JTAGID) && !slices.Contains(d.JTAGIDs, fam.JTAGID) {
+						d.JTAGIDs = append(d.JTAGIDs, fam.JTAGID)
+					}
 					if m := modelFromSource(b.Meta.Source); m != "" && len(d.Models) == 0 {
 						d.Models = []string{m}
 					}
@@ -612,6 +626,7 @@ func newCatalogStubCmd() *cobra.Command {
 			}
 			devs := make([]*catalog.Device, 0, len(byCode))
 			for _, d := range byCode {
+				slices.Sort(d.JTAGIDs)
 				devs = append(devs, d)
 			}
 			y, err := catalog.Render(devs) // name/soc left blank to VERIFY
@@ -630,6 +645,101 @@ func newCatalogStubCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVarP(&out, "out", "o", "", "write to a catalog file (default: stdout)")
+	return c
+}
+
+// newCatalogBackfillCmd records each device's jtag_id from library loaders that
+// are provably its own — a full donor whose source filename names the device's
+// codename or model, so its cert-derived JTAG_ID is that device's silicon. It
+// deliberately does NOT use the cpu_name bridge, which over-groups sibling JTAGs
+// and would pin the wrong ones. Renders the whole catalog (merging all *.yaml);
+// review the diff before committing.
+func newCatalogBackfillCmd() *cobra.Command {
+	var out string
+	var overwrite bool
+	c := &cobra.Command{
+		Use:   "backfill",
+		Short: "record each device's jtag_id from library loaders provably its own (by source codename/model)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cat, err := catalog.Load(catalogDir())
+			if err != nil {
+				return err
+			}
+			lib := library.Open(libraryDir())
+
+			// (vendor, codename|model) -> set of JTAG_IDs seen in loaders whose
+			// source names that identifier.
+			type key struct{ vendor, ident string }
+			byIdent := map[key]map[string]bool{}
+			add := func(vendor, ident, jtag string) {
+				if ident == "" || !isRealJTAG(jtag) {
+					return
+				}
+				k := key{vendor, ident}
+				if byIdent[k] == nil {
+					byIdent[k] = map[string]bool{}
+				}
+				byIdent[k][jtag] = true
+			}
+			for _, fam := range lib.Loaders() {
+				for _, b := range lib.Builds(fam) {
+					add(fam.Vendor, codenameFromSource(b.Meta.Source), fam.JTAGID)
+					add(fam.Vendor, modelFromSource(b.Meta.Source), fam.JTAGID)
+				}
+			}
+
+			devs := cat.AllDevices()
+			changed := 0
+			for _, d := range devs {
+				if len(d.JTAGIDs) > 0 && !overwrite {
+					continue
+				}
+				disc := map[string]bool{}
+				for j := range byIdent[key{d.Vendor, d.Codename}] {
+					disc[j] = true
+				}
+				for _, m := range d.Models {
+					for j := range byIdent[key{d.Vendor, strings.ToUpper(reModel.FindString(m))}] {
+						disc[j] = true
+					}
+				}
+				if len(disc) == 0 {
+					continue
+				}
+				list := make([]string, 0, len(disc))
+				for j := range disc {
+					list = append(list, j)
+				}
+				slices.Sort(list)
+				if slices.Equal(list, d.JTAGIDs) {
+					continue
+				}
+				d.JTAGIDs = list
+				changed++
+				fmt.Fprintf(os.Stderr, "  %s: jtag_id=%v\n", d.Codename, list)
+			}
+			if changed == 0 {
+				fmt.Fprintln(os.Stderr, "no jtag_id backfilled (no library loader names a catalogued device by source)")
+				return nil
+			}
+			y, err := catalog.Render(devs)
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				fmt.Print(string(y))
+				return nil
+			}
+			if err := write(out, y); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "backfilled jtag_id for %d device(s) -> %s\n", changed, out)
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&out, "out", "o", "", "write the full rendered catalog to this file (default: stdout)")
+	c.Flags().BoolVar(&overwrite, "overwrite", false, "also replace jtag_id on devices that already have one")
 	return c
 }
 
@@ -660,7 +770,7 @@ func newCatalogListCmd() *cobra.Command {
 				}
 				fmt.Printf("    %-10s %-22s %-16s storage=%-9s loader:%s stock:%s\n",
 					d.Codename, d.Name, strings.Join(d.Models, ","), strings.Join(d.Storage, ","),
-					mark(lib.HasLoaderForCPU(d.Vendor, d.CPUName)), mark(lib.HasStock(d.Vendor, d.Codename)))
+					mark(len(lib.CandidateLoaders(d)) > 0), mark(lib.HasStock(d.Vendor, d.Codename)))
 			}
 			return nil
 		},
@@ -952,18 +1062,22 @@ func newDeriveCmd() *cobra.Command {
 			return fmt.Errorf("no vendor driver for %q", dev.Vendor)
 		}
 		lib := library.Open(libraryDir())
-		// Resolve the device's cpu_name to candidate JTAG-keyed loaders (lowest
-		// SW_ID first). One cpu_name can span several silicon revisions, so this
-		// may draw from more than one JTAG family.
-		cands := lib.LoadersForCPU(dev.Vendor, dev.CPUName)
+		// Resolve candidate loaders (lowest SW_ID first). A recorded jtag_id is
+		// the fact the PBL enforces, so it keys exactly; the cpu_name bridge is
+		// the fallback and is lossy (one cpu_name spans several JTAG families).
+		via := fmt.Sprintf("cpu_name %q", dev.CPUName)
+		if len(dev.JTAGIDs) > 0 {
+			via = fmt.Sprintf("jtag_id %v", dev.JTAGIDs)
+		}
+		cands := lib.CandidateLoaders(dev)
 		if len(cands) == 0 {
 			sibs, _ := c2.Siblings(args[0])
 			codes := make([]string, len(sibs))
 			for i, s := range sibs {
 				codes[i] = s.Codename
 			}
-			return fmt.Errorf("no loader in library for cpu_name %q (%s); ingest one from a sibling first "+
-				"(library add-loader), donors: %v", dev.CPUName, dev.CPUFamily(), codes)
+			return fmt.Errorf("no loader in library via %s (%s); ingest one from a sibling first "+
+				"(library add-loader), donors: %v", via, dev.CPUFamily(), codes)
 		}
 		lref := &cands[0]
 		if loaderBuild != "" {
@@ -975,7 +1089,7 @@ func newDeriveCmd() *cobra.Command {
 				}
 			}
 			if lref == nil {
-				return fmt.Errorf("no loader build %q among candidates for %q", loaderBuild, dev.CPUName)
+				return fmt.Errorf("no loader build %q among candidates for %s (%s)", loaderBuild, args[0], via)
 			}
 		}
 		fam := lref.Family

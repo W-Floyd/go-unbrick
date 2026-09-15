@@ -20,6 +20,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SDM710
+      jtag_id:
+        - 000DB0E1
       soc: ""
       models: []
       storage:
@@ -28,6 +30,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM6150
+      jtag_id:
+        - "000950E1"
       soc: ""
       models: []
       storage:
@@ -36,6 +40,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM7150
+      jtag_id:
+        - 000E60E1
       soc: ""
       models: []
       storage:
@@ -44,6 +50,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM7150
+      jtag_id:
+        - 000E60E1
       soc: ""
       models: []
       storage:
@@ -52,6 +60,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM7150
+      jtag_id:
+        - "001360E1"
       soc: ""
       models: []
       storage:
@@ -60,6 +70,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM8250
+      jtag_id:
+        - 000C30E1
       soc: Qualcomm SM8250-AC Snapdragon 870
       models: []
       storage:
@@ -76,6 +88,8 @@ devices:
       name: edge 20 pro
       vendor: motorola
       cpu_name: SM8250
+      jtag_id:
+        - 000C30E1
       soc: Qualcomm SM8250-AC Snapdragon 870
       models:
         - XT2153-1
@@ -93,6 +107,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_BITRA
+      jtag_id:
+        - 0013F0E1
       soc: ""
       models: []
       storage:
@@ -101,6 +117,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_BITRA
+      jtag_id:
+        - 0013F0E1
       soc: ""
       models: []
       storage:
@@ -117,6 +135,8 @@ devices:
       name: Moto G32
       vendor: motorola
       cpu_name: SM_DIVAR
+      jtag_id:
+        - 001B80E1
       soc: SM6225 (Snapdragon 680)
       models:
         - XT2235
@@ -133,6 +153,8 @@ devices:
       name: Moto G42
       vendor: motorola
       cpu_name: SM_DIVAR
+      jtag_id:
+        - 001B80E1
       soc: SM6225 (Snapdragon 680)
       models:
         - XT2233
@@ -141,6 +163,8 @@ devices:
       name: Moto G52
       vendor: motorola
       cpu_name: SM_DIVAR
+      jtag_id:
+        - 0016F0E1
       soc: SM6225 (Snapdragon 680)
       models:
         - XT2221
@@ -173,6 +197,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAMORTA
+      jtag_id:
+        - "001360E1"
       soc: ""
       models: []
       storage:
@@ -181,6 +207,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAMORTA
+      jtag_id:
+        - "001360E1"
       soc: ""
       models: []
       storage:
@@ -189,6 +217,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAMORTA
+      jtag_id:
+        - "001360E1"
       soc: ""
       models: []
       storage:
@@ -197,6 +227,8 @@ devices:
       name: defy 2021
       vendor: motorola
       cpu_name: SM_KAMORTA_H
+      jtag_id:
+        - "001360E1"
       soc: Qualcomm SM6115 Snapdragon 662
       models:
         - XT2083-8
@@ -207,6 +239,8 @@ devices:
       name: moto g power 2021
       vendor: motorola
       cpu_name: SM_KAMORTA_H
+      jtag_id:
+        - "001360E1"
       soc: Qualcomm SM6115 Snapdragon 662
       models:
         - XT2117-1
@@ -227,6 +261,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAMORTA_H
+      jtag_id:
+        - "001360E1"
       soc: Qualcomm SM6115 Snapdragon 662
       models: []
       storage:
@@ -235,6 +271,8 @@ devices:
       name: edge 20
       vendor: motorola
       cpu_name: SM_KODIAK
+      jtag_id:
+        - "001920E1"
       soc: ""
       models:
         - XT2143-1
@@ -252,6 +290,8 @@ devices:
       name: edge 2021
       vendor: motorola
       cpu_name: SM_KODIAK
+      jtag_id:
+        - "001920E1"
       soc: ""
       models:
         - XT2141-2
@@ -261,6 +301,8 @@ devices:
       name: edge 30
       vendor: motorola
       cpu_name: SM_KODIAK
+      jtag_id:
+        - "001920E1"
       soc: ""
       models:
         - XT2203-1
@@ -270,6 +312,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_LAHAINA
+      jtag_id:
+        - "001350E1"
       soc: ""
       models: []
       storage:
@@ -278,6 +322,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_LAHAINA
+      jtag_id:
+        - "001350E1"
       soc: ""
       models: []
       storage:
@@ -294,6 +340,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_MANNAR
+      jtag_id:
+        - 0016F0E1
       soc: Qualcomm SM4350 Snapdragon 480
       models: []
       storage:
@@ -310,6 +358,8 @@ devices:
       name: moto g stylus 5G
       vendor: motorola
       cpu_name: SM_MANNAR
+      jtag_id:
+        - 0016F0E1
       soc: Qualcomm SM4350 Snapdragon 480
       models:
         - XT2131-1
@@ -319,6 +369,8 @@ devices:
       name: moto g50
       vendor: motorola
       cpu_name: SM_MANNAR
+      jtag_id:
+        - 0016F0E1
       soc: Qualcomm SM4350 Snapdragon 480
       models:
         - XT2137-1
@@ -395,6 +447,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NICOBAR
+      jtag_id:
+        - 0010A0E1
       soc: ""
       models: []
       storage:
@@ -403,6 +457,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NICOBAR
+      jtag_id:
+        - 0010A0E1
       soc: ""
       models: []
       storage:
@@ -419,6 +475,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NICOBAR
+      jtag_id:
+        - 0010A0E1
       soc: ""
       models: []
       storage:
@@ -463,6 +521,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_SAIPAN
+      jtag_id:
+        - 0011E0E1
       soc: Qualcomm SM7250 Snapdragon 765G
       models: []
       storage:
@@ -471,6 +531,8 @@ devices:
       name: edge
       vendor: motorola
       cpu_name: SM_SAIPAN
+      jtag_id:
+        - 0011E0E1
       soc: Qualcomm SM7250 Snapdragon 765G
       models:
         - XT2063-2

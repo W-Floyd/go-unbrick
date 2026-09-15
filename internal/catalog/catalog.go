@@ -3,9 +3,11 @@
 // vendor and cpu_name; the binary blankflashes and firmware it references live in
 // the gitignored library, never here.
 //
-// The loader-signing family is (vendor, cpu_name): the Firehose loader is signed
-// per SoC + OEM key, so every device sharing a vendor and a cpu_name token can
-// authenticate the same loader. That pair is the unit of extrapolation.
+// The loader-signing family is (vendor OEM_ID, JTAG_ID): the Firehose loader is
+// signed against the fused HW_ID the PBL enforces, so JTAG_ID — not the qboot
+// cpu_name label — decides which devices can authenticate it (see Family). A
+// device records its jtag_id(s) to key loaders exactly; cpu_name remains the
+// fallback bridge and a human-facing grouping.
 package catalog
 
 import (
@@ -23,6 +25,7 @@ type Device struct {
 	Name     string   `yaml:"name"`
 	Vendor   string   `yaml:"vendor"`   // OEM id, e.g. "motorola" — with cpu_name, the family key
 	CPUName  string   `yaml:"cpu_name"` // qboot loader-signing token, e.g. "SM_DIVAR"
+	JTAGIDs  []string `yaml:"jtag_id,omitempty"` // known fused MSM ids; the authoritative loader key when present, since the PBL checks JTAG_ID, not cpu_name. Optional — derive falls back to the cpu_name bridge.
 	SoC      string   `yaml:"soc"`      // marketing SoC name (cosmetic, may be empty)
 	Models   []string `yaml:"models"`   // model numbers (carrier/region variants)
 	Storage  []string `yaml:"storage"`  // advisory; real storage is inferred from firmware
@@ -33,8 +36,9 @@ type Device struct {
 // SoC and carried in the loader cert's HW_ID — the fact secboot actually checks —
 // so it, not the qboot cpu_name label, decides which loaders run on a target.
 // cpu_name is a many-to-many packaging label (one JTAG → several cpu_names and
-// vice-versa), demoted to loader metadata; the device↔loader bridge is resolved
-// via loaders that carry both (see library.LoadersForCPU).
+// vice-versa), demoted to loader metadata. A device that records its jtag_id(s)
+// resolves loaders directly and exactly (library.LoadersForJTAGs); one that does
+// not falls back to the lossy cpu_name bridge (library.LoadersForCPU).
 type Family struct {
 	Vendor string
 	JTAGID string // uppercase 8-hex MSM id, e.g. "0016F0E1"
@@ -80,6 +84,13 @@ func Load(dir string) (*Catalog, error) {
 			}
 			if d.Vendor == "" || d.CPUName == "" {
 				return nil, fmt.Errorf("%s: %q missing vendor or cpu_name", filepath.Base(f), d.Codename)
+			}
+			for i, j := range d.JTAGIDs {
+				j = strings.ToUpper(strings.TrimSpace(j))
+				if len(j) != 8 || strings.TrimLeft(j, "0123456789ABCDEF") != "" {
+					return nil, fmt.Errorf("%s: %q jtag_id %q is not 8 hex digits", filepath.Base(f), d.Codename, d.JTAGIDs[i])
+				}
+				d.JTAGIDs[i] = j
 			}
 			if prev, dup := c.byCode[d.Codename]; dup {
 				return nil, fmt.Errorf("%s: duplicate codename %q (also vendor %s)", filepath.Base(f), d.Codename, prev.Vendor)

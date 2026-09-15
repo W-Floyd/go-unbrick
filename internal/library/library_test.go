@@ -116,6 +116,37 @@ func TestLoadersForCPUBridge(t *testing.T) {
 	}
 }
 
+// A pinned jtag_id resolves exactly the loaders that authenticate on that
+// silicon, unlike the cpu_name bridge which over-groups sibling JTAGs. It also
+// reaches a bare fhprg loader on that JTAG that no full donor ever labeled.
+func TestCandidateLoadersByJTAG(t *testing.T) {
+	lib := Open(t.TempDir())
+	jtagA := catalog.Family{Vendor: "motorola", JTAGID: "0016F0E1"}
+	jtagB := catalog.Family{Vendor: "motorola", JTAGID: "001B80E1"} // same cpu_name, other silicon
+	lib.AddLoader(jtagA, &blankflash.Donor{Programmer: []byte("A-full"), CPUName: "SM_DIVAR"}, "blankflash_devon_X.zip")
+	lib.AddLoader(jtagA, &blankflash.Donor{Programmer: []byte("A-bare")}, "0016f0e1_bkerler.bin") // no cpu_name
+	lib.AddLoader(jtagB, &blankflash.Donor{Programmer: []byte("B-full"), CPUName: "SM_DIVAR"}, "blankflash_hawao_Y.zip")
+
+	// Pinning JTAG A must reach A's two loaders and NOT B's, even though both
+	// carry cpu_name SM_DIVAR (the over-grouping the bridge cannot avoid).
+	if got := lib.LoadersForJTAGs("motorola", []string{"0016F0E1"}); len(got) != 2 {
+		t.Fatalf("jtag A: want 2 loaders, got %d: %+v", len(got), got)
+	}
+	// Lowercase input is normalized.
+	if got := lib.LoadersForJTAGs("motorola", []string{"0016f0e1"}); len(got) != 2 {
+		t.Errorf("jtag lowercasing not handled: got %d", len(got))
+	}
+
+	pinned := &catalog.Device{Vendor: "motorola", CPUName: "SM_DIVAR", JTAGIDs: []string{"0016F0E1"}}
+	if got := lib.CandidateLoaders(pinned); len(got) != 2 {
+		t.Errorf("pinned device should resolve via jtag_id (2), got %d", len(got))
+	}
+	unpinned := &catalog.Device{Vendor: "motorola", CPUName: "SM_DIVAR"}
+	if got := lib.CandidateLoaders(unpinned); len(got) != 3 {
+		t.Errorf("unpinned device should fall back to cpu bridge (3), got %d", len(got))
+	}
+}
+
 func TestStockRoundtrip(t *testing.T) {
 	lib := Open(t.TempDir())
 	if lib.HasStock("motorola", "fogona") {
