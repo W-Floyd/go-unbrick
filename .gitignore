@@ -1,0 +1,19 @@
+# Never commit firmware. This repo is the tool; point it at your own files.
+*.bin
+*.img
+*.elf
+*.mbn
+*.zip
+*.pdf
+work/
+out/
+donor/
+target/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+build/
+dist/

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blankflash-forge"
+version = "0.1.0"
+description = "Build a device's Qualcomm/Motorola blankflash from a same-SoC sibling's signed loader"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+bfforge = "bfforge.cli:main"
+
+[tool.setuptools]
+packages = ["bfforge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
