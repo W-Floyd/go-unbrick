@@ -1,0 +1,570 @@
+devices:
+    - codename: fogo
+      name: moto g 5G - 2024
+      vendor: motorola
+      cpu_name: CONIC
+      soc: Qualcomm SM4375 Snapdragon 4 Gen 1
+      models:
+        - XT2417-1
+      storage:
+        - ufs
+    - codename: ginna
+      name: ""
+      vendor: motorola
+      cpu_name: MSM8953
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: astro
+      name: ""
+      vendor: motorola
+      cpu_name: SDM710
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: minsk
+      name: ""
+      vendor: motorola
+      cpu_name: SM6150
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: hanoip
+      name: ""
+      vendor: motorola
+      cpu_name: SM7150
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: liber
+      name: ""
+      vendor: motorola
+      cpu_name: SM7150
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: odessa
+      name: ""
+      vendor: motorola
+      cpu_name: SM7150
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: nio
+      name: ""
+      vendor: motorola
+      cpu_name: SM8250
+      soc: Qualcomm SM8250-AC Snapdragon 870
+      models: []
+      storage:
+        - ufs
+    - codename: nio_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM8250
+      soc: Qualcomm SM8250-AC Snapdragon 870
+      models: []
+      storage:
+        - ufs
+    - codename: pstar
+      name: edge 20 pro
+      vendor: motorola
+      cpu_name: SM8250
+      soc: Qualcomm SM8250-AC Snapdragon 870
+      models:
+        - XT2153-1
+      storage:
+        - ufs
+    - codename: pstar_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM8250
+      soc: Qualcomm SM8250-AC Snapdragon 870
+      models: []
+      storage:
+        - ufs
+    - codename: kiev
+      name: ""
+      vendor: motorola
+      cpu_name: SM_BITRA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: kievv
+      name: ""
+      vendor: motorola
+      cpu_name: SM_BITRA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: eqe
+      name: ""
+      vendor: motorola
+      cpu_name: SM_CAMANO
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: devon
+      name: Moto G32
+      vendor: motorola
+      cpu_name: SM_DIVAR
+      soc: SM6225 (Snapdragon 680)
+      models:
+        - XT2235
+      storage: []
+    - codename: fogona
+      name: Moto G Play 2024
+      vendor: motorola
+      cpu_name: SM_DIVAR
+      soc: SM6225 (Snapdragon 680)
+      models:
+        - XT2413
+      storage: []
+    - codename: hawao
+      name: Moto G42
+      vendor: motorola
+      cpu_name: SM_DIVAR
+      soc: SM6225 (Snapdragon 680)
+      models:
+        - XT2233
+      storage: []
+    - codename: rhode
+      name: Moto G52
+      vendor: motorola
+      cpu_name: SM_DIVAR
+      soc: SM6225 (Snapdragon 680)
+      models:
+        - XT2221
+      storage: []
+    - codename: lynkco
+      name: ""
+      vendor: motorola
+      cpu_name: SM_FILLMORE
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: rtwo
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAILUA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: rtwo_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAILUA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: capri
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAMORTA
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: guam
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAMORTA
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: guamna
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAMORTA
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: bathena
+      name: defy 2021
+      vendor: motorola
+      cpu_name: SM_KAMORTA_H
+      soc: Qualcomm SM6115 Snapdragon 662
+      models:
+        - XT2083-8
+        - XT2083-9
+      storage:
+        - emmc
+    - codename: borneo
+      name: moto g power 2021
+      vendor: motorola
+      cpu_name: SM_KAMORTA_H
+      soc: Qualcomm SM6115 Snapdragon 662
+      models:
+        - XT2117-1
+        - XT2117-2
+        - XT2117-3
+        - XT2117-4
+      storage:
+        - emmc
+    - codename: caprip
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAMORTA_H
+      soc: Qualcomm SM6115 Snapdragon 662
+      models: []
+      storage:
+        - emmc
+    - codename: guamp
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KAMORTA_H
+      soc: Qualcomm SM6115 Snapdragon 662
+      models: []
+      storage:
+        - emmc
+    - codename: berlin
+      name: edge 20
+      vendor: motorola
+      cpu_name: SM_KODIAK
+      soc: ""
+      models:
+        - XT2143-1
+      storage:
+        - ufs
+    - codename: berlin_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_KODIAK
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: berlna
+      name: edge 2021
+      vendor: motorola
+      cpu_name: SM_KODIAK
+      soc: ""
+      models:
+        - XT2141-2
+      storage:
+        - ufs
+    - codename: dubai
+      name: edge 30
+      vendor: motorola
+      cpu_name: SM_KODIAK
+      soc: ""
+      models:
+        - XT2203-1
+      storage:
+        - ufs
+    - codename: tundra
+      name: ""
+      vendor: motorola
+      cpu_name: SM_LAHAINA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: xpeng
+      name: ""
+      vendor: motorola
+      cpu_name: SM_LAHAINA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: xpeng_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_LAHAINA
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: cypfq
+      name: ""
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models: []
+      storage:
+        - ufs
+    - codename: cypfq_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models: []
+      storage:
+        - ufs
+    - codename: denver
+      name: moto g stylus 5G
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models:
+        - XT2131-1
+      storage:
+        - ufs
+    - codename: ibiza
+      name: moto g50
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models:
+        - XT2137-1
+      storage:
+        - ufs
+    - codename: ibiza_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models: []
+      storage:
+        - ufs
+    - codename: penang
+      name: moto g53 5G
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models:
+        - XT2335
+      storage:
+        - ufs
+    - codename: rhodec
+      name: ""
+      vendor: motorola
+      cpu_name: SM_MANNAR
+      soc: Qualcomm SM4350 Snapdragon 480
+      models: []
+      storage:
+        - ufs
+    - codename: boston
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NETRANI
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: cusco
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NETRANI
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: genevn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NETRANI
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: avatrn
+      name: edge 2024
+      vendor: motorola
+      cpu_name: SM_NETRANI7
+      soc: Qualcomm SM7435-AB Snapdragon 7s Gen 2
+      models:
+        - XT2405-1
+        - XT2405V
+      storage:
+        - ufs
+    - codename: cuscoi
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NETRANI7
+      soc: Qualcomm SM7435-AB Snapdragon 7s Gen 2
+      models: []
+      storage:
+        - ufs
+    - codename: rav
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NICOBAR
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: sofiap
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NICOBAR
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: sofiap_ao
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NICOBAR
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: sofiar
+      name: ""
+      vendor: motorola
+      cpu_name: SM_NICOBAR
+      soc: ""
+      models: []
+      storage:
+        - emmc
+    - codename: bronco
+      name: ThinkPhone by motorola
+      vendor: motorola
+      cpu_name: SM_PALIMA
+      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
+      models:
+        - XT2309-2
+        - XT2309-3
+      storage:
+        - ufs
+    - codename: eqs
+      name: edge 30 ultra
+      vendor: motorola
+      cpu_name: SM_PALIMA
+      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
+      models:
+        - XT2241-1
+        - XT2241-2
+      storage:
+        - ufs
+    - codename: oneli
+      name: ""
+      vendor: motorola
+      cpu_name: SM_PALIMA
+      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
+      models: []
+      storage:
+        - ufs
+    - codename: oneli_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_PALIMA
+      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
+      models: []
+      storage:
+        - ufs
+    - codename: nairo
+      name: ""
+      vendor: motorola
+      cpu_name: SM_SAIPAN
+      soc: Qualcomm SM7250 Snapdragon 765G
+      models: []
+      storage:
+        - ufs
+    - codename: racer
+      name: edge
+      vendor: motorola
+      cpu_name: SM_SAIPAN
+      soc: Qualcomm SM7250 Snapdragon 765G
+      models:
+        - XT2063-2
+        - XT2063-3
+      storage:
+        - ufs
+    - codename: bangkk
+      name: moto g84 5G
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models:
+        - XT2347-1
+        - XT2347-2
+      storage:
+        - ufs
+    - codename: corfur
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: cypfr
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: fogos
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: miami
+      name: edge 30 neo
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models:
+        - XT2245-1
+      storage:
+        - ufs
+    - codename: milanf
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: rhodei
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: rhodep
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: rhodep_retcn
+      name: ""
+      vendor: motorola
+      cpu_name: SM_STRAIT
+      soc: Qualcomm SM6375 Snapdragon 695
+      models: []
+      storage:
+        - ufs
+    - codename: hiphi
+      name: ""
+      vendor: motorola
+      cpu_name: SM_WAIPIO
+      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: hiphic
+      name: ""
+      vendor: motorola
+      cpu_name: SM_WAIPIO
+      soc: ""
+      models: []
+      storage:
+        - ufs

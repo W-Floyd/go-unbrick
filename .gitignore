@@ -10,10 +10,13 @@ out/
 donor/
 target/
 
-__pycache__/
-*.pyc
-.pytest_cache/
-*.egg-info/
-.venv/
-build/
-dist/
+# Build artifacts
+/bfforge
+/blankflash-forge
+*.test
+
+# Local firmware library (blankflashes + stock). The catalog/ mapping IS tracked.
+# Keep the folder skeleton (.gitkeep) but never the firmware inside.
+/library/**
+!/library/**/
+!/library/**/.gitkeep
