@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"blankflash-forge/internal/bfforge"
+	"go-unbrick/internal/blankflash"
 )
 
 func TestRegistryLookup(t *testing.T) {
@@ -29,7 +29,7 @@ func TestDetect(t *testing.T) {
 
 	// A SINGLE_N_LONELY container -> motorola.
 	moto := filepath.Join(dir, "singleimage.bin")
-	blob, _ := bfforge.Build(bfforge.WithTrailer([]bfforge.Record{{Name: "programmer.elf", Data: []byte("x")}}))
+	blob, _ := blankflash.Build(blankflash.WithTrailer([]blankflash.Record{{Name: "programmer.elf", Data: []byte("x")}}))
 	os.WriteFile(moto, blob, 0o644)
 	if d, ok := Detect(moto); !ok || d.ID() != "motorola" {
 		t.Errorf("Detect(singleimage) should be motorola: %v %v", d, ok)

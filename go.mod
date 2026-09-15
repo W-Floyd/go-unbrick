@@ -1,4 +1,4 @@
-module blankflash-forge
+module go-unbrick
 
 go 1.23.0
 

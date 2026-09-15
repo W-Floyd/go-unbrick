@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"blankflash-forge/internal/bfforge"
-	"blankflash-forge/internal/catalog"
+	"go-unbrick/internal/blankflash"
+	"go-unbrick/internal/catalog"
 )
 
 func TestLoaderRoundtrip(t *testing.T) {
@@ -14,7 +14,7 @@ func TestLoaderRoundtrip(t *testing.T) {
 	if lib.HasLoader(fam) {
 		t.Fatal("empty library reports a loader")
 	}
-	d := &bfforge.Donor{
+	d := &blankflash.Donor{
 		Programmer: []byte("\x7fELFsigned-loader"),
 		Qboot:      map[string][]byte{"qboot": []byte("QB"), "qboot.exe": []byte("QBX")},
 		CPUName:    "SM_DIVAR",
@@ -54,8 +54,8 @@ func TestLoaderRoundtrip(t *testing.T) {
 func TestMultipleBuildsAndDedupe(t *testing.T) {
 	lib := Open(t.TempDir())
 	fam := catalog.Family{Vendor: "motorola", JTAGID: "0016F0E1"}
-	a := &bfforge.Donor{Programmer: []byte("loaderA"), CPUName: "SM_DIVAR"}
-	b := &bfforge.Donor{Programmer: []byte("loaderBBB"), CPUName: "SM_DIVAR"}
+	a := &blankflash.Donor{Programmer: []byte("loaderA"), CPUName: "SM_DIVAR"}
+	b := &blankflash.Donor{Programmer: []byte("loaderBBB"), CPUName: "SM_DIVAR"}
 
 	lib.AddLoader(fam, a, "blankflash_devon_X.zip")
 	lib.AddLoader(fam, b, "blankflash_rhode_Y.zip")
@@ -91,12 +91,12 @@ func TestLoadersForCPUBridge(t *testing.T) {
 	divarA := catalog.Family{Vendor: "motorola", JTAGID: "0016F0E1"}
 	divarB := catalog.Family{Vendor: "motorola", JTAGID: "001B80E1"} // same cpu, other silicon
 	// Full donor on JTAG A carries the cpu_name label and a low SW_ID.
-	lib.AddLoader(divarA, &bfforge.Donor{Programmer: []byte("A-full"), CPUName: "SM_DIVAR"}, "blankflash_devon_X.zip")
+	lib.AddLoader(divarA, &blankflash.Donor{Programmer: []byte("A-full"), CPUName: "SM_DIVAR"}, "blankflash_devon_X.zip")
 	// Bare fhprg on the same JTAG A: no cpu_name, but must be reachable via the bridge.
-	bare, _ := lib.AddLoader(divarA, &bfforge.Donor{Programmer: []byte("A-bare")}, "0016f0e1_bkerler.bin")
+	bare, _ := lib.AddLoader(divarA, &blankflash.Donor{Programmer: []byte("A-bare")}, "0016f0e1_bkerler.bin")
 	_ = bare
 	// Full donor on JTAG B under the same cpu_name.
-	lib.AddLoader(divarB, &bfforge.Donor{Programmer: []byte("B-full"), CPUName: "SM_DIVAR"}, "blankflash_hawao_Y.zip")
+	lib.AddLoader(divarB, &blankflash.Donor{Programmer: []byte("B-full"), CPUName: "SM_DIVAR"}, "blankflash_hawao_Y.zip")
 
 	got := lib.LoadersForCPU("motorola", "SM_DIVAR")
 	if len(got) != 3 {
@@ -110,7 +110,7 @@ func TestLoadersForCPUBridge(t *testing.T) {
 	}
 	// A bare loader whose JTAG no cpu_name ever labeled must NOT be reached.
 	lib.AddLoader(catalog.Family{Vendor: "motorola", JTAGID: "00000000"},
-		&bfforge.Donor{Programmer: []byte("orphan")}, "orphan.bin")
+		&blankflash.Donor{Programmer: []byte("orphan")}, "orphan.bin")
 	if n := len(lib.LoadersForCPU("motorola", "SM_DIVAR")); n != 3 {
 		t.Errorf("orphan JTAG leaked into cpu bridge: got %d", n)
 	}
@@ -121,7 +121,7 @@ func TestStockRoundtrip(t *testing.T) {
 	if lib.HasStock("motorola", "fogona") {
 		t.Fatal("empty library reports stock")
 	}
-	tgt := &bfforge.Target{
+	tgt := &blankflash.Target{
 		Parts:    map[string][]byte{"xbl.elf": []byte("XBL"), "abl.elf": []byte("ABL")},
 		FlashMap: map[string]string{"xbl": "xbl.elf", "abl": "abl.elf"},
 		GPT:      []byte("GPTDATA"),
@@ -152,12 +152,12 @@ func TestStockRoundtrip(t *testing.T) {
 // AddStock replaces wholesale: a part removed from a re-harvest must not linger.
 func TestStockReplaceDropsStale(t *testing.T) {
 	lib := Open(t.TempDir())
-	first := &bfforge.Target{
+	first := &blankflash.Target{
 		Parts:    map[string][]byte{"xbl.elf": []byte("X"), "stale.mbn": []byte("S")},
 		FlashMap: map[string]string{"xbl": "xbl.elf"},
 	}
 	lib.AddStock("m", "d", first)
-	second := &bfforge.Target{
+	second := &blankflash.Target{
 		Parts:    map[string][]byte{"xbl.elf": []byte("X2")},
 		FlashMap: map[string]string{"xbl": "xbl.elf"},
 	}

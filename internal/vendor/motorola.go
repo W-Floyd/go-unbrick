@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"blankflash-forge/internal/bfforge"
+	"go-unbrick/internal/blankflash"
 )
 
 // motorola: Qualcomm/qboot blankflash — a SINGLE_N_LONELY singleimage.bin plus
-// the qboot flasher. Delegates to the bfforge codec, which is this format.
+// the qboot flasher. Delegates to the blankflash codec, which is this format.
 type motorola struct{}
 
 func init() { Register(motorola{}) }
@@ -51,10 +51,10 @@ func (motorola) CanIngest(path string) bool {
 			if err != nil {
 				continue
 			}
-			head := make([]byte, len(bfforge.Magic))
+			head := make([]byte, len(blankflash.Magic))
 			n, _ := io.ReadFull(rc, head)
 			rc.Close()
-			if bfforge.IsContainer(head[:n]) {
+			if blankflash.IsContainer(head[:n]) {
 				return true
 			}
 		}
@@ -69,16 +69,16 @@ func isContainerHead(path string) bool {
 		return false
 	}
 	defer f.Close()
-	head := make([]byte, len(bfforge.Magic))
+	head := make([]byte, len(blankflash.Magic))
 	n, _ := io.ReadFull(f, head)
-	return bfforge.IsContainer(head[:n])
+	return blankflash.IsContainer(head[:n])
 }
 
-func (motorola) IngestDonor(path string) (*bfforge.Donor, error) {
-	return bfforge.Ingest(path)
+func (motorola) IngestDonor(path string) (*blankflash.Donor, error) {
+	return blankflash.Ingest(path)
 }
 
-func (motorola) HarvestStock(src TargetSource) (*bfforge.Target, error) {
+func (motorola) HarvestStock(src TargetSource) (*blankflash.Target, error) {
 	var gpt []byte
 	if src.GPT != "" {
 		var err error
@@ -91,7 +91,7 @@ func (motorola) HarvestStock(src TargetSource) (*bfforge.Target, error) {
 		slot = "a"
 	}
 	if src.Parts != "" {
-		return bfforge.FromDumps(src.Parts, slot, gpt)
+		return blankflash.FromDumps(src.Parts, slot, gpt)
 	}
 	if src.Bootloader == "" {
 		return nil, fmt.Errorf("need --target-bootloader or --target-parts")
@@ -100,9 +100,9 @@ func (motorola) HarvestStock(src TargetSource) (*bfforge.Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	return bfforge.FromBootloaderImg(img, gpt)
+	return blankflash.FromBootloaderImg(img, gpt)
 }
 
-func (motorola) Assemble(d *bfforge.Donor, t *bfforge.Target, opts AssembleOptions) (*bfforge.ForgeResult, error) {
-	return bfforge.Forge(d, t, opts.Slot, opts.Storage, opts.Provision)
+func (motorola) Assemble(d *blankflash.Donor, t *blankflash.Target, opts AssembleOptions) (*blankflash.ForgeResult, error) {
+	return blankflash.Forge(d, t, opts.Slot, opts.Storage, opts.Provision)
 }

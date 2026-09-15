@@ -25,7 +25,7 @@ var VendorDir = map[string]string{
 
 const (
 	apiBase   = "https://api.github.com/repos/bkerler/Loaders/contents/"
-	userAgent = "blankflash-forge/library-sync"
+	userAgent = "go-unbrick/library-sync"
 )
 
 // Entry is one loader file in the database, with its name decoded.

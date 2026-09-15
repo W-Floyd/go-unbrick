@@ -1,4 +1,4 @@
-package bfforge
+package blankflash
 
 import (
 	"bytes"

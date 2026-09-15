@@ -1,9 +1,9 @@
-// Package mtk derives the MediaTek SoC ("chip", e.g. MT6765) and partition
+// Package mediatek derives the MediaTek SoC ("chip", e.g. MT6765) and partition
 // layout from an SP Flash Tool package's scatter file — the MediaTek analog of a
 // Qualcomm blankflash's cpu.name. The scatter is YAML: a "general" block naming
 // the platform, then one entry per partition. This is identification only; MTK
 // flashing (BROM/Download Agent) is a separate transport not implemented here.
-package mtk
+package mediatek
 
 import (
 	"archive/zip"

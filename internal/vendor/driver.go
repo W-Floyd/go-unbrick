@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sort"
 
-	"blankflash-forge/internal/bfforge"
+	"go-unbrick/internal/blankflash"
 )
 
 // ErrUnsupported marks a vendor operation that is recognized but not implemented.
@@ -39,16 +39,16 @@ const (
 )
 
 // Driver implements one recovery-package format, identified by (platform, vendor).
-// The vendor-agnostic bfforge.Donor / bfforge.Target / bfforge.ForgeResult types
+// The vendor-agnostic blankflash.Donor / blankflash.Target / blankflash.ForgeResult types
 // are reused as the currency between drivers so the core stays format-neutral.
 type Driver interface {
 	ID() string       // registry id / catalog vendor id, e.g. "motorola"
 	Platform() string // recovery platform, e.g. PlatformQualcomm
 	OEMIDs() []string // secboot OEM_ID hex values this vendor signs with (Qualcomm)
 	CanIngest(path string) bool
-	IngestDonor(path string) (*bfforge.Donor, error)
-	HarvestStock(src TargetSource) (*bfforge.Target, error)
-	Assemble(d *bfforge.Donor, t *bfforge.Target, opts AssembleOptions) (*bfforge.ForgeResult, error)
+	IngestDonor(path string) (*blankflash.Donor, error)
+	HarvestStock(src TargetSource) (*blankflash.Target, error)
+	Assemble(d *blankflash.Donor, t *blankflash.Target, opts AssembleOptions) (*blankflash.ForgeResult, error)
 }
 
 var registry = map[string]Driver{}

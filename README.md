@@ -1,4 +1,4 @@
-# blankflash-forge
+# go-unbrick
 
 Build a Qualcomm/Motorola **blankflash** for a device that has none, by borrowing
 the one non-reproducible piece from a **sibling in the same SoC family**.
@@ -30,7 +30,7 @@ fogona has no public blankflash. Its siblings do: **devon** (Moto G32), **hawao*
 
 ```sh
 # one shot: donor loader + target's own images -> a fogona blankflash
-bfforge forge \
+unbrick forge \
   --donor        blankflash_devon_*.zip \
   --target-parts ~/…/postmarketos-fogona/out/dump   \  # raw xbl_a.img, abl_a.img, …
   --target-gpt   ./gpt.bin                           \  # from the fogona stock zip
@@ -46,8 +46,8 @@ package) works too.
 Single static binary, no runtime. Go 1.23+:
 
 ```sh
-go build -o bfforge .           # this platform
-GOOS=windows GOARCH=amd64 go build -o bfforge.exe .   # cross-compile
+go build -o unbrick .           # this platform
+GOOS=windows GOARCH=amd64 go build -o unbrick.exe .   # cross-compile
 go test ./...                   # unit + parity tests
 ```
 
@@ -55,19 +55,19 @@ go test ./...                   # unit + parity tests
 
 | | |
 |---|---|
-| `bfforge unpack <container> -o dir` | explode any `SINGLE_N_LONELY` image (`singleimage.bin`, `bootloader.img`, UFS `gpt.bin`) |
-| `bfforge pack <dir> -o <container>` | rebuild one from an unpacked dir |
-| `bfforge ingest <donor> -o dir` | lift `programmer.elf` + `qboot` from a donor (zip/dir/`singleimage.bin`) |
-| `bfforge harvest --target-… -o dir` | extract the target's boot partitions + gpt |
-| `bfforge forge --donor … --target-… -o dir` | assemble the target blankflash (one-shot, no library) |
-| `bfforge inspect <elf\|blankflash\|container>` | dump the secboot identity (root · OEM_ID · HW_ID · SW_ID) of signed images |
-| `bfforge catalog list` | vendors · SoCs · devices, with loader/stock status |
-| `bfforge catalog family <codename>` | show a device's family and its candidate donor siblings |
-| `bfforge catalog stub [-o file]` | generate catalog SoC/device stubs from the loader library |
-| `bfforge library add-loader <blankflash>` | ingest a blankflash, detect its family, store the signed loader |
-| `bfforge library add-stock <codename> --target-…` | harvest a catalog device's stock and store it |
-| `bfforge library list` | loaders (by family) and stock (by device) on hand |
-| `bfforge derive <codename> -o dir` | extrapolate a blankflash from a stored family loader + stock |
+| `unbrick unpack <container> -o dir` | explode any `SINGLE_N_LONELY` image (`singleimage.bin`, `bootloader.img`, UFS `gpt.bin`) |
+| `unbrick pack <dir> -o <container>` | rebuild one from an unpacked dir |
+| `unbrick ingest <donor> -o dir` | lift `programmer.elf` + `qboot` from a donor (zip/dir/`singleimage.bin`) |
+| `unbrick harvest --target-… -o dir` | extract the target's boot partitions + gpt |
+| `unbrick forge --donor … --target-… -o dir` | assemble the target blankflash (one-shot, no library) |
+| `unbrick inspect <elf\|blankflash\|container>` | dump the secboot identity (root · OEM_ID · HW_ID · SW_ID) of signed images |
+| `unbrick catalog list` | vendors · SoCs · devices, with loader/stock status |
+| `unbrick catalog family <codename>` | show a device's family and its candidate donor siblings |
+| `unbrick catalog stub [-o file]` | generate catalog SoC/device stubs from the loader library |
+| `unbrick library add-loader <blankflash>` | ingest a blankflash, detect its family, store the signed loader |
+| `unbrick library add-stock <codename> --target-…` | harvest a catalog device's stock and store it |
+| `unbrick library list` | loaders (by family) and stock (by device) on hand |
+| `unbrick derive <codename> -o dir` | extrapolate a blankflash from a stored family loader + stock |
 
 ## What the forge writes
 
@@ -91,7 +91,7 @@ map: collect loaders once, then derive a blankflash for any sibling that lacks o
   `(vendor, cpu_name)`: every device sharing that pair shares a loader. `soc` is a
   cosmetic marketing name (may be blank); `models` is an array (a device ships
   several model numbers); `storage` is **advisory only** — real storage is inferred
-  from the actual GPT/recipe at harvest time. `bfforge catalog stub` appends flat
+  from the actual GPT/recipe at harvest time. `unbrick catalog stub` appends flat
   stubs for library families not yet listed.
 - **Library** (`library/`, **gitignored** — never commit firmware): signed loaders
   indexed by family, and harvested stock indexed by device. The folder skeleton
@@ -105,13 +105,13 @@ map: collect loaders once, then derive a blankflash for any sibling that lacks o
 
 ```sh
 # collect a loader once, from any donor blankflash — its family is auto-detected
-bfforge library add-loader blankflash_devon_*.zip     # -> family motorola/SM_DIVAR
+unbrick library add-loader blankflash_devon_*.zip     # -> family motorola/SM_DIVAR
 
 # stash a target's own stock (its boot chain + gpt)
-bfforge library add-stock fogona --target-parts ./dump --target-gpt ./gpt.bin
+unbrick library add-stock fogona --target-parts ./dump --target-gpt ./gpt.bin
 
 # derive fogona's blankflash from the family loader + fogona's own stock
-bfforge derive fogona -o out/fogona-blankflash
+unbrick derive fogona -o out/fogona-blankflash
 ```
 
 `derive` is limited to devices defined in the catalog. It errors if no family
@@ -122,13 +122,13 @@ come from the library or be overridden inline with `--target-…`. A derived
 ### Config
 
 `--catalog <dir>` and `--library <dir>` are global. They resolve through flags →
-environment (`BFFORGE_CATALOG`, `BFFORGE_LIBRARY`) → an optional `.bfforge.yaml`
+environment (`UNBRICK_CATALOG`, `UNBRICK_LIBRARY`) → an optional `.unbrick.yaml`
 in the working dir or `$HOME`, so a fixed library location can live in the
 environment instead of every command line:
 
 ```sh
-export BFFORGE_LIBRARY=~/blankflash-library
-bfforge derive fogona -o out/fogona
+export UNBRICK_LIBRARY=~/unbrick-library
+unbrick derive fogona -o out/fogona
 ```
 
 ## Cross-model boot-chain donation (`--strip-model`)
@@ -148,7 +148,7 @@ The signed loader is an aarch64 ELF carrying a Qualcomm hash-table segment: a SH
 table, an RSA-2048 signature, and an X.509 chain (leaf attestation → attestation
 CA → root). The leaf cert's OU fields are exactly what the target's PBL enforces:
 `OEM_ID`, `HW_ID` (JTAG/SoC ‹‹32 | OEM ‹‹16 | MODEL), and `SW_ID` (a per-image
-anti-rollback counter). `bfforge inspect` reads them from any signed image —
+anti-rollback counter). `unbrick inspect` reads them from any signed image —
 including the target's own stock partitions.
 
 `derive` uses this to sanity-check the pairing before forging: it reads the
@@ -169,8 +169,8 @@ over-shoot can brick, `derive` defaults to the **lowest** stored `SW_ID` and pri
 the escalation ladder; step up only if the current one is refused:
 
 ```sh
-bfforge derive fogona -o out/fogona           # lowest SW_ID
-bfforge derive fogona --loader rhode_… -o out  # escalate if that stalled at Sahara
+unbrick derive fogona -o out/fogona           # lowest SW_ID
+unbrick derive fogona --loader rhode_… -o out  # escalate if that stalled at Sahara
 ```
 
 The target's own boot chain and the Firehose programmer are *separate* fuse rows,
@@ -192,7 +192,7 @@ signing key + packaging). One OEM can span platforms (Motorola ships both).
 
 - **Motorola** (qualcomm) — full support: `SINGLE_N_LONELY` singleimage + `qboot` + `blank-flash`.
 - **MediaTek** (mediatek) — **detection + chip derivation.** Recognizes SP Flash
-  Tool packages and derives the SoC from the scatter file — `bfforge inspect
+  Tool packages and derives the SoC from the scatter file — `unbrick inspect
   <mtk.zip>` reports `chip` (e.g. MT6765, the MediaTek analog of Qualcomm's
   `cpu.name`), `project`, `storage`, and partition count, across both scatter
   dialects (flat and storage_type-nested). Ingest/harvest/assemble remain stubs
@@ -210,7 +210,7 @@ Adding a vendor = implement `vendor.Driver` and register it. Known limitation:
 
 ## The container format (`SINGLE_N_LONELY`)
 
-Reverse-engineered; `bfforge` round-trips real images byte-for-byte.
+Reverse-engineered; `unbrick` round-trips real images byte-for-byte.
 
 ```
 0x000  16B    "SINGLE_N_LONELY\0", rest of a 0x100 block zero

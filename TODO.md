@@ -47,6 +47,6 @@ playday3008 gist `c26833299fe8373a4190ec9360687a77`:
 - `moto-qcdt-patch.py`   — LZ4 decompress + model-field stripper
 - `moto_dt.hexpat`       — QCDT device-tree table layout (ImHex)
 - `moto_bootloader.hexpat` — SINGLE_N_LONELY container layout (ImHex); independent
-  confirmation of the codec in `internal/bfforge/singleimage.go`
+  confirmation of the codec in `internal/blankflash/singleimage.go`
 
 <https://gist.github.com/playday3008/c26833299fe8373a4190ec9360687a77>

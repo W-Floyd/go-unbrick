@@ -1,4 +1,4 @@
-package bfforge
+package blankflash
 
 // Harvest the target device's own bootloader partitions and GPT.
 //

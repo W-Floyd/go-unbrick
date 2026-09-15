@@ -1,7 +1,7 @@
 // Package library is the on-disk store of the reusable, binary pieces: signed
 // loaders (indexed by family) and harvested stock firmware (indexed by device).
 // It is gitignored — firmware never enters the repo. The catalog references it;
-// this package rebuilds bfforge.Donor / bfforge.Target from what it holds.
+// this package rebuilds blankflash.Donor / blankflash.Target from what it holds.
 package library
 
 import (
@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"blankflash-forge/internal/bfforge"
-	"blankflash-forge/internal/catalog"
-	"blankflash-forge/internal/secboot"
+	"go-unbrick/internal/blankflash"
+	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/secboot"
 )
 
 type Library struct{ Root string }
@@ -108,7 +108,7 @@ type LoaderRef struct {
 // If a build with the same programmer.elf SHA256 is already present, it is not
 // duplicated and the existing ref is returned. source names the donor it came
 // from, for provenance and to derive the build id.
-func (l *Library) AddLoader(f catalog.Family, d *bfforge.Donor, source string) (*LoaderRef, error) {
+func (l *Library) AddLoader(f catalog.Family, d *blankflash.Donor, source string) (*LoaderRef, error) {
 	sum := sha256.Sum256(d.Programmer)
 	sha := hex.EncodeToString(sum[:])
 	for _, ref := range l.Builds(f) { // dedupe identical loaders across build ids
@@ -179,7 +179,7 @@ func (l *Library) Builds(f catalog.Family) []LoaderRef {
 
 // FindLoader rebuilds a Donor from a family's loader. build selects a specific
 // build id; empty picks the lowest SW_ID (safest against anti-rollback lock-out).
-func (l *Library) FindLoader(f catalog.Family, build string) (*bfforge.Donor, *LoaderRef, error) {
+func (l *Library) FindLoader(f catalog.Family, build string) (*blankflash.Donor, *LoaderRef, error) {
 	builds := l.Builds(f)
 	if len(builds) == 0 {
 		return nil, nil, fmt.Errorf("no loader for family %s", f)
@@ -214,7 +214,7 @@ func (l *Library) FindLoader(f catalog.Family, build string) (*bfforge.Donor, *L
 			}
 		}
 	}
-	d := &bfforge.Donor{
+	d := &blankflash.Donor{
 		Programmer: prog,
 		Qboot:      qboot,
 		CPUName:    ref.Meta.CPUName,
@@ -225,7 +225,7 @@ func (l *Library) FindLoader(f catalog.Family, build string) (*bfforge.Donor, *L
 }
 
 // AddStock stores a device's harvested boot partitions + GPT.
-func (l *Library) AddStock(vendor, codename string, t *bfforge.Target) (string, error) {
+func (l *Library) AddStock(vendor, codename string, t *blankflash.Target) (string, error) {
 	dir := l.stockDir(vendor, codename)
 	if err := os.RemoveAll(dir); err != nil { // replace wholesale to avoid stale parts
 		return "", err
@@ -258,7 +258,7 @@ func (l *Library) HasStock(vendor, codename string) bool {
 }
 
 // FindStock rebuilds a Target from stored stock for a device.
-func (l *Library) FindStock(vendor, codename string) (*bfforge.Target, error) {
+func (l *Library) FindStock(vendor, codename string) (*blankflash.Target, error) {
 	dir := l.stockDir(vendor, codename)
 	b, err := os.ReadFile(filepath.Join(dir, "meta.json"))
 	if err != nil {
@@ -283,7 +283,7 @@ func (l *Library) FindStock(vendor, codename string) (*bfforge.Target, error) {
 	if gb, err := os.ReadFile(filepath.Join(dir, "gpt.bin")); err == nil {
 		gpt = gb
 	}
-	return &bfforge.Target{
+	return &blankflash.Target{
 		Parts:    parts,
 		FlashMap: meta.FlashMap,
 		GPT:      gpt,

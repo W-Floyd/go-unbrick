@@ -1,5 +1,5 @@
-// Package bfforge builds a device blankflash from a same-SoC sibling's signed loader.
-package bfforge
+// Package blankflash builds a device blankflash from a same-SoC sibling's signed loader.
+package blankflash
 
 // Codec for Motorola's SINGLE_N_LONELY container.
 //

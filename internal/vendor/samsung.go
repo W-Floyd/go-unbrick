@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"blankflash-forge/internal/bfforge"
+	"go-unbrick/internal/blankflash"
 )
 
 // samsung: Qualcomm-SoC Samsung devices share the secboot identity core (so
@@ -65,14 +65,14 @@ func isSamsungName(name string) bool {
 		(strings.HasPrefix(l, "prog") && strings.Contains(l, "firehose"))
 }
 
-func (samsung) IngestDonor(string) (*bfforge.Donor, error) {
+func (samsung) IngestDonor(string) (*blankflash.Donor, error) {
 	return nil, fmt.Errorf("samsung donor ingest (.pit/Odin, not SINGLE_N_LONELY): %w", ErrUnsupported)
 }
 
-func (samsung) HarvestStock(TargetSource) (*bfforge.Target, error) {
+func (samsung) HarvestStock(TargetSource) (*blankflash.Target, error) {
 	return nil, fmt.Errorf("samsung stock harvest (.pit-based): %w", ErrUnsupported)
 }
 
-func (samsung) Assemble(*bfforge.Donor, *bfforge.Target, AssembleOptions) (*bfforge.ForgeResult, error) {
+func (samsung) Assemble(*blankflash.Donor, *blankflash.Target, AssembleOptions) (*blankflash.ForgeResult, error) {
 	return nil, fmt.Errorf("samsung recovery packaging (Odin/Firehose XML): %w", ErrUnsupported)
 }

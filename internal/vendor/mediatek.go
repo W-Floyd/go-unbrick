@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"blankflash-forge/internal/bfforge"
+	"go-unbrick/internal/blankflash"
 )
 
 // mediatek: a different recovery platform entirely — BROM/Preloader + a Download
@@ -75,14 +75,14 @@ func isMTKName(name string) bool {
 	return false
 }
 
-func (mediatek) IngestDonor(string) (*bfforge.Donor, error) {
+func (mediatek) IngestDonor(string) (*blankflash.Donor, error) {
 	return nil, fmt.Errorf("mediatek donor ingest (SP Flash Tool scatter + DA, not Firehose): %w", ErrUnsupported)
 }
 
-func (mediatek) HarvestStock(TargetSource) (*bfforge.Target, error) {
+func (mediatek) HarvestStock(TargetSource) (*blankflash.Target, error) {
 	return nil, fmt.Errorf("mediatek stock harvest (scatter-based): %w", ErrUnsupported)
 }
 
-func (mediatek) Assemble(*bfforge.Donor, *bfforge.Target, AssembleOptions) (*bfforge.ForgeResult, error) {
+func (mediatek) Assemble(*blankflash.Donor, *blankflash.Target, AssembleOptions) (*blankflash.ForgeResult, error) {
 	return nil, fmt.Errorf("mediatek recovery packaging (SP Flash Tool): %w", ErrUnsupported)
 }

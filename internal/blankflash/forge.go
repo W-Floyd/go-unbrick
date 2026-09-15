@@ -1,4 +1,4 @@
-package bfforge
+package blankflash
 
 // Assemble a target blankflash from a donor's signed loader and the target's images.
 //

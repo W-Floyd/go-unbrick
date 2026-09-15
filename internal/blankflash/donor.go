@@ -1,4 +1,4 @@
-package bfforge
+package blankflash
 
 // Ingest a donor blankflash and lift the reusable, signed pieces out of it.
 //

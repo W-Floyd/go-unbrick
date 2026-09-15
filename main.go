@@ -1,4 +1,4 @@
-// Command bfforge: unpack/pack the SINGLE_N_LONELY container, and the
+// Command unbrick: unpack/pack the SINGLE_N_LONELY container, and the
 // ingest -> harvest -> forge / catalog -> library -> derive pipeline that builds
 // a device blankflash from a same-SoC sibling's signed loader.
 package main
@@ -17,17 +17,17 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"blankflash-forge/internal/bfforge"
-	"blankflash-forge/internal/catalog"
-	"blankflash-forge/internal/library"
-	"blankflash-forge/internal/mtk"
-	"blankflash-forge/internal/qcdt"
-	"blankflash-forge/internal/secboot"
-	"blankflash-forge/internal/upstream"
-	"blankflash-forge/internal/vendor"
+	"go-unbrick/internal/blankflash"
+	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/library"
+	"go-unbrick/internal/mediatek"
+	"go-unbrick/internal/qcdt"
+	"go-unbrick/internal/secboot"
+	"go-unbrick/internal/upstream"
+	"go-unbrick/internal/vendor"
 )
 
-// v holds global config, resolved from flags, env (BFFORGE_*), and an optional
+// v holds global config, resolved from flags, env (UNBRICK_*), and an optional
 // config file. Persistent flags (--catalog, --library) are bound to it.
 var v = viper.New()
 
@@ -43,22 +43,22 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "bfforge",
+		Use:           "unbrick",
 		Short:         "Build a device blankflash from a same-SoC sibling's signed loader",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().String("catalog", "catalog", "catalog directory (env BFFORGE_CATALOG)")
-	root.PersistentFlags().String("library", "library", "library directory (env BFFORGE_LIBRARY)")
+	root.PersistentFlags().String("catalog", "catalog", "catalog directory (env UNBRICK_CATALOG)")
+	root.PersistentFlags().String("library", "library", "library directory (env UNBRICK_LIBRARY)")
 
 	// Config plumbing: flags < env < config file resolve through viper.
-	v.SetEnvPrefix("BFFORGE")
+	v.SetEnvPrefix("UNBRICK")
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	v.AutomaticEnv()
 	_ = v.BindPFlag("catalog", root.PersistentFlags().Lookup("catalog"))
 	_ = v.BindPFlag("library", root.PersistentFlags().Lookup("library"))
 	cobra.OnInitialize(func() {
-		v.SetConfigName(".bfforge")
+		v.SetConfigName(".unbrick")
 		v.AddConfigPath(".")
 		if home, err := os.UserHomeDir(); err == nil {
 			v.AddConfigPath(home)
@@ -110,7 +110,7 @@ func (t *targetFlags) source() vendor.TargetSource {
 	return vendor.TargetSource{Parts: t.parts, Bootloader: t.bootloader, GPT: t.gpt, Slot: t.slot}
 }
 
-func (t *targetFlags) load() (*bfforge.Target, error) {
+func (t *targetFlags) load() (*blankflash.Target, error) {
 	var gpt []byte
 	if t.gpt != "" {
 		var err error
@@ -120,13 +120,13 @@ func (t *targetFlags) load() (*bfforge.Target, error) {
 	}
 	switch {
 	case t.parts != "":
-		return bfforge.FromDumps(t.parts, t.slot, gpt)
+		return blankflash.FromDumps(t.parts, t.slot, gpt)
 	case t.bootloader != "":
 		img, err := os.ReadFile(t.bootloader)
 		if err != nil {
 			return nil, err
 		}
-		return bfforge.FromBootloaderImg(img, gpt)
+		return blankflash.FromBootloaderImg(img, gpt)
 	default:
 		return nil, fmt.Errorf("need --target-bootloader or --target-parts")
 	}
@@ -140,7 +140,7 @@ func readProvision(path string) ([]byte, error) {
 }
 
 // writeForgeOutput writes singleimage.bin + aux and prints the standard summary.
-func writeForgeOutput(outDir string, res *bfforge.ForgeResult) error {
+func writeForgeOutput(outDir string, res *blankflash.ForgeResult) error {
 	if err := write(filepath.Join(outDir, "singleimage.bin"), res.Singleimage); err != nil {
 		return err
 	}
@@ -155,7 +155,7 @@ func writeForgeOutput(outDir string, res *bfforge.ForgeResult) error {
 // stripModels patches any extended-QCDT device-tree parts in place so a sibling
 // model's boot chain matches the target (see internal/qcdt). Returns the names of
 // the parts it changed.
-func stripModels(t *bfforge.Target) ([]string, error) {
+func stripModels(t *blankflash.Target) ([]string, error) {
 	var patched []string
 	for fn, data := range t.Parts {
 		out, changed, err := qcdt.StripModel(data)
@@ -173,7 +173,7 @@ func stripModels(t *bfforge.Target) ([]string, error) {
 
 // targetIdentity reads the target's own secboot identity from a stock signed
 // partition (xbl/abl). Returns nil if none is parseable.
-func targetIdentity(t *bfforge.Target) *secboot.Identity {
+func targetIdentity(t *blankflash.Target) *secboot.Identity {
 	for _, fn := range []string{"xbl.elf", "abl.elf", "tz.mbn"} {
 		if b, ok := t.Parts[fn]; ok {
 			if id, err := secboot.FromELF(b); err == nil {
@@ -229,13 +229,13 @@ func newUnpackCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			recs, err := bfforge.Parse(blob)
+			recs, err := blankflash.Parse(blob)
 			if err != nil {
 				return err
 			}
 			var manifest []manifestEntry
 			for _, r := range recs {
-				if r.Name == bfforge.Trailer {
+				if r.Name == blankflash.Trailer {
 					continue
 				}
 				if err := write(filepath.Join(out, r.Name), r.Data); err != nil {
@@ -275,15 +275,15 @@ func newPackCmd() *cobra.Command {
 			if err := json.Unmarshal(mj, &manifest); err != nil {
 				return err
 			}
-			var recs []bfforge.Record
+			var recs []blankflash.Record
 			for _, m := range manifest {
 				b, err := os.ReadFile(filepath.Join(dir, m.Name))
 				if err != nil {
 					return err
 				}
-				recs = append(recs, bfforge.Record{Name: m.Name, Data: b})
+				recs = append(recs, blankflash.Record{Name: m.Name, Data: b})
 			}
-			blob, err := bfforge.Build(bfforge.WithTrailer(recs))
+			blob, err := blankflash.Build(blankflash.WithTrailer(recs))
 			if err != nil {
 				return err
 			}
@@ -308,7 +308,7 @@ func newIngestCmd() *cobra.Command {
 		Short: "lift programmer.elf + qboot from a donor blankflash",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := bfforge.Ingest(args[0])
+			d, err := blankflash.Ingest(args[0])
 			if err != nil {
 				return err
 			}
@@ -433,8 +433,8 @@ func newForgeCmd() *cobra.Command {
 		if err := writeForgeOutput(out, res); err != nil {
 			return err
 		}
-		recs, _ := bfforge.Parse(res.Singleimage)
-		fmt.Printf("forged singleimage.bin: %d bytes, %d records\n", len(res.Singleimage), len(bfforge.Index(recs)))
+		recs, _ := blankflash.Parse(res.Singleimage)
+		fmt.Printf("forged singleimage.bin: %d bytes, %d records\n", len(res.Singleimage), len(blankflash.Index(recs)))
 		fmt.Printf("  donor loader: %s  cpu.name=%s\n", d.Source, d.CPUName)
 		fmt.Printf("  target: %s  storage=%s\n", t.Source, firstNonEmpty(t.Storage, storage))
 		for _, w := range res.Warnings {
@@ -464,8 +464,8 @@ func inspectBytes(name string, b []byte) (int, error) {
 		printIdentity("  ", name, id)
 		return 1, nil
 	}
-	if bfforge.IsContainer(b) {
-		recs, err := bfforge.Parse(b)
+	if blankflash.IsContainer(b) {
+		recs, err := blankflash.Parse(b)
 		if err != nil {
 			return 0, err
 		}
@@ -493,7 +493,7 @@ func newInspectCmd() *cobra.Command {
 			path := args[0]
 			// MediaTek package: derive the chip from the scatter (no Qualcomm secboot).
 			if drv, ok := vendor.Detect(path); ok && drv.Platform() == vendor.PlatformMediaTek {
-				info, err := mtk.FromPackage(path)
+				info, err := mediatek.FromPackage(path)
 				if err != nil {
 					return err
 				}
@@ -504,7 +504,7 @@ func newInspectCmd() *cobra.Command {
 			}
 			// A directory or zip donor: inspect the loader inside.
 			if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-				d, err := bfforge.Ingest(path)
+				d, err := blankflash.Ingest(path)
 				if err != nil {
 					return err
 				}
@@ -524,7 +524,7 @@ func newInspectCmd() *cobra.Command {
 			n, err := inspectBytes(filepath.Base(path), b)
 			if err != nil {
 				// Last resort: treat as a donor blankflash (zip) and inspect its loader.
-				if d, ierr := bfforge.Ingest(path); ierr == nil {
+				if d, ierr := blankflash.Ingest(path); ierr == nil {
 					if id, ferr := secboot.FromELF(d.Programmer); ferr == nil {
 						printIdentity("  ", "programmer.elf", id)
 						return nil
@@ -771,7 +771,7 @@ func newLibrarySyncCmd() *cobra.Command {
 				}
 				// The cert is authoritative over the filename; key on it.
 				fam := catalog.Family{Vendor: vendorID, JTAGID: id.JTAGID}
-				donor := &bfforge.Donor{Programmer: blob, Source: "bkerler/Loaders/" + dir + "/" + e.Name}
+				donor := &blankflash.Donor{Programmer: blob, Source: "bkerler/Loaders/" + dir + "/" + e.Name}
 				before := len(lib.Builds(fam))
 				ref, err := lib.AddLoader(fam, donor, e.Name)
 				if err != nil {
@@ -984,7 +984,7 @@ func newDeriveCmd() *cobra.Command {
 			return err
 		}
 
-		var target *bfforge.Target
+		var target *blankflash.Target
 		if tf.parts != "" || tf.bootloader != "" {
 			target, err = drv.HarvestStock(tf.source())
 		} else if lib.HasStock(dev.Vendor, dev.Codename) {
@@ -1033,9 +1033,9 @@ func newDeriveCmd() *cobra.Command {
 		if err := writeForgeOutput(out, res); err != nil {
 			return err
 		}
-		recs, _ := bfforge.Parse(res.Singleimage)
+		recs, _ := blankflash.Parse(res.Singleimage)
 		fmt.Printf("derived %s (%s) blankflash: %d bytes, %d records\n",
-			dev.Codename, dev.Name, len(res.Singleimage), len(bfforge.Index(recs)))
+			dev.Codename, dev.Name, len(res.Singleimage), len(blankflash.Index(recs)))
 		fmt.Printf("  family: %s  loader: %s@%s SW_ID=%d (from %s)\n", fam, fam, lref.Build, lref.Meta.SWID, lref.Meta.Source)
 		fmt.Printf("  target: %s  storage=%s\n", target.Source, firstNonEmpty(target.Storage, storage))
 		if len(cands) > 1 && loaderBuild == "" {
