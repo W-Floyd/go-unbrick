@@ -592,7 +592,7 @@ func newCatalogStubCmd() *cobra.Command {
 					}
 					d := byCode[code]
 					if d == nil {
-						d = &catalog.Device{Codename: code, Vendor: fam.Vendor, CPUName: fam.CPUName}
+						d = &catalog.Device{Codename: code, Vendor: fam.Vendor, CPUName: b.Meta.CPUName}
 						byCode[code] = d
 					}
 					if m := modelFromSource(b.Meta.Source); m != "" && len(d.Models) == 0 {
@@ -652,12 +652,12 @@ func newCatalogListCmd() *cobra.Command {
 					if soc == "" {
 						soc = "(SoC name unknown)"
 					}
-					fmt.Printf("  %s  cpu_name=%s  family=%s\n", soc, d.CPUName, d.Family())
+					fmt.Printf("  %s  cpu_name=%s  family=%s\n", soc, d.CPUName, d.CPUFamily())
 					lastCPU = d.CPUName
 				}
 				fmt.Printf("    %-10s %-22s %-16s storage=%-9s loader:%s stock:%s\n",
 					d.Codename, d.Name, strings.Join(d.Models, ","), strings.Join(d.Storage, ","),
-					mark(lib.HasLoader(d.Family())), mark(lib.HasStock(d.Vendor, d.Codename)))
+					mark(lib.HasLoaderForCPU(d.Vendor, d.CPUName)), mark(lib.HasStock(d.Vendor, d.Codename)))
 			}
 			return nil
 		},
@@ -679,7 +679,7 @@ func newCatalogFamilyCmd() *cobra.Command {
 				return fmt.Errorf("unknown codename %q", args[0])
 			}
 			sibs, _ := c.Siblings(args[0])
-			fmt.Printf("%s (%s) family %s\n", d.Codename, d.Name, d.Family())
+			fmt.Printf("%s (%s) family %s\n", d.Codename, d.Name, d.CPUFamily())
 			fmt.Println("siblings (candidate loader donors):")
 			if len(sibs) == 0 {
 				fmt.Println("  (none in catalog)")
@@ -719,8 +719,12 @@ func newLibraryAddLoaderCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if d.CPUName == "" {
-				return fmt.Errorf("donor has no cpu.name in index.xml; cannot place it in a family")
+			// The loader keys on the silicon it authenticates against (JTAG_ID from
+			// the cert), not the qboot cpu_name label — so a bare fhprg with no
+			// index.xml still places cleanly. cpu_name is kept as metadata.
+			id, err := secboot.FromELF(d.Programmer)
+			if err != nil {
+				return fmt.Errorf("cannot read loader identity (JTAG_ID) from cert: %w", err)
 			}
 			// Vendor comes from the detected package format (or --vendor); the loader
 			// need not be pre-catalogued — the catalog is for targets/derive.
@@ -728,17 +732,19 @@ func newLibraryAddLoaderCmd() *cobra.Command {
 			if vendorID == "" {
 				vendorID = drv.ID()
 			}
-			fam := catalog.Family{Vendor: vendorID, CPUName: d.CPUName}
+			fam := catalog.Family{Vendor: vendorID, JTAGID: id.JTAGID}
 			ref, err := library.Open(libraryDir()).AddLoader(fam, d, args[0])
 			if err != nil {
 				return err
 			}
 			note := ""
-			if _, cataloged := c.SoCByCPUName(vendorID, d.CPUName); !cataloged {
-				note = "  (SoC not in catalog — add a device entry to enable `derive`)"
+			if d.CPUName != "" {
+				if _, cataloged := c.SoCByCPUName(vendorID, d.CPUName); !cataloged {
+					note = "  (cpu_name not in catalog — add a device entry to enable `derive`)"
+				}
 			}
-			fmt.Printf("stored loader %s@%s (cpu.name=%s storage=%s, %dB, sha256=%s)%s\n",
-				fam, ref.Build, d.CPUName, d.Storage, len(d.Programmer), ref.Meta.SHA256[:12], note)
+			fmt.Printf("stored loader %s@%s (cpu.name=%q storage=%s SW_ID=%d, %dB, sha256=%s)%s\n",
+				fam, ref.Build, d.CPUName, d.Storage, id.SWID, len(d.Programmer), ref.Meta.SHA256[:12], note)
 			return nil
 		},
 	}
@@ -836,18 +842,35 @@ func newDeriveCmd() *cobra.Command {
 		if !ok {
 			return fmt.Errorf("no vendor driver for %q", dev.Vendor)
 		}
-		fam := dev.Family()
 		lib := library.Open(libraryDir())
-		if !lib.HasLoader(fam) {
+		// Resolve the device's cpu_name to candidate JTAG-keyed loaders (lowest
+		// SW_ID first). One cpu_name can span several silicon revisions, so this
+		// may draw from more than one JTAG family.
+		cands := lib.LoadersForCPU(dev.Vendor, dev.CPUName)
+		if len(cands) == 0 {
 			sibs, _ := c2.Siblings(args[0])
 			codes := make([]string, len(sibs))
 			for i, s := range sibs {
 				codes[i] = s.Codename
 			}
-			return fmt.Errorf("no loader in library for family %s; ingest one from a sibling first "+
-				"(library add-loader), donors: %v", fam, codes)
+			return fmt.Errorf("no loader in library for cpu_name %q (%s); ingest one from a sibling first "+
+				"(library add-loader), donors: %v", dev.CPUName, dev.CPUFamily(), codes)
 		}
-		donor, lref, err := lib.FindLoader(fam, loaderBuild)
+		lref := &cands[0]
+		if loaderBuild != "" {
+			lref = nil
+			for i := range cands {
+				if cands[i].Build == loaderBuild {
+					lref = &cands[i]
+					break
+				}
+			}
+			if lref == nil {
+				return fmt.Errorf("no loader build %q among candidates for %q", loaderBuild, dev.CPUName)
+			}
+		}
+		fam := lref.Family
+		donor, lref, err := lib.FindLoader(fam, lref.Build)
 		if err != nil {
 			return err
 		}
@@ -906,9 +929,9 @@ func newDeriveCmd() *cobra.Command {
 			dev.Codename, dev.Name, len(res.Singleimage), len(bfforge.Index(recs)))
 		fmt.Printf("  family: %s  loader: %s@%s SW_ID=%d (from %s)\n", fam, fam, lref.Build, lref.Meta.SWID, lref.Meta.Source)
 		fmt.Printf("  target: %s  storage=%s\n", target.Source, firstNonEmpty(target.Storage, storage))
-		if builds := lib.Builds(fam); len(builds) > 1 && loaderBuild == "" {
-			ladder := make([]string, len(builds))
-			for i, b := range builds {
+		if len(cands) > 1 && loaderBuild == "" {
+			ladder := make([]string, len(cands))
+			for i, b := range cands {
 				ladder[i] = fmt.Sprintf("%s(SW_ID=%d)", b.Build, b.Meta.SWID)
 			}
 			fmt.Printf("  using lowest SW_ID; if it stalls at Sahara (rejected, harmless), step up: --loader <build>\n")

@@ -24,7 +24,7 @@ type Library struct{ Root string }
 
 func Open(root string) *Library { return &Library{Root: root} }
 
-func familyDir(f catalog.Family) string { return filepath.Join(f.Vendor, f.CPUName) }
+func familyDir(f catalog.Family) string { return filepath.Join(f.Vendor, f.JTAGID) }
 
 // familyLoaderDir holds one subdirectory per distinct loader build in a family.
 func (l *Library) familyLoaderDir(f catalog.Family) string {
@@ -130,7 +130,7 @@ func (l *Library) AddLoader(f catalog.Family, d *bfforge.Donor, source string) (
 	}
 	sort.Strings(qbootNames)
 	meta := LoaderMeta{
-		CPUName: f.CPUName,
+		CPUName: d.CPUName, // qboot label from the donor index.xml; blank for a bare fhprg
 		Storage: d.Storage,
 		Source:  source,
 		SHA256:  sha,
@@ -217,7 +217,7 @@ func (l *Library) FindLoader(f catalog.Family, build string) (*bfforge.Donor, *L
 	d := &bfforge.Donor{
 		Programmer: prog,
 		Qboot:      qboot,
-		CPUName:    f.CPUName,
+		CPUName:    ref.Meta.CPUName,
 		Storage:    ref.Meta.Storage,
 		Source:     "library:" + f.String() + "@" + ref.Build,
 	}
@@ -301,12 +301,12 @@ func (l *Library) Loaders() []catalog.Family {
 		if !v.IsDir() {
 			continue
 		}
-		cpus, _ := os.ReadDir(filepath.Join(base, v.Name()))
-		for _, cpu := range cpus {
-			if !cpu.IsDir() {
+		jtags, _ := os.ReadDir(filepath.Join(base, v.Name()))
+		for _, j := range jtags {
+			if !j.IsDir() {
 				continue
 			}
-			f := catalog.Family{Vendor: v.Name(), CPUName: cpu.Name()}
+			f := catalog.Family{Vendor: v.Name(), JTAGID: j.Name()}
 			if len(l.Builds(f)) > 0 {
 				out = append(out, f)
 			}
@@ -314,6 +314,55 @@ func (l *Library) Loaders() []catalog.Family {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out
+}
+
+// LoadersForCPU bridges a device's cpu_name to the JTAG-keyed loader store: it
+// returns every stored loader whose recorded cpu_name matches (case-insensitive),
+// across all JTAG families, ordered lowest-SW_ID first (safest against anti-
+// rollback lock-out). This is the emergent device↔loader link — a full donor that
+// carries both cpu_name (index.xml) and JTAG_ID (cert) pulls in bare fhprg loaders
+// sharing that JTAG, even though those carry no cpu_name of their own.
+func (l *Library) LoadersForCPU(vendor, cpu string) []LoaderRef {
+	if cpu == "" {
+		return nil
+	}
+	want := strings.ToLower(cpu)
+	jtags := map[string]bool{} // JTAGs seen under this cpu_name
+	var out []LoaderRef
+	for _, f := range l.Loaders() {
+		if f.Vendor != vendor {
+			continue
+		}
+		for _, ref := range l.Builds(f) {
+			if strings.EqualFold(ref.Meta.CPUName, cpu) {
+				jtags[f.JTAGID] = true
+			}
+		}
+	}
+	for _, f := range l.Loaders() {
+		if f.Vendor != vendor || !jtags[f.JTAGID] {
+			continue
+		}
+		for _, ref := range l.Builds(f) {
+			// A bare fhprg under a matched JTAG has no cpu_name but is still
+			// compatible; a cpu_name that mismatches the label is excluded.
+			if ref.Meta.CPUName == "" || strings.ToLower(ref.Meta.CPUName) == want {
+				out = append(out, ref)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Meta.SWID != out[j].Meta.SWID {
+			return out[i].Meta.SWID < out[j].Meta.SWID
+		}
+		return out[i].Build < out[j].Build
+	})
+	return out
+}
+
+// HasLoaderForCPU reports whether any stored loader serves a device's cpu_name.
+func (l *Library) HasLoaderForCPU(vendor, cpu string) bool {
+	return len(l.LoadersForCPU(vendor, cpu)) > 0
 }
 
 // StockRef is a vendor/codename pair with stored stock.

@@ -28,14 +28,23 @@ type Device struct {
 	Storage  []string `yaml:"storage"`  // advisory; real storage is inferred from firmware
 }
 
-// Family is the loader-signing identity a blankflash is reusable across.
+// Family keys the loader store on the silicon a signed loader authenticates
+// against: (vendor OEM_ID, JTAG_ID). JTAG_ID is the MSM hardware id fused in the
+// SoC and carried in the loader cert's HW_ID — the fact secboot actually checks —
+// so it, not the qboot cpu_name label, decides which loaders run on a target.
+// cpu_name is a many-to-many packaging label (one JTAG → several cpu_names and
+// vice-versa), demoted to loader metadata; the device↔loader bridge is resolved
+// via loaders that carry both (see library.LoadersForCPU).
 type Family struct {
-	Vendor  string
-	CPUName string
+	Vendor string
+	JTAGID string // uppercase 8-hex MSM id, e.g. "0016F0E1"
 }
 
-func (f Family) String() string  { return f.Vendor + "/" + f.CPUName }
-func (d *Device) Family() Family { return Family{Vendor: d.Vendor, CPUName: d.CPUName} }
+func (f Family) String() string { return f.Vendor + "/" + f.JTAGID }
+
+// CPUFamily is the human-facing (vendor, cpu_name) grouping used for display and
+// sibling detection — not a loader key (see Family).
+func (d *Device) CPUFamily() string { return d.Vendor + "/" + d.CPUName }
 
 type catalogFile struct {
 	Devices []*Device `yaml:"devices"`
@@ -95,10 +104,9 @@ func (c *Catalog) Siblings(codename string) ([]*Device, bool) {
 	if !ok {
 		return nil, false
 	}
-	fam := d.Family()
 	var out []*Device
 	for _, o := range c.devices {
-		if o != d && o.Family() == fam {
+		if o != d && o.Vendor == d.Vendor && o.CPUName == d.CPUName {
 			out = append(out, o)
 		}
 	}
@@ -119,33 +127,6 @@ func (c *Catalog) SoCByCPUName(vendor, cpu string) (string, bool) {
 		}
 	}
 	return soc, found
-}
-
-// ResolveFamily maps a detected cpu_name to its family. vendorHint disambiguates
-// when a cpu_name appears under more than one vendor.
-func (c *Catalog) ResolveFamily(cpuName, vendorHint string) (Family, error) {
-	vendors := map[string]bool{}
-	for _, d := range c.devices {
-		if d.CPUName == cpuName {
-			vendors[d.Vendor] = true
-		}
-	}
-	if len(vendors) == 0 {
-		return Family{}, fmt.Errorf("cpu_name %q is not in the catalog; add it or pass --vendor", cpuName)
-	}
-	if vendorHint != "" {
-		if !vendors[vendorHint] {
-			return Family{}, fmt.Errorf("cpu_name %q is not under vendor %q", cpuName, vendorHint)
-		}
-		return Family{Vendor: vendorHint, CPUName: cpuName}, nil
-	}
-	if len(vendors) > 1 {
-		return Family{}, fmt.Errorf("cpu_name %q spans vendors %v; pass --vendor", cpuName, sortedSet(vendors))
-	}
-	for v := range vendors {
-		return Family{Vendor: v, CPUName: cpuName}, nil
-	}
-	return Family{}, fmt.Errorf("unreachable")
 }
 
 // AllDevices returns every device in canonical order (see deviceLess).
@@ -174,13 +155,4 @@ func Render(devs []*Device) ([]byte, error) {
 	sorted := append([]*Device{}, devs...)
 	sort.Slice(sorted, func(i, j int) bool { return deviceLess(sorted[i], sorted[j]) })
 	return yaml.Marshal(catalogFile{Devices: sorted})
-}
-
-func sortedSet(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -10,7 +10,7 @@ import (
 
 func TestLoaderRoundtrip(t *testing.T) {
 	lib := Open(t.TempDir())
-	fam := catalog.Family{Vendor: "motorola", CPUName: "SM_DIVAR"}
+	fam := catalog.Family{Vendor: "motorola", JTAGID: "0016F0E1"}
 	if lib.HasLoader(fam) {
 		t.Fatal("empty library reports a loader")
 	}
@@ -53,7 +53,7 @@ func TestLoaderRoundtrip(t *testing.T) {
 
 func TestMultipleBuildsAndDedupe(t *testing.T) {
 	lib := Open(t.TempDir())
-	fam := catalog.Family{Vendor: "motorola", CPUName: "SM_DIVAR"}
+	fam := catalog.Family{Vendor: "motorola", JTAGID: "0016F0E1"}
 	a := &bfforge.Donor{Programmer: []byte("loaderA"), CPUName: "SM_DIVAR"}
 	b := &bfforge.Donor{Programmer: []byte("loaderBBB"), CPUName: "SM_DIVAR"}
 
@@ -80,6 +80,39 @@ func TestMultipleBuildsAndDedupe(t *testing.T) {
 	}
 	if _, _, err := lib.FindLoader(fam, "nope"); err == nil {
 		t.Error("expected error for unknown build id")
+	}
+}
+
+// LoadersForCPU is the emergent device↔loader bridge: a full donor establishes
+// the cpu_name↔JTAG link, which then pulls in a bare fhprg loader that shares the
+// JTAG but carries no cpu_name of its own — and one cpu_name may span two JTAGs.
+func TestLoadersForCPUBridge(t *testing.T) {
+	lib := Open(t.TempDir())
+	divarA := catalog.Family{Vendor: "motorola", JTAGID: "0016F0E1"}
+	divarB := catalog.Family{Vendor: "motorola", JTAGID: "001B80E1"} // same cpu, other silicon
+	// Full donor on JTAG A carries the cpu_name label and a low SW_ID.
+	lib.AddLoader(divarA, &bfforge.Donor{Programmer: []byte("A-full"), CPUName: "SM_DIVAR"}, "blankflash_devon_X.zip")
+	// Bare fhprg on the same JTAG A: no cpu_name, but must be reachable via the bridge.
+	bare, _ := lib.AddLoader(divarA, &bfforge.Donor{Programmer: []byte("A-bare")}, "0016f0e1_bkerler.bin")
+	_ = bare
+	// Full donor on JTAG B under the same cpu_name.
+	lib.AddLoader(divarB, &bfforge.Donor{Programmer: []byte("B-full"), CPUName: "SM_DIVAR"}, "blankflash_hawao_Y.zip")
+
+	got := lib.LoadersForCPU("motorola", "SM_DIVAR")
+	if len(got) != 3 {
+		t.Fatalf("bridge should reach all 3 loaders (2 full + 1 bare across 2 JTAGs), got %d: %+v", len(got), got)
+	}
+	if !lib.HasLoaderForCPU("motorola", "SM_DIVAR") {
+		t.Error("HasLoaderForCPU should be true")
+	}
+	if lib.HasLoaderForCPU("motorola", "SM_UNKNOWN") {
+		t.Error("unknown cpu_name should not resolve")
+	}
+	// A bare loader whose JTAG no cpu_name ever labeled must NOT be reached.
+	lib.AddLoader(catalog.Family{Vendor: "motorola", JTAGID: "00000000"},
+		&bfforge.Donor{Programmer: []byte("orphan")}, "orphan.bin")
+	if n := len(lib.LoadersForCPU("motorola", "SM_DIVAR")); n != 3 {
+		t.Errorf("orphan JTAG leaked into cpu bridge: got %d", n)
 	}
 }
 

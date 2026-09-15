@@ -39,8 +39,8 @@ func TestLoadAndLookup(t *testing.T) {
 	if d.Vendor != "motorola" || d.CPUName != "SM_DIVAR" {
 		t.Errorf("fields not parsed: %+v", d)
 	}
-	if got := d.Family(); got.Vendor != "motorola" || got.CPUName != "SM_DIVAR" {
-		t.Errorf("family: %v", got)
+	if got := d.CPUFamily(); got != "motorola/SM_DIVAR" {
+		t.Errorf("cpu family: %v", got)
 	}
 	if len(d.Models) != 1 || d.Models[0] != "XT2413" {
 		t.Errorf("models: %v", d.Models)
@@ -51,34 +51,10 @@ func TestLoadAndLookup(t *testing.T) {
 	}
 }
 
-func TestResolveFamilyUnambiguous(t *testing.T) {
-	c, _ := Load(writeCatalog(t, map[string]string{"a.yaml": moto}))
-	fam, err := c.ResolveFamily("SM_DIVAR", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fam.Vendor != "motorola" {
-		t.Errorf("got %v", fam)
-	}
-	if _, err := c.ResolveFamily("SM_UNKNOWN", ""); err == nil {
-		t.Error("expected error for unknown cpu_name")
-	}
-}
-
-func TestResolveFamilyAmbiguous(t *testing.T) {
-	c, _ := Load(writeCatalog(t, map[string]string{"a.yaml": moto, "b.yaml": other}))
-	if _, err := c.ResolveFamily("SM_DIVAR", ""); err == nil {
-		t.Error("expected ambiguity error when cpu_name spans vendors")
-	}
-	fam, err := c.ResolveFamily("SM_DIVAR", "acme")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fam.Vendor != "acme" {
-		t.Errorf("hint ignored: %v", fam)
-	}
-	if _, err := c.ResolveFamily("SM_DIVAR", "nope"); err == nil {
-		t.Error("expected error for hint not owning the cpu_name")
+func TestFamilyStringIsJTAGKeyed(t *testing.T) {
+	f := Family{Vendor: "motorola", JTAGID: "0016F0E1"}
+	if f.String() != "motorola/0016F0E1" {
+		t.Errorf("family key should be vendor/JTAG: %q", f.String())
 	}
 }
 
