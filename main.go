@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -21,6 +23,7 @@ import (
 	"blankflash-forge/internal/mtk"
 	"blankflash-forge/internal/qcdt"
 	"blankflash-forge/internal/secboot"
+	"blankflash-forge/internal/upstream"
 	"blankflash-forge/internal/vendor"
 )
 
@@ -696,7 +699,106 @@ func newCatalogFamilyCmd() *cobra.Command {
 
 func newLibraryCmd() *cobra.Command {
 	c := &cobra.Command{Use: "library", Short: "manage the local loader + stock store"}
-	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryListCmd())
+	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryListCmd(), newLibrarySyncCmd())
+	return c
+}
+
+// newLibrarySyncCmd pulls signed loaders from the upstream bkerler/Loaders DB
+// (the only network path in the tool) and ingests them keyed by JTAG_ID.
+func newLibrarySyncCmd() *cobra.Command {
+	var vendorID string
+	var dryRun, includeVariants bool
+	var limit int
+	c := &cobra.Command{
+		Use:   "sync",
+		Short: "fetch signed loaders from the upstream bkerler/Loaders database",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			drv, ok := vendor.For(vendorID)
+			if !ok {
+				return fmt.Errorf("no vendor driver for %q", vendorID)
+			}
+			dir, ok := upstream.VendorDir[vendorID]
+			if !ok {
+				return fmt.Errorf("no upstream directory mapped for vendor %q", vendorID)
+			}
+			oems := drv.OEMIDs()
+			if len(oems) == 0 {
+				return fmt.Errorf("vendor %q declares no OEM_IDs; cannot filter upstream loaders safely", vendorID)
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+			defer cancel()
+			entries, err := upstream.List(ctx, dir, oems)
+			if err != nil {
+				return err
+			}
+			// Stock (unpatched) loaders first; peek/edlauth research builds only
+			// with --include-variants (they won't authenticate on secure boot).
+			var todo []upstream.Entry
+			for _, e := range entries {
+				if e.Stock() || includeVariants {
+					todo = append(todo, e)
+				}
+			}
+			sort.Slice(todo, func(i, j int) bool { return todo[i].Name < todo[j].Name })
+			fmt.Printf("upstream %s/%s: %d loaders match OEM %v (%d after variant filter)\n",
+				"bkerler/Loaders", dir, len(entries), oems, len(todo))
+
+			lib := library.Open(libraryDir())
+			var added, dup, skipped int
+			for i, e := range todo {
+				if limit > 0 && i >= limit {
+					break
+				}
+				tag := e.JTAGID
+				if e.Variant != "" {
+					tag += " [" + e.Variant + "]"
+				}
+				if dryRun {
+					fmt.Printf("  would fetch %s  JTAG=%s OEM=%s %dB\n", e.Name, e.JTAGID, e.OEMID, e.Size)
+					continue
+				}
+				blob, err := upstream.Download(ctx, e)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ! %s: %v\n", e.Name, err)
+					skipped++
+					continue
+				}
+				id, err := secboot.FromELF(blob)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ! %s: unparseable loader cert, skipping: %v\n", e.Name, err)
+					skipped++
+					continue
+				}
+				// The cert is authoritative over the filename; key on it.
+				fam := catalog.Family{Vendor: vendorID, JTAGID: id.JTAGID}
+				donor := &bfforge.Donor{Programmer: blob, Source: "bkerler/Loaders/" + dir + "/" + e.Name}
+				before := len(lib.Builds(fam))
+				ref, err := lib.AddLoader(fam, donor, e.Name)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ! %s: %v\n", e.Name, err)
+					skipped++
+					continue
+				}
+				if len(lib.Builds(fam)) == before {
+					dup++
+					continue
+				}
+				added++
+				fmt.Printf("  + %s@%s  JTAG=%s OEM=%s SW_ID=%d %dB\n",
+					fam, ref.Build, id.JTAGID, id.OEMID, id.SWID, len(blob))
+			}
+			if dryRun {
+				fmt.Printf("dry run: %d loaders would be fetched\n", len(todo))
+			} else {
+				fmt.Printf("synced: %d added, %d already present, %d skipped\n", added, dup, skipped)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&vendorID, "vendor", "motorola", "vendor id to sync (maps to an upstream directory)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "list what would be fetched without downloading")
+	c.Flags().BoolVar(&includeVariants, "include-variants", false, "also fetch peek/edlauth research builds (won't authenticate on secure boot)")
+	c.Flags().IntVar(&limit, "limit", 0, "max loaders to ingest (0 = all)")
 	return c
 }
 
@@ -719,20 +821,27 @@ func newLibraryAddLoaderCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The loader keys on the silicon it authenticates against (JTAG_ID from
-			// the cert), not the qboot cpu_name label — so a bare fhprg with no
-			// index.xml still places cleanly. cpu_name is kept as metadata.
-			id, err := secboot.FromELF(d.Programmer)
-			if err != nil {
-				return fmt.Errorf("cannot read loader identity (JTAG_ID) from cert: %w", err)
-			}
 			// Vendor comes from the detected package format (or --vendor); the loader
 			// need not be pre-catalogued — the catalog is for targets/derive.
 			vendorID := vendorHint
 			if vendorID == "" {
 				vendorID = drv.ID()
 			}
-			fam := catalog.Family{Vendor: vendorID, JTAGID: id.JTAGID}
+			// Key on the silicon the loader authenticates against (JTAG_ID from the
+			// cert), not the qboot cpu_name label. A 32-bit/eMMC loader whose cert
+			// our secboot can't parse falls back to keying on cpu_name (needs the
+			// donor's index.xml); a bare fhprg with neither cannot be placed.
+			var swid uint64
+			key := ""
+			if id, err := secboot.FromELF(d.Programmer); err == nil {
+				key, swid = id.JTAGID, id.SWID
+			} else if d.CPUName != "" {
+				key = d.CPUName
+				fmt.Fprintf(os.Stderr, "  ! cert unparseable (%v); keying on cpu_name %q\n", err, d.CPUName)
+			} else {
+				return fmt.Errorf("cannot read loader JTAG_ID from cert and no cpu.name to fall back on: %w", err)
+			}
+			fam := catalog.Family{Vendor: vendorID, JTAGID: key}
 			ref, err := library.Open(libraryDir()).AddLoader(fam, d, args[0])
 			if err != nil {
 				return err
@@ -744,7 +853,7 @@ func newLibraryAddLoaderCmd() *cobra.Command {
 				}
 			}
 			fmt.Printf("stored loader %s@%s (cpu.name=%q storage=%s SW_ID=%d, %dB, sha256=%s)%s\n",
-				fam, ref.Build, d.CPUName, d.Storage, id.SWID, len(d.Programmer), ref.Meta.SHA256[:12], note)
+				fam, ref.Build, d.CPUName, d.Storage, swid, len(d.Programmer), ref.Meta.SHA256[:12], note)
 			return nil
 		},
 	}
