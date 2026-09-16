@@ -61,7 +61,7 @@ devices:
       vendor: motorola
       cpu_name: SM7150
       jtag_id:
-        - "001360E1"
+        - 000E60E1
       soc: ""
       models: []
       storage:
@@ -145,6 +145,8 @@ devices:
       name: Moto G Play 2024
       vendor: motorola
       cpu_name: SM_DIVAR
+      jtag_id:
+        - 001B80E1
       soc: SM6225 (Snapdragon 680)
       models:
         - XT2413
@@ -164,7 +166,7 @@ devices:
       vendor: motorola
       cpu_name: SM_DIVAR
       jtag_id:
-        - 0016F0E1
+        - 001B80E1
       soc: SM6225 (Snapdragon 680)
       models:
         - XT2221
@@ -253,6 +255,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAMORTA_H
+      jtag_id:
+        - "001360E1"
       soc: Qualcomm SM6115 Snapdragon 662
       models: []
       storage:
@@ -388,6 +392,8 @@ devices:
       name: moto g53 5G
       vendor: motorola
       cpu_name: SM_MANNAR
+      jtag_id:
+        - 0016F0E1
       soc: Qualcomm SM4350 Snapdragon 480
       models:
         - XT2335
@@ -397,6 +403,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_MANNAR
+      jtag_id:
+        - 0016F0E1
       soc: Qualcomm SM4350 Snapdragon 480
       models: []
       storage:
@@ -618,6 +626,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_WAIPIO
+      jtag_id:
+        - "001870E1"
       soc: ""
       models: []
       storage:
@@ -626,6 +636,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_WAIPIO
+      jtag_id:
+        - "001870E1"
       soc: ""
       models: []
       storage:
