@@ -179,3 +179,90 @@ func FuzzRoundtrip(f *testing.F) {
 		}
 	})
 }
+
+// A forged recipe must carry the donor's backup/restore directives. Every
+// genuine Motorola blankflash brackets the flash with them to preserve the
+// partitions holding per-device state; a package that drops them can lose that
+// state when the GPT it flashes moves those partitions.
+func TestForgeCarriesDonorBackupDirectives(t *testing.T) {
+	donorRecipe := []byte(`<?xml version="1.0" ?>
+<recipe>
+	<backup name="cid"/>
+	<backup name="frp"/>
+	<backup name="utags"/>
+	<backup name="xbl_a"        skip="true"/>
+	<backup commit="1"/>
+	<configure MemoryName="UFS" SkipStorageInit="1"/>
+	<flash partition="xbl_a" filename="xbl.elf" verbose="true"/>
+	<restore dummy="foo"/>
+</recipe>`)
+	d := &Donor{
+		Programmer: []byte("LOADER"),
+		Recipes:    map[string][]byte{"default.xml": donorRecipe},
+	}
+	tgt := &Target{
+		Parts:    map[string][]byte{"xbl.elf": []byte("XBL")},
+		FlashMap: map[string]string{"xbl": "xbl.elf"},
+		GPT:      []byte("GPT"),
+		Storage:  "ufs",
+	}
+	res, err := Forge(d, tgt, "a", "ufs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := Parse(res.Singleimage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recipe string
+	for _, r := range recs {
+		if r.Name == "default.xml" {
+			recipe = string(r.Data)
+		}
+	}
+	if recipe == "" {
+		t.Fatal("no default.xml in the forged package")
+	}
+	for _, want := range []string{
+		`<backup name="cid"/>`,
+		`<backup name="frp"/>`,
+		`<backup name="utags"/>`,
+		`<backup commit="1"/>`,
+		`<restore dummy="foo"/>`,
+	} {
+		if !strings.Contains(recipe, want) {
+			t.Errorf("forged recipe dropped %s\n%s", want, recipe)
+		}
+	}
+	// Backups must precede the flash steps, and the restore must follow them.
+	if strings.Index(recipe, `<backup name="cid"/>`) > strings.Index(recipe, "<flash ") {
+		t.Error("backups must come before the flash steps")
+	}
+	if strings.Index(recipe, "<restore") < strings.LastIndex(recipe, "<flash ") {
+		t.Error("restore must come after the flash steps")
+	}
+}
+
+// A donor with no recipe must be reported, not silently forged without the
+// protection.
+func TestForgeWarnsWhenDonorHasNoBackups(t *testing.T) {
+	d := &Donor{Programmer: []byte("LOADER")}
+	tgt := &Target{
+		Parts:    map[string][]byte{"xbl.elf": []byte("XBL")},
+		FlashMap: map[string]string{"xbl": "xbl.elf"},
+		GPT:      []byte("GPT"),
+	}
+	res, err := Forge(d, tgt, "a", "emmc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warned bool
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "<backup>") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a warning about missing backup directives, got %v", res.Warnings)
+	}
+}

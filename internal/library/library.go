@@ -75,6 +75,7 @@ func (l *Library) familyLoaderDir(f catalog.Family) string {
 func (l *Library) buildDir(f catalog.Family, build string) string {
 	return filepath.Join(l.familyLoaderDir(f), build)
 }
+
 // stockDeviceDir holds one subdirectory per distinct stock build of a device,
 // mirroring how loaders are kept per build within a family.
 func (l *Library) stockDeviceDir(vendor, codename string) string {
@@ -182,12 +183,20 @@ func (l *Library) AddLoader(f catalog.Family, d *blankflash.Donor, source string
 	sha := hex.EncodeToString(sum[:])
 	for _, ref := range l.Builds(f) { // dedupe identical loaders across build ids
 		if ref.Meta.SHA256 == sha {
+			// Backfill the donor's recipe onto loaders stored before it was
+			// kept, so an existing library gains it without re-importing.
+			if err := writeRecipes(l.buildDir(f, ref.Build), d.Recipes); err != nil {
+				return nil, err
+			}
 			return &ref, nil
 		}
 	}
 	build := buildID(source, sha)
 	dir := l.buildDir(f, build)
 	if err := writeFile(filepath.Join(dir, "programmer.elf"), d.Programmer); err != nil {
+		return nil, err
+	}
+	if err := writeRecipes(dir, d.Recipes); err != nil {
 		return nil, err
 	}
 	qbootNames := make([]string, 0, len(d.Qboot))
@@ -213,6 +222,37 @@ func (l *Library) AddLoader(f catalog.Family, d *blankflash.Donor, source string
 		return nil, err
 	}
 	return &LoaderRef{Family: f, Build: build, Meta: meta}, nil
+}
+
+// writeRecipes keeps the donor's own qboot recipe alongside its loader. The
+// recipe carries the backup/restore directives that preserve per-device
+// partitions across a flash, which a forged package must reproduce; without it
+// stored here, a loader taken from the library cannot supply them.
+func writeRecipes(dir string, recipes map[string][]byte) error {
+	for n, b := range recipes {
+		if err := writeFile(filepath.Join(dir, "recipe", filepath.Base(n)), b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readRecipes restores what writeRecipes kept.
+func readRecipes(dir string) map[string][]byte {
+	entries, err := os.ReadDir(filepath.Join(dir, "recipe"))
+	if err != nil {
+		return nil
+	}
+	out := map[string][]byte{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, "recipe", e.Name())); err == nil {
+			out[e.Name()] = b
+		}
+	}
+	return out
 }
 
 func (l *Library) HasLoader(f catalog.Family) bool { return len(l.Builds(f)) > 0 }
@@ -286,6 +326,7 @@ func (l *Library) FindLoader(f catalog.Family, build string) (*blankflash.Donor,
 	d := &blankflash.Donor{
 		Programmer: prog,
 		Qboot:      qboot,
+		Recipes:    readRecipes(dir),
 		CPUName:    ref.Meta.CPUName,
 		Storage:    ref.Meta.Storage,
 		Source:     "library:" + f.String() + "@" + ref.Build,
