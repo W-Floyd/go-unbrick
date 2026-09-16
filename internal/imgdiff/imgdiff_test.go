@@ -189,23 +189,111 @@ func TestNameTableReorder(t *testing.T) {
 	}
 }
 
-// Images whose segment layouts do not correspond cannot be diffed per segment;
-// saying so is better than reporting a meaningless number.
-func TestIncomparableLayouts(t *testing.T) {
-	a := elf([]seg{{hashFlags, 0x1000, []byte("SIG")}, {0, 0x2000, []byte("SHORT")}}, nil)
-	b := elf([]seg{{hashFlags, 0x1000, []byte("SIG")}, {0, 0x2000, []byte("MUCH LONGER PAYLOAD")}}, nil)
+// A segment that grew or shrank at the same load address is still the same
+// segment: compare the common prefix rather than refusing the whole image.
+func TestResizedSegmentStillCompares(t *testing.T) {
+	sig := []byte("SIG")
+	a := elf([]seg{{hashFlags, 0x1000, sig}, {0, 0x2000, []byte("SHORT")}}, nil)
+	b := elf([]seg{{hashFlags, 0x1000, sig}, {0, 0x2000, []byte("SHORTER-BUT-LONGER")}}, nil)
+	r, err := Compare(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != Changed {
+		t.Fatalf("got %q want %q", r.Verdict, Changed)
+	}
+	var found bool
+	for _, s := range r.Segments {
+		if s.Hash {
+			continue
+		}
+		found = true
+		if !s.Resized() {
+			t.Errorf("segment should report as resized: %+v", s)
+		}
+		if s.Compared != 5 {
+			t.Errorf("should compare the common prefix (5 bytes), got %d", s.Compared)
+		}
+		if s.Differing != 0 {
+			t.Errorf("the shared prefix is identical, got %d differing", s.Differing)
+		}
+	}
+	if !found {
+		t.Fatal("expected a payload segment")
+	}
+}
+
+// Segments are aligned on load address, so an inserted segment does not shift
+// every later one out of correspondence.
+func TestAlignsOnAddressNotIndex(t *testing.T) {
+	sig := []byte("SIG")
+	pay := []byte("PAYLOAD")
+	a := elf([]seg{{hashFlags, 0x1000, sig}, {0, 0x3000, pay}}, nil)
+	// b inserts a segment ahead of it, so the same payload sits one index later.
+	b := elf([]seg{{hashFlags, 0x1000, sig}, {0, 0x2000, []byte("NEW")}, {0, 0x3000, pay}}, nil)
+	r, err := Compare(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paired, onlyB int
+	for _, s := range r.Segments {
+		switch {
+		case s.Hash:
+		case s.OnlyB():
+			onlyB++
+		case s.IndexA >= 0 && s.IndexB >= 0:
+			paired++
+			if s.Differing != 0 {
+				t.Errorf("0x3000 should pair and match, got %d differing", s.Differing)
+			}
+			if s.IndexA == s.IndexB {
+				t.Errorf("expected differing indices for the same address: %+v", s)
+			}
+		}
+	}
+	if paired != 1 || onlyB != 1 {
+		t.Errorf("expected one paired and one added segment, got %d/%d", paired, onlyB)
+	}
+}
+
+// The hash segment pairs with the other image's even when a rebuild moves it,
+// or the signature reads as one segment removed and another added.
+func TestHashSegmentPairsAcrossAddresses(t *testing.T) {
+	a := elf([]seg{{hashFlags, 0x56000, []byte("SIG-A")}, {0, 0x1000, []byte("P")}}, nil)
+	b := elf([]seg{{hashFlags, 0x53000, []byte("SIG-B")}, {0, 0x1000, []byte("P")}}, nil)
+	r, err := Compare(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hashes int
+	for _, s := range r.Segments {
+		if !s.Hash {
+			continue
+		}
+		hashes++
+		if s.OnlyA() || s.OnlyB() {
+			t.Error("the hash segment should pair, not read as added and removed")
+		}
+	}
+	if hashes != 1 {
+		t.Errorf("expected exactly one hash segment entry, got %d", hashes)
+	}
+	if r.Verdict != ResignOnly {
+		t.Errorf("payload is identical; got %q want %q", r.Verdict, ResignOnly)
+	}
+}
+
+// Only when nothing loads at a shared address are two images genuinely
+// incomparable.
+func TestIncomparableWhenNoSharedAddress(t *testing.T) {
+	a := elf([]seg{{0, 0x1000, []byte("AAAA")}}, nil)
+	b := elf([]seg{{0, 0x9000, []byte("BBBB")}}, nil)
 	r, err := Compare(a, b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.Verdict != Incomparable {
 		t.Errorf("got %q want %q", r.Verdict, Incomparable)
-	}
-
-	c := elf([]seg{{hashFlags, 0x1000, []byte("SIG")}}, nil)
-	r2, _ := Compare(a, c)
-	if r2.Verdict != Incomparable {
-		t.Errorf("differing segment counts: got %q", r2.Verdict)
 	}
 }
 

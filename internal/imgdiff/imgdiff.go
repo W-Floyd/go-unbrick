@@ -45,12 +45,17 @@ type Run struct {
 	Opaque     bool // high entropy: key material or hashes, expected to differ
 }
 
-// SegmentDiff is the comparison of one program-header segment.
+// SegmentDiff is the comparison of one program-header segment, aligned on load
+// address. IndexA or IndexB is -1 when the segment exists on only one side.
 type SegmentDiff struct {
-	Index        int
-	Paddr        uint64
-	Size         int
+	IndexA, IndexB int
+	Paddr          uint64
+	// SizeA and SizeB are the two sides' lengths; they can differ, in which
+	// case only the common prefix was compared.
+	SizeA, SizeB int
 	Hash         bool // the Qualcomm hash-table segment
+	// Compared is how many bytes were compared: the shorter of the two.
+	Compared     int
 	Differing    int
 	Runs         []Run
 	NamesA       []string // NUL-separated name table, if the segment holds one
@@ -61,6 +66,17 @@ type SegmentDiff struct {
 	// segment whose format none of them recognizes has none, and only the
 	// byte-level findings above apply.
 	Reports []Report
+}
+
+// OnlyA reports a segment present in the first image alone, and OnlyB the
+// reverse -- a segment added or removed by the rebuild rather than changed.
+func (s SegmentDiff) OnlyA() bool { return s.IndexB < 0 }
+func (s SegmentDiff) OnlyB() bool { return s.IndexA < 0 }
+
+// Resized reports that both sides exist but hold different lengths, so only the
+// common prefix was compared.
+func (s SegmentDiff) Resized() bool {
+	return s.IndexA >= 0 && s.IndexB >= 0 && s.SizeA != s.SizeB
 }
 
 // Opaque reports whether every differing run is high-entropy. Such bytes carry
@@ -104,6 +120,15 @@ type Result struct {
 	Note    string
 }
 
+// segOrder sorts on the first image's index, falling back to the second's for
+// segments it alone holds.
+func segOrder(s SegmentDiff) int {
+	if s.IndexA >= 0 {
+		return s.IndexA
+	}
+	return 1<<20 + s.IndexB
+}
+
 // chunks lists an image's segments for the analyzers.
 func chunks(img []byte) []Chunk {
 	segs, err := secboot.Segments(img)
@@ -128,42 +153,60 @@ func Compare(a, b []byte) (*Result, error) {
 		return nil, fmt.Errorf("second image: %w", err)
 	}
 	res := &Result{SizeA: len(a), SizeB: len(b), RawDiffering: countDiff(a, b)}
-	if len(segsA) != len(segsB) {
+
+	pairs := pairByPaddr(segsA, segsB)
+	if aligned(pairs) == 0 {
+		// Nothing loads at a shared address: these are not two builds of one
+		// image, and a per-segment diff would be meaningless.
 		res.Verdict = Incomparable
-		res.Note = fmt.Sprintf("segment counts differ (%d vs %d); these are not two builds of one image",
-			len(segsA), len(segsB))
+		res.Note = fmt.Sprintf("no segment loads at a shared address (%d vs %d segments); "+
+			"these are not two builds of one image", len(segsA), len(segsB))
 		res.Reports = analyzeImages(chunks(a), chunks(b))
 		return res, nil
 	}
 
 	payloadChanged, signatureChanged := false, false
-	for i := range segsA {
-		sa, sb := segsA[i], segsB[i]
-		if sa.Filesz != sb.Filesz || sa.Paddr != sb.Paddr {
-			res.Verdict = Incomparable
-			res.Note = fmt.Sprintf("segment %d has a different size or load address; layouts do not correspond", i)
-			res.Reports = analyzeImages(chunks(a), chunks(b))
-			return res, nil
+	for _, p := range pairs {
+		sd := SegmentDiff{IndexA: -1, IndexB: -1}
+		switch {
+		case p.a != nil && p.b != nil:
+			sd.IndexA, sd.IndexB = p.a.Index, p.b.Index
+			sd.Paddr, sd.Hash = p.a.Paddr, p.a.Hash
+			da := a[p.a.Offset : p.a.Offset+p.a.Filesz]
+			db := b[p.b.Offset : p.b.Offset+p.b.Filesz]
+			sd.SizeA, sd.SizeB = len(da), len(db)
+			sd.Compared = min(len(da), len(db))
+			sd.Differing = countDiff(da[:sd.Compared], db[:sd.Compared])
+			if sd.Differing == 0 && sd.SizeA == sd.SizeB {
+				res.Segments = append(res.Segments, sd)
+				continue
+			}
+			sd.Runs = runs(da, db)
+			sd.NamesA, sd.NamesB = nameTable(da), nameTable(db)
+			sd.NamesEqual, sd.NamesOrdered = compareNames(sd.NamesA, sd.NamesB)
+			sd.Reports = analyze(Chunk{da, p.a.Paddr}, Chunk{db, p.b.Paddr})
+		case p.a != nil:
+			sd.IndexA, sd.Paddr, sd.Hash = p.a.Index, p.a.Paddr, p.a.Hash
+			sd.SizeA = int(p.a.Filesz)
+		default:
+			sd.IndexB, sd.Paddr, sd.Hash = p.b.Index, p.b.Paddr, p.b.Hash
+			sd.SizeB = int(p.b.Filesz)
 		}
-		da := a[sa.Offset : sa.Offset+sa.Filesz]
-		db := b[sb.Offset : sb.Offset+sb.Filesz]
-		sd := SegmentDiff{Index: i, Paddr: sa.Paddr, Size: len(da), Hash: sa.Hash}
-		sd.Differing = countDiff(da, db)
-		if sd.Differing == 0 {
-			res.Segments = append(res.Segments, sd)
-			continue
-		}
-		sd.Runs = runs(da, db)
-		sd.NamesA, sd.NamesB = nameTable(da), nameTable(db)
-		sd.NamesEqual, sd.NamesOrdered = compareNames(sd.NamesA, sd.NamesB)
-		sd.Reports = analyze(Chunk{da, sa.Paddr}, Chunk{db, sb.Paddr})
 		res.Segments = append(res.Segments, sd)
-		if sa.Hash {
+		// A segment added, removed, resized or changed is a payload change --
+		// unless it is the hash segment, which every build rewrites.
+		if sd.Hash {
 			signatureChanged = true
 		} else {
 			payloadChanged = true
 		}
 	}
+
+	// Pairing puts the hash segment first; present segments in program-header
+	// order instead, with segments only the second image has at the end.
+	sort.Slice(res.Segments, func(i, j int) bool {
+		return segOrder(res.Segments[i]) < segOrder(res.Segments[j])
+	})
 
 	res.OutsideDiffering, res.StampA, res.StampB = outside(a, b, segsA)
 

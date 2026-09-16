@@ -122,8 +122,18 @@ func newDiffCmd() *cobra.Command {
 				if s.Hash {
 					kind = "hash/sig"
 				}
-				if s.Differing == 0 {
-					fmt.Printf("  seg %d %-8s paddr=0x%-9x %7d bytes  identical\n", s.Index, kind, s.Paddr, s.Size)
+				switch {
+				case s.OnlyA():
+					fmt.Printf("  seg %-7s %-8s paddr=0x%-9x %7d bytes  only in first\n",
+						segLabel(s), kind, s.Paddr, s.SizeA)
+					continue
+				case s.OnlyB():
+					fmt.Printf("  seg %-7s %-8s paddr=0x%-9x %7d bytes  only in second\n",
+						segLabel(s), kind, s.Paddr, s.SizeB)
+					continue
+				case s.Differing == 0 && !s.Resized():
+					fmt.Printf("  seg %-7s %-8s paddr=0x%-9x %7d bytes  identical\n",
+						segLabel(s), kind, s.Paddr, s.SizeA)
 					continue
 				}
 				note := ""
@@ -137,8 +147,12 @@ func newDiffCmd() *cobra.Command {
 				case s.NamesEqual && !s.NamesOrdered:
 					note = fmt.Sprintf("  (same %d names, reordered)", len(s.NamesA))
 				}
-				fmt.Printf("  seg %d %-8s paddr=0x%-9x %7d bytes  %d differing%s\n",
-					s.Index, kind, s.Paddr, s.Size, s.Differing, note)
+				size := fmt.Sprintf("%7d", s.SizeA)
+				if s.Resized() {
+					size = fmt.Sprintf("%d->%d", s.SizeA, s.SizeB)
+				}
+				fmt.Printf("  seg %-7s %-8s paddr=0x%-9x %7s bytes  %d differing%s\n",
+					segLabel(s), kind, s.Paddr, size, s.Differing, note)
 				if !verbose {
 					continue
 				}
@@ -181,6 +195,21 @@ func newDiffCmd() *cobra.Command {
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy")
 	return c
+}
+
+// segLabel names a segment by its program-header index on each side. They
+// diverge when a rebuild inserts or drops one, which is why segments are
+// aligned on load address rather than index.
+func segLabel(s imgdiff.SegmentDiff) string {
+	switch {
+	case s.OnlyA():
+		return fmt.Sprintf("%d/-", s.IndexA)
+	case s.OnlyB():
+		return fmt.Sprintf("-/%d", s.IndexB)
+	case s.IndexA != s.IndexB:
+		return fmt.Sprintf("%d/%d", s.IndexA, s.IndexB)
+	}
+	return fmt.Sprintf("%d", s.IndexA)
 }
 
 // printReport renders an analyzer's finding. The command prints what an
