@@ -2,6 +2,8 @@ package library
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go-unbrick/internal/blankflash"
@@ -147,6 +149,40 @@ func TestCandidateLoadersByJTAG(t *testing.T) {
 	}
 }
 
+// A device with a recorded JTAG_ID must still reach a loader that could only be
+// filed under its cpu_name (unparseable cert), or pinning the JTAG strands it.
+func TestCandidateLoadersFallsBackWhenJTAGFamilyEmpty(t *testing.T) {
+	lib := Open(t.TempDir())
+	fam := catalog.Family{Vendor: "motorola", JTAGID: "SM_WAIPIO"} // cpu_name key
+	if _, err := lib.AddLoader(fam, &blankflash.Donor{
+		Programmer: []byte("LOADER"),
+		CPUName:    "SM_WAIPIO",
+	}, "blankflash_hiphi.zip"); err != nil {
+		t.Fatal(err)
+	}
+	dev := &catalog.Device{
+		Codename: "hiphi", Vendor: "motorola",
+		CPUName: "SM_WAIPIO", JTAGIDs: []string{"001870E1"},
+	}
+	if got := lib.CandidateLoaders(dev); len(got) == 0 {
+		t.Error("a pinned JTAG_ID with no JTAG-keyed loader should still reach the cpu_name bridge")
+	}
+
+	// But where the JTAG family does hold loaders, those answer and the lossier
+	// bridge is not consulted.
+	jfam := catalog.Family{Vendor: "motorola", JTAGID: "001870E1"}
+	if _, err := lib.AddLoader(jfam, &blankflash.Donor{
+		Programmer: []byte("EXACT"),
+		CPUName:    "SM_WAIPIO",
+	}, "blankflash_exact.zip"); err != nil {
+		t.Fatal(err)
+	}
+	got := lib.CandidateLoaders(dev)
+	if len(got) != 1 || got[0].Family.JTAGID != "001870E1" {
+		t.Errorf("JTAG-keyed loader should win alone, got %+v", got)
+	}
+}
+
 func TestStockRoundtrip(t *testing.T) {
 	lib := Open(t.TempDir())
 	if lib.HasStock("motorola", "fogona") {
@@ -159,12 +195,15 @@ func TestStockRoundtrip(t *testing.T) {
 		Storage:  "emmc",
 		Source:   "dumps:/x",
 	}
-	if _, err := lib.AddStock("motorola", "fogona", tgt); err != nil {
+	if _, err := lib.AddStock("motorola", "fogona", "250831-abc", tgt); err != nil {
 		t.Fatal(err)
 	}
-	got, err := lib.FindStock("motorola", "fogona")
+	got, ref, err := lib.FindStock("motorola", "fogona", "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ref.Build != "250831-abc" {
+		t.Errorf("build id: got %q", ref.Build)
 	}
 	if !bytes.Equal(got.GPT, tgt.GPT) {
 		t.Error("gpt differs")
@@ -175,29 +214,109 @@ func TestStockRoundtrip(t *testing.T) {
 	if got.FlashMap["abl"] != "abl.elf" || got.Storage != "emmc" {
 		t.Errorf("stock meta not restored: %+v", got)
 	}
-	if refs := lib.Stock(); len(refs) != 1 || refs[0] != (StockRef{"motorola", "fogona"}) {
+	if refs := lib.Stock(); len(refs) != 1 || refs[0].Codename != "fogona" || refs[0].Build != "250831-abc" {
 		t.Errorf("Stock(): %v", refs)
 	}
 }
 
-// AddStock replaces wholesale: a part removed from a re-harvest must not linger.
-func TestStockReplaceDropsStale(t *testing.T) {
+// Distinct extracts are kept side by side -- the point of the catalogue -- and
+// each build keeps only its own parts, so a part absent from one build does not
+// leak in from another.
+func TestStockKeepsEveryBuild(t *testing.T) {
 	lib := Open(t.TempDir())
-	first := &blankflash.Target{
-		Parts:    map[string][]byte{"xbl.elf": []byte("X"), "stale.mbn": []byte("S")},
+	old := &blankflash.Target{
+		Parts:    map[string][]byte{"xbl.elf": []byte("X"), "only-old.mbn": []byte("S")},
 		FlashMap: map[string]string{"xbl": "xbl.elf"},
 	}
-	lib.AddStock("m", "d", first)
-	second := &blankflash.Target{
+	newer := &blankflash.Target{
 		Parts:    map[string][]byte{"xbl.elf": []byte("X2")},
 		FlashMap: map[string]string{"xbl": "xbl.elf"},
 	}
-	lib.AddStock("m", "d", second)
-	got, _ := lib.FindStock("m", "d")
-	if _, ok := got.Parts["stale.mbn"]; ok {
-		t.Error("stale part survived re-harvest")
+	if _, err := lib.AddStock("m", "d", "240823-aaa", old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lib.AddStock("m", "d", "250831-bbb", newer); err != nil {
+		t.Fatal(err)
+	}
+	if got := lib.StockBuilds("m", "d"); len(got) != 2 {
+		t.Fatalf("both builds should be kept, got %d", len(got))
+	}
+	// Default resolves to the newest, and carries none of the older build.
+	got, ref, _ := lib.FindStock("m", "d", "")
+	if ref.Build != "250831-bbb" {
+		t.Errorf("default should be newest, got %q", ref.Build)
+	}
+	if _, ok := got.Parts["only-old.mbn"]; ok {
+		t.Error("part leaked across builds")
 	}
 	if !bytes.Equal(got.Parts["xbl.elf"], []byte("X2")) {
-		t.Error("part not updated")
+		t.Error("wrong build's parts")
+	}
+	// The older build is still selectable and intact.
+	oldGot, oldRef, err := lib.FindStock("m", "d", "240823-aaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldRef.Build != "240823-aaa" || !bytes.Equal(oldGot.Parts["only-old.mbn"], []byte("S")) {
+		t.Error("older build not retrievable intact")
+	}
+	if _, _, err := lib.FindStock("m", "d", "nope"); err == nil {
+		t.Error("unknown build should error, not fall back")
+	}
+}
+
+// Re-importing identical bytes must not create a second build.
+func TestStockDedupesIdenticalImport(t *testing.T) {
+	lib := Open(t.TempDir())
+	mk := func() *blankflash.Target {
+		return &blankflash.Target{
+			Parts:    map[string][]byte{"xbl.elf": []byte("X")},
+			FlashMap: map[string]string{"xbl": "xbl.elf"},
+		}
+	}
+	if _, err := lib.AddStock("m", "d", "250831-bbb", mk()); err != nil {
+		t.Fatal(err)
+	}
+	// Same bytes arriving under a different build id is still the same extract.
+	ref, err := lib.AddStock("m", "d", "different-id", mk())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lib.StockBuilds("m", "d"); len(got) != 1 {
+		t.Errorf("identical import duplicated: %d builds", len(got))
+	}
+	if ref.Build != "250831-bbb" {
+		t.Errorf("dedupe should return the existing build, got %q", ref.Build)
+	}
+}
+
+// Stock stored under the old flat layout is moved into a build directory rather
+// than orphaned by the build-keyed one.
+func TestStockMigratesFlatLayout(t *testing.T) {
+	lib := Open(t.TempDir())
+	dev := lib.stockDeviceDir("motorola", "devon")
+	if err := lib.writeStock(dev, &blankflash.Target{
+		Parts:    map[string][]byte{"xbl.elf": []byte("LEGACY")},
+		FlashMap: map[string]string{"xbl": "xbl.elf"},
+		GPT:      []byte("G"),
+	}, StockMeta{Source: "bootloader.img", Storage: "ufs"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lib.migrateFlatStock("motorola", "devon"); err != nil {
+		t.Fatal(err)
+	}
+	builds := lib.StockBuilds("motorola", "devon")
+	if len(builds) != 1 {
+		t.Fatalf("expected 1 migrated build, got %d", len(builds))
+	}
+	got, _, err := lib.FindStock("motorola", "devon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Parts["xbl.elf"], []byte("LEGACY")) || got.Storage != "ufs" {
+		t.Errorf("migrated stock lost content: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dev, "meta.json")); !os.IsNotExist(err) {
+		t.Error("flat layout should be gone after migration")
 	}
 }

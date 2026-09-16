@@ -20,6 +20,8 @@ import (
 
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/efi"
+	"go-unbrick/internal/imgdiff"
 	"go-unbrick/internal/library"
 	"go-unbrick/internal/mediatek"
 	"go-unbrick/internal/qcdt"
@@ -75,8 +77,292 @@ func newRootCmd() *cobra.Command {
 		newUnpackCmd(), newPackCmd(), newIngestCmd(),
 		newHarvestCmd(), newForgeCmd(), newInspectCmd(),
 		newCatalogCmd(), newLibraryCmd(), newDeriveCmd(),
+		newStockCmd(), newEFICmd(), newDiffCmd(),
 	)
 	return root
+}
+
+// ---- diff ----
+
+// newDiffCmd compares two signed images in terms that survive re-signing. The
+// raw byte count is reported too, because seeing it next to the verdict is the
+// point: it is routinely an order of magnitude larger than the real change.
+func newDiffCmd() *cobra.Command {
+	var verbose bool
+	c := &cobra.Command{
+		Use:   "diff <a> <b>",
+		Short: "compare two signed images, separating re-signing from real change",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			b, err := os.ReadFile(args[1])
+			if err != nil {
+				return err
+			}
+			r, err := imgdiff.Compare(a, b)
+			if err != nil {
+				return err
+			}
+			rawPct := 0.0
+			if r.SizeA > 0 {
+				rawPct = 100 * float64(r.RawDiffering) / float64(r.SizeA)
+			}
+			fmt.Printf("%s vs %s\n", filepath.Base(args[0]), filepath.Base(args[1]))
+			fmt.Printf("  verdict: %s\n", r.Verdict)
+			if r.Note != "" {
+				fmt.Printf("  %s\n", r.Note)
+			}
+			fmt.Printf("  raw byte diff: %d of %d (%.1f%%) -- not a measure of change\n",
+				r.RawDiffering, r.SizeA, rawPct)
+			for _, s := range r.Segments {
+				kind := "payload"
+				if s.Hash {
+					kind = "hash/sig"
+				}
+				if s.Differing == 0 {
+					fmt.Printf("  seg %d %-8s paddr=0x%-9x %7d bytes  identical\n", s.Index, kind, s.Paddr, s.Size)
+					continue
+				}
+				note := ""
+				switch {
+				case s.Hash:
+					note = "  (re-signed; expected)"
+				case s.DevCfg != nil && s.DevCfg.Equivalent():
+					note = fmt.Sprintf("  (device config: %d values, all match)", s.DevCfg.ComparedValues)
+				case s.DevCfg != nil:
+					note = fmt.Sprintf("  (device config: %d of %d values differ)",
+						len(s.DevCfg.Values), s.DevCfg.ComparedValues)
+				case s.Opaque():
+					note = "  (opaque: compressed or key material)"
+				case s.NamesEqual && !s.NamesOrdered:
+					note = fmt.Sprintf("  (same %d names, reordered)", len(s.NamesA))
+				}
+				fmt.Printf("  seg %d %-8s paddr=0x%-9x %7d bytes  %d differing%s\n",
+					s.Index, kind, s.Paddr, s.Size, s.Differing, note)
+				if !verbose {
+					continue
+				}
+				for i, run := range s.Runs {
+					if i >= 6 {
+						fmt.Printf("      ... %d more runs\n", len(s.Runs)-6)
+						break
+					}
+					tag := "structured"
+					if run.Opaque {
+						tag = "opaque"
+					}
+					fmt.Printf("      +%-8d %7d bytes  entropy %.2f  %s\n", run.Start, run.Len, run.Entropy, tag)
+				}
+				if s.NamesEqual {
+					order := "same order"
+					if !s.NamesOrdered {
+						order = "reordered"
+					}
+					fmt.Printf("      name table: %d names, identical set, %s\n", len(s.NamesA), order)
+				}
+				if d := s.DevCfg; d != nil {
+					fmt.Printf("      device config: %d values compared, %d differ; index %s\n",
+						d.ComparedValues, len(d.Values), map[bool]string{true: "reordered", false: "stable"}[d.Reordered])
+					for _, v := range d.Values {
+						fmt.Printf("        %s\n", v)
+					}
+					for _, n := range d.NamesOnlyA {
+						fmt.Printf("        only in first:  %s\n", n)
+					}
+					for _, n := range d.NamesOnlyB {
+						fmt.Printf("        only in second: %s\n", n)
+					}
+				}
+			}
+			if d := r.DevCfg; d != nil {
+				fmt.Printf("  device config (compared independently of layout): %d values, %d differ\n",
+					d.ComparedValues, len(d.Values))
+				for _, v := range d.Values {
+					fmt.Printf("      %s\n", v)
+				}
+				for _, n := range d.NamesOnlyA {
+					fmt.Printf("      only in first:  %s\n", n)
+				}
+				for _, n := range d.NamesOnlyB {
+					fmt.Printf("      only in second: %s\n", n)
+				}
+			}
+			if r.OutsideDiffering > 0 {
+				fmt.Printf("  outside segments: %d differing\n", r.OutsideDiffering)
+				if r.StampA != "" || r.StampB != "" {
+					fmt.Printf("      %s\n      %s\n", r.StampA, r.StampB)
+				}
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy")
+	return c
+}
+
+// ---- stock package ----
+
+func newStockCmd() *cobra.Command {
+	c := &cobra.Command{Use: "stock", Short: "work with an OEM stock firmware package"}
+	c.AddCommand(newStockExtractCmd())
+	return c
+}
+
+func newStockExtractCmd() *cobra.Command {
+	var out string
+	var super bool
+	c := &cobra.Command{
+		Use:   "extract <stock.zip>",
+		Short: "write every partition image in a stock package to a directory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := args[0]
+			drv, _, ok := vendor.DetectStock(path)
+			if !ok {
+				return fmt.Errorf("unrecognized stock package (no vendor driver matched): %s", path)
+			}
+			ex, ok := drv.(vendor.StockExploder)
+			if !ok {
+				return fmt.Errorf("%s packages cannot be exploded yet: %w", drv.ID(), vendor.ErrUnsupported)
+			}
+			names, err := ex.ExplodeStock(path, out, vendor.ExplodeOptions{Super: super})
+			if err != nil {
+				// Partial output is still useful; only a total failure is fatal.
+				if len(names) == 0 {
+					return err
+				}
+				fmt.Fprintf(os.Stderr, "  ! %v\n", err)
+			}
+			for _, n := range names {
+				if fi, err := os.Stat(filepath.Join(out, n)); err == nil {
+					fmt.Printf("  %12d  %s\n", fi.Size(), n)
+				}
+			}
+			fmt.Printf("%d images (%s) -> %s\n", len(names), drv.ID(), out)
+			if !super {
+				fmt.Println("  (super image skipped; --super to join it)")
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&out, "out", "o", "", "output directory")
+	c.Flags().BoolVar(&super, "super", false, "also join and write the multi-gigabyte super image")
+	c.MarkFlagRequired("out")
+	return c
+}
+
+// ---- efi ----
+
+// efiInputs resolves any supported input to named images to scan: a stock
+// package explodes to its partitions, a SINGLE_N_LONELY container to its
+// records, and anything else (a bare abl.elf/xbl.elf, a raw dump) is itself.
+func efiInputs(path string) (map[string][]byte, error) {
+	if _, sp, ok := vendor.DetectStock(path); ok {
+		t, err := sp.HarvestStockPackage(path)
+		if err != nil {
+			return nil, err
+		}
+		return t.Parts, nil
+	}
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		out := map[string][]byte{}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if b, err := os.ReadFile(filepath.Join(path, e.Name())); err == nil {
+				out[e.Name()] = b
+			}
+		}
+		return out, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if blankflash.IsContainer(b) {
+		recs, err := blankflash.Parse(b)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string][]byte{}
+		for _, r := range recs {
+			if r.Name != blankflash.Trailer {
+				out[r.Name] = r.Data
+			}
+		}
+		return out, nil
+	}
+	return map[string][]byte{filepath.Base(path): b}, nil
+}
+
+func newEFICmd() *cobra.Command {
+	var out, guids string
+	c := &cobra.Command{
+		Use:   "efi <stock.zip | abl.elf | container | dir>",
+		Short: "list or extract the UEFI modules in a boot chain",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			imgs, err := efiInputs(args[0])
+			if err != nil {
+				return err
+			}
+			var names map[string]string
+			if guids != "" {
+				f, err := os.Open(guids)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				if names, err = efi.LoadGUIDNames(f); err != nil {
+					return err
+				}
+			}
+			total := 0
+			for _, img := range sortedKeys(imgs) {
+				vols := efi.Volumes(imgs[img])
+				if len(vols) == 0 {
+					continue
+				}
+				mods, err := efi.Extract(imgs[img])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ! %s: %v\n", img, err)
+					continue
+				}
+				efi.ApplyNames(mods, names)
+				fmt.Printf("%s: %d volume(s), %d modules\n", img, len(vols), len(mods))
+				for _, m := range mods {
+					if out == "" {
+						fmt.Printf("  %s  type=0x%02x %-32s %d bytes\n", m.GUID, m.Type, m.Name, len(m.Data))
+						continue
+					}
+					dst := filepath.Join(out, strings.TrimSuffix(img, filepath.Ext(img)), m.Filename())
+					if err := write(dst, m.Data); err != nil {
+						return err
+					}
+				}
+				total += len(mods)
+			}
+			if total == 0 {
+				fmt.Println("no UEFI firmware volumes found")
+				return nil
+			}
+			if out != "" {
+				fmt.Printf("%d modules -> %s\n", total, out)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&out, "out", "o", "", "extract modules to this directory (default: list only)")
+	c.Flags().StringVar(&guids, "guids", "", "CSV of guid,name to name modules that carry no UI section")
+	return c
 }
 
 // ---- shared helpers ----
@@ -656,17 +942,20 @@ func newCatalogStubCmd() *cobra.Command {
 // review the diff before committing.
 func newCatalogBackfillCmd() *cobra.Command {
 	var out string
-	var overwrite bool
+	var overwrite, fromStock bool
 	c := &cobra.Command{
 		Use:   "backfill",
-		Short: "record each device's jtag_id from library loaders provably its own (by source codename/model)",
+		Short: "record each device's jtag_id from its own stock, or from loaders provably its own",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cat, err := catalog.Load(catalogDir())
 			if err != nil {
 				return err
 			}
-			lib := library.Open(libraryDir())
+			lib, err := stockLibrary()
+			if err != nil {
+				return err
+			}
 
 			// (vendor, codename|model) -> set of JTAG_IDs seen in loaders whose
 			// source names that identifier.
@@ -689,9 +978,42 @@ func newCatalogBackfillCmd() *cobra.Command {
 				}
 			}
 
+			// Stock read from the device's own signed boot chain outranks every
+			// filename heuristic: the cert in a device's own xbl states the
+			// silicon its PBL enforces. Where the two disagree, the filename was
+			// wrong, so a stock reading replaces rather than joins.
+			fromStockJTAG := map[key]string{}
+			if fromStock {
+				for _, s := range lib.Stock() {
+					t, _, err := lib.FindStock(s.Vendor, s.Codename, s.Build)
+					if err != nil {
+						continue
+					}
+					id := targetIdentity(t)
+					if id == nil || !isRealJTAG(id.JTAGID) {
+						continue
+					}
+					fromStockJTAG[key{s.Vendor, s.Codename}] = id.JTAGID
+				}
+			}
+
 			devs := cat.AllDevices()
 			changed := 0
 			for _, d := range devs {
+				if j, ok := fromStockJTAG[key{d.Vendor, d.Codename}]; ok {
+					if slices.Equal([]string{j}, d.JTAGIDs) {
+						continue
+					}
+					if len(d.JTAGIDs) > 0 {
+						fmt.Fprintf(os.Stderr, "  %s: jtag_id %v -> [%s]  (CORRECTED from its own stock)\n",
+							d.Codename, d.JTAGIDs, j)
+					} else {
+						fmt.Fprintf(os.Stderr, "  %s: jtag_id=[%s]  (from its own stock)\n", d.Codename, j)
+					}
+					d.JTAGIDs = []string{j}
+					changed++
+					continue
+				}
 				if len(d.JTAGIDs) > 0 && !overwrite {
 					continue
 				}
@@ -740,6 +1062,8 @@ func newCatalogBackfillCmd() *cobra.Command {
 	}
 	c.Flags().StringVarP(&out, "out", "o", "", "write the full rendered catalog to this file (default: stdout)")
 	c.Flags().BoolVar(&overwrite, "overwrite", false, "also replace jtag_id on devices that already have one")
+	c.Flags().BoolVar(&fromStock, "from-stock", false,
+		"read jtag_id from each device's own stock boot chain (authoritative; corrects wrong entries)")
 	return c
 }
 
@@ -809,7 +1133,8 @@ func newCatalogFamilyCmd() *cobra.Command {
 
 func newLibraryCmd() *cobra.Command {
 	c := &cobra.Command{Use: "library", Short: "manage the local loader + stock store"}
-	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryListCmd(), newLibrarySyncCmd())
+	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryAddStockZipCmd(),
+		newLibraryHarvestDonorsCmd(), newLibraryListCmd(), newLibrarySyncCmd())
 	return c
 }
 
@@ -971,6 +1296,28 @@ func newLibraryAddLoaderCmd() *cobra.Command {
 	return c
 }
 
+// stockLibrary opens the library with a vendor-dispatching build namer, so
+// stored and migrated stock builds carry each OEM's own build id, and converts
+// any device still in the old flat layout.
+func stockLibrary() (*library.Library, error) {
+	lib := library.Open(libraryDir())
+	lib.BuildNamer = func(vendorID string, t *blankflash.Target) string {
+		drv, ok := vendor.For(vendorID)
+		if !ok {
+			return ""
+		}
+		return vendor.StockBuildID(drv, t)
+	}
+	return lib, lib.MigrateStock()
+}
+
+// printStockStored reports a stored stock build, naming the build id so the
+// operator can select it later with --stock.
+func printStockStored(ref *library.StockRef, t *blankflash.Target) {
+	fmt.Printf("stored stock %s/%s@%s: parts=%d gpt=%s storage=%s\n",
+		ref.Vendor, ref.Codename, ref.Build, len(t.Parts), yesno(t.GPT != nil), t.Storage)
+}
+
 func newLibraryAddStockCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "add-stock <codename>",
@@ -995,15 +1342,184 @@ func newLibraryAddStockCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		dir, err := library.Open(libraryDir()).AddStock(d.Vendor, d.Codename, t)
+		lib, err := stockLibrary()
 		if err != nil {
 			return err
 		}
-		fmt.Printf("stored stock for %s/%s: parts=%d gpt=%s storage=%s\n",
-			d.Vendor, d.Codename, len(t.Parts), yesno(t.GPT != nil), t.Storage)
-		fmt.Printf("-> %s\n", dir)
+		ref, err := lib.AddStock(d.Vendor, d.Codename, vendor.StockBuildID(drv, t), t)
+		if err != nil {
+			return err
+		}
+		printStockStored(ref, t)
 		return nil
 	}
+	return c
+}
+
+// newLibraryAddStockZipCmd harvests a catalog device's stock straight from the
+// OEM's retail firmware zip, so the boot chain need not be unpacked by hand.
+// The package names the device itself (Motorola stamps a PROD field into its
+// gpt.bin), so --codename is only needed when that tag is absent.
+func newLibraryAddStockZipCmd() *cobra.Command {
+	var codename string
+	c := &cobra.Command{
+		Use:   "add-stock-zip <stock.zip>",
+		Short: "harvest a device's stock directly from an OEM firmware zip",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := args[0]
+			drv, sp, ok := vendor.DetectStock(path)
+			if !ok {
+				return fmt.Errorf("unrecognized stock package (no vendor driver matched): %s", path)
+			}
+			t, err := sp.HarvestStockPackage(path)
+			if err != nil {
+				return err
+			}
+			// The package's own product tag is authoritative over anything the
+			// filename or the operator says; disagreement means the wrong zip.
+			tagged := vendor.CodenameFromStock(drv, t)
+			switch {
+			case tagged == "" && codename == "":
+				return fmt.Errorf("package carries no product tag; pass --codename")
+			case tagged == "":
+				fmt.Fprintf(os.Stderr, "  ! package carries no product tag; trusting --codename %q\n", codename)
+			case codename == "":
+				codename = tagged
+				fmt.Printf("  package identifies as %q\n", tagged)
+			case codename != tagged:
+				return fmt.Errorf("package is for %q but --codename says %q; refusing to store one device's boot chain as another's", tagged, codename)
+			}
+			cat, err := catalog.Load(catalogDir())
+			if err != nil {
+				return err
+			}
+			dev, ok := cat.Device(codename)
+			if !ok {
+				return fmt.Errorf("unknown codename %q; add it to the catalog first", codename)
+			}
+			if dev.Vendor != drv.ID() {
+				return fmt.Errorf("package is %s but %s is a %s device", drv.ID(), dev.Codename, dev.Vendor)
+			}
+			lib, err := stockLibrary()
+			if err != nil {
+				return err
+			}
+			before := len(lib.StockBuilds(dev.Vendor, dev.Codename))
+			ref, err := lib.AddStock(dev.Vendor, dev.Codename, vendor.StockBuildID(drv, t), t)
+			if err != nil {
+				return err
+			}
+			if len(lib.StockBuilds(dev.Vendor, dev.Codename)) == before {
+				fmt.Printf("already stored as %s/%s@%s; nothing to do\n", ref.Vendor, ref.Codename, ref.Build)
+				return nil
+			}
+			printStockStored(ref, t)
+			for _, fn := range sortedKeys(t.Parts) {
+				fmt.Printf("  %-14s %d bytes\n", fn, len(t.Parts[fn]))
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&codename, "codename", "", "catalog codename (default: read from the package's product tag)")
+	return c
+}
+
+// newLibraryHarvestDonorsCmd mines the stored donors for stock. A blankflash
+// carries the signed boot chain and GPT of the device it was built for, not
+// just the loader, so the donor library is also a stock library -- and the GPT
+// names the device, so each one files itself.
+func newLibraryHarvestDonorsCmd() *cobra.Command {
+	var from, vendorID string
+	var dryRun bool
+	c := &cobra.Command{
+		Use:   "harvest-donors",
+		Short: "recover each donor's own stock boot chain and store it",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			drv, ok := vendor.For(vendorID)
+			if !ok {
+				return fmt.Errorf("no vendor driver for %q", vendorID)
+			}
+			dh, ok := drv.(vendor.DonorStockHarvester)
+			if !ok {
+				return fmt.Errorf("%s donors cannot be harvested yet: %w", vendorID, vendor.ErrUnsupported)
+			}
+			dir := from
+			if dir == "" {
+				dir = filepath.Join(libraryDir(), "donors")
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				return err
+			}
+			cat, err := catalog.Load(catalogDir())
+			if err != nil {
+				return err
+			}
+			lib, err := stockLibrary()
+			if err != nil {
+				return err
+			}
+
+			var added, dup, unnamed, uncatalogued, noChain int
+			for _, e := range entries {
+				if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+					continue
+				}
+				path := filepath.Join(dir, e.Name())
+				t, err := dh.HarvestDonorStock(path)
+				if err != nil {
+					noChain++
+					continue
+				}
+				code := vendor.CodenameFromStock(drv, t)
+				if code == "" {
+					unnamed++
+					fmt.Fprintf(os.Stderr, "  ? %s: boot chain present but no product tag; skipping\n", e.Name())
+					continue
+				}
+				dev, ok := cat.Device(code)
+				if !ok {
+					uncatalogued++
+					fmt.Fprintf(os.Stderr, "  ? %s: %q not in catalog; skipping\n", e.Name(), code)
+					continue
+				}
+				if dev.Vendor != drv.ID() {
+					continue
+				}
+				build := vendor.StockBuildID(drv, t)
+				if dryRun {
+					fmt.Printf("  would store %s/%s@%s (parts=%d storage=%s) from %s\n",
+						dev.Vendor, dev.Codename, build, len(t.Parts), t.Storage, e.Name())
+					added++
+					continue
+				}
+				before := len(lib.StockBuilds(dev.Vendor, dev.Codename))
+				ref, err := lib.AddStock(dev.Vendor, dev.Codename, build, t)
+				if err != nil {
+					return fmt.Errorf("%s: %w", e.Name(), err)
+				}
+				if len(lib.StockBuilds(dev.Vendor, dev.Codename)) == before {
+					dup++
+					continue
+				}
+				added++
+				fmt.Printf("  + %s/%s@%s  parts=%d storage=%s\n",
+					ref.Vendor, ref.Codename, ref.Build, len(t.Parts), t.Storage)
+			}
+			verb := "stored"
+			if dryRun {
+				verb = "would store"
+			}
+			fmt.Printf("%s %d stock build(s); %d already present, %d unnamed, %d uncatalogued, %d without a boot chain\n",
+				verb, added, dup, unnamed, uncatalogued, noChain)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&from, "from", "", "directory of donor packages (default: <library>/donors)")
+	c.Flags().StringVar(&vendorID, "vendor", "motorola", "vendor id")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be stored without writing")
 	return c
 }
 
@@ -1013,7 +1529,10 @@ func newLibraryListCmd() *cobra.Command {
 		Short: "loaders (by family) and stock (by device) on hand",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			lib := library.Open(libraryDir())
+			lib, err := stockLibrary()
+			if err != nil {
+				return err
+			}
 			fmt.Println("loaders (by family; builds low SW_ID first = derive default):")
 			for _, f := range lib.Loaders() {
 				fmt.Printf("  %s\n", f)
@@ -1022,9 +1541,14 @@ func newLibraryListCmd() *cobra.Command {
 						b.Meta.SWID, b.Build, b.Meta.OEMID, b.Meta.HWID, b.Meta.Root, b.Meta.SHA256[:12])
 				}
 			}
-			fmt.Println("stock (by device):")
+			fmt.Println("stock (by device; builds oldest first, newest = derive default):")
+			lastDev := ""
 			for _, s := range lib.Stock() {
-				fmt.Printf("  %s/%s\n", s.Vendor, s.Codename)
+				if dev := s.Vendor + "/" + s.Codename; dev != lastDev {
+					fmt.Printf("  %s\n", dev)
+					lastDev = dev
+				}
+				fmt.Printf("    %-22s %s\n", s.Build, s.Meta.Source)
 			}
 			return nil
 		},
@@ -1034,7 +1558,7 @@ func newLibraryListCmd() *cobra.Command {
 // ---- derive ----
 
 func newDeriveCmd() *cobra.Command {
-	var storage, provisionFrom, out, loaderBuild string
+	var storage, provisionFrom, out, loaderBuild, stockBuild string
 	var stripModel bool
 	c := &cobra.Command{
 		Use:   "derive <codename>",
@@ -1043,6 +1567,7 @@ func newDeriveCmd() *cobra.Command {
 	}
 	tf := addTargetFlags(c)
 	c.Flags().StringVar(&loaderBuild, "loader", "", "loader build id to use (default: newest)")
+	c.Flags().StringVar(&stockBuild, "stock", "", "stock build id to use (default: newest)")
 	c.Flags().BoolVar(&stripModel, "strip-model", false, "strip the QCDT model field so a sibling-model boot chain matches (cross-model donation)")
 	c.Flags().StringVar(&storage, "storage", "", "override target storage type (emmc/ufs)")
 	c.Flags().StringVar(&provisionFrom, "provision-from", "", "XML file with a target-specific provisioning block")
@@ -1061,7 +1586,10 @@ func newDeriveCmd() *cobra.Command {
 		if !ok {
 			return fmt.Errorf("no vendor driver for %q", dev.Vendor)
 		}
-		lib := library.Open(libraryDir())
+		lib, err := stockLibrary()
+		if err != nil {
+			return err
+		}
 		// Resolve candidate loaders (lowest SW_ID first). A recorded jtag_id is
 		// the fact the PBL enforces, so it keys exactly; the cpu_name bridge is
 		// the fallback and is lossy (one cpu_name spans several JTAG families).
@@ -1099,10 +1627,11 @@ func newDeriveCmd() *cobra.Command {
 		}
 
 		var target *blankflash.Target
+		var sref *library.StockRef
 		if tf.parts != "" || tf.bootloader != "" {
 			target, err = drv.HarvestStock(tf.source())
 		} else if lib.HasStock(dev.Vendor, dev.Codename) {
-			target, err = lib.FindStock(dev.Vendor, dev.Codename)
+			target, sref, err = lib.FindStock(dev.Vendor, dev.Codename, stockBuild)
 		} else {
 			return fmt.Errorf("no stock for %s in library and no --target-... given; "+
 				"add it with library add-stock or pass the target's own images", dev.Codename)
@@ -1152,6 +1681,16 @@ func newDeriveCmd() *cobra.Command {
 			dev.Codename, dev.Name, len(res.Singleimage), len(blankflash.Index(recs)))
 		fmt.Printf("  family: %s  loader: %s@%s SW_ID=%d (from %s)\n", fam, fam, lref.Build, lref.Meta.SWID, lref.Meta.Source)
 		fmt.Printf("  target: %s  storage=%s\n", target.Source, firstNonEmpty(target.Storage, storage))
+		if sref != nil {
+			if others := lib.StockBuilds(dev.Vendor, dev.Codename); len(others) > 1 && stockBuild == "" {
+				ids := make([]string, len(others))
+				for i, s := range others {
+					ids[i] = s.Build
+				}
+				fmt.Printf("  using newest of %d stock builds (%s); select another: --stock <build>\n",
+					len(others), strings.Join(ids, ", "))
+			}
+		}
 		if len(cands) > 1 && loaderBuild == "" {
 			ladder := make([]string, len(cands))
 			for i, b := range cands {

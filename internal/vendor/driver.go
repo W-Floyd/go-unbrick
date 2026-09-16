@@ -51,6 +51,88 @@ type Driver interface {
 	Assemble(d *blankflash.Donor, t *blankflash.Target, opts AssembleOptions) (*blankflash.ForgeResult, error)
 }
 
+// StockPackager is an optional Driver capability: recognizing and harvesting an
+// OEM's *stock firmware* package (the retail flashable zip), as opposed to the
+// blankflash donor a plain Driver ingests. Drivers opt in; DetectStock only
+// considers those that do.
+type StockPackager interface {
+	CanIngestStock(path string) bool
+	HarvestStockPackage(path string) (*blankflash.Target, error)
+}
+
+// StockIdentifier is an optional Driver capability: naming a harvested stock
+// build from the OEM's own build stamp, so the library can keep every distinct
+// build of a device rather than overwriting. Each OEM stamps its images
+// differently (Motorola writes an MBM signature into every boot partition), so
+// this stays behind the vendor seam. Drivers that cannot name a build omit it
+// and the library falls back to a content hash.
+type StockIdentifier interface {
+	StockBuildID(t *blankflash.Target) string
+}
+
+// StockBuildID asks a driver to name this stock build, returning "" if the
+// driver offers no opinion.
+func StockBuildID(d Driver, t *blankflash.Target) string {
+	si, ok := d.(StockIdentifier)
+	if !ok {
+		return ""
+	}
+	return si.StockBuildID(t)
+}
+
+// StockNamer is an optional Driver capability: reading the device codename the
+// OEM stamped into a harvested stock image, so an import can identify itself
+// rather than relying on a filename or the operator.
+type StockNamer interface {
+	CodenameFromStock(t *blankflash.Target) string
+}
+
+// CodenameFromStock asks a driver to name the device a stock image belongs to,
+// returning "" if it cannot.
+func CodenameFromStock(d Driver, t *blankflash.Target) string {
+	sn, ok := d.(StockNamer)
+	if !ok {
+		return ""
+	}
+	return sn.CodenameFromStock(t)
+}
+
+// DonorStockHarvester is an optional Driver capability: recovering the donor
+// device's OWN stock boot chain from a blankflash package. A blankflash carries
+// far more than the loader -- the signed boot partitions and GPT of the device
+// it was built for -- so a library of donors is also a library of stock.
+type DonorStockHarvester interface {
+	HarvestDonorStock(path string) (*blankflash.Target, error)
+}
+
+// ExplodeOptions tunes what a stock package is unpacked into.
+type ExplodeOptions struct {
+	// Super also writes the Android super image, which on a modern package is
+	// several gigabytes split across chunks. Off by default: it is the bulk of
+	// the download and carries nothing the boot chain needs.
+	Super bool
+}
+
+// StockExploder is an optional Driver capability: writing out every partition
+// image a stock package carries -- both the OEM's own members and the images
+// packed inside a container like Motorola's bootloader.img. It writes to a
+// directory rather than returning bytes because a full package does not fit
+// comfortably in memory.
+type StockExploder interface {
+	ExplodeStock(path, dir string, opts ExplodeOptions) ([]string, error)
+}
+
+// DetectStock returns the driver whose stock-package format matches the path.
+func DetectStock(path string) (Driver, StockPackager, bool) {
+	for _, id := range ids() {
+		sp, ok := registry[id].(StockPackager)
+		if ok && sp.CanIngestStock(path) {
+			return registry[id], sp, true
+		}
+	}
+	return nil, nil, false
+}
+
 var registry = map[string]Driver{}
 
 // Register adds a driver; called from driver init functions.

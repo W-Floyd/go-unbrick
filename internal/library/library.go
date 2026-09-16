@@ -20,9 +20,51 @@ import (
 	"go-unbrick/internal/secboot"
 )
 
-type Library struct{ Root string }
+type Library struct {
+	Root string
+	// BuildNamer names a stock build from its contents, letting the vendor layer
+	// supply the OEM's own build stamp (see vendor.StockBuildID). Optional: when
+	// nil or when it yields "", builds fall back to a content-hash name.
+	BuildNamer func(vendor string, t *blankflash.Target) string
+}
 
 func Open(root string) *Library { return &Library{Root: root} }
+
+// nameBuild resolves a build id: the caller's explicit choice, else the vendor's
+// stamp, else a content hash.
+func (l *Library) nameBuild(vendor, build string, t *blankflash.Target, sha string) string {
+	if build == "" && l.BuildNamer != nil {
+		build = l.BuildNamer(vendor, t)
+	}
+	if build == "" {
+		build = "stock-" + sha[:12]
+	}
+	return build
+}
+
+// MigrateStock normalizes every device still stored in the pre-build-keyed flat
+// layout. It is idempotent and a no-op once the library is converted; callers
+// run it before listing or resolving stock so no device silently disappears
+// from the catalogue just because it has not been re-imported yet.
+func (l *Library) MigrateStock() error {
+	base := filepath.Join(l.Root, "stock")
+	vendors, _ := os.ReadDir(base)
+	for _, v := range vendors {
+		if !v.IsDir() {
+			continue
+		}
+		devs, _ := os.ReadDir(filepath.Join(base, v.Name()))
+		for _, d := range devs {
+			if !d.IsDir() {
+				continue
+			}
+			if err := l.migrateFlatStock(v.Name(), d.Name()); err != nil {
+				return fmt.Errorf("migrating %s/%s: %w", v.Name(), d.Name(), err)
+			}
+		}
+	}
+	return nil
+}
 
 func familyDir(f catalog.Family) string { return filepath.Join(f.Vendor, f.JTAGID) }
 
@@ -33,8 +75,13 @@ func (l *Library) familyLoaderDir(f catalog.Family) string {
 func (l *Library) buildDir(f catalog.Family, build string) string {
 	return filepath.Join(l.familyLoaderDir(f), build)
 }
-func (l *Library) stockDir(vendor, codename string) string {
+// stockDeviceDir holds one subdirectory per distinct stock build of a device,
+// mirroring how loaders are kept per build within a family.
+func (l *Library) stockDeviceDir(vendor, codename string) string {
 	return filepath.Join(l.Root, "stock", vendor, codename)
+}
+func (l *Library) stockBuildDir(vendor, codename, build string) string {
+	return filepath.Join(l.stockDeviceDir(vendor, codename), build)
 }
 
 // buildID names a loader build from the donor it came from, e.g.
@@ -80,6 +127,28 @@ type StockMeta struct {
 	FlashMap map[string]string `json:"flash_map"`
 	Source   string            `json:"source"`
 	Added    string            `json:"added"`
+	SHA256   string            `json:"sha256"` // over parts+GPT, to dedupe re-imports
+}
+
+// stockSum hashes a target's parts and GPT so the same extract, imported twice
+// under different filenames, is recognized as one build.
+func stockSum(t *blankflash.Target) string {
+	h := sha256.New()
+	for _, fn := range sortedKeys(t.Parts) {
+		fmt.Fprintf(h, "%s:%d\n", fn, len(t.Parts[fn]))
+		h.Write(t.Parts[fn])
+	}
+	h.Write(t.GPT)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func sortedKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func writeFile(path string, data []byte) error {
@@ -224,49 +293,121 @@ func (l *Library) FindLoader(f catalog.Family, build string) (*blankflash.Donor,
 	return d, ref, nil
 }
 
-// AddStock stores a device's harvested boot partitions + GPT.
-func (l *Library) AddStock(vendor, codename string, t *blankflash.Target) (string, error) {
-	dir := l.stockDir(vendor, codename)
+// AddStock stores one build of a device's harvested boot partitions + GPT,
+// alongside any builds already kept for that device. build names it (from the
+// OEM's own stamp, via the vendor driver); when empty, a content hash is used.
+// Re-importing the same bytes is a no-op returning the existing build.
+func (l *Library) AddStock(vendor, codename, build string, t *blankflash.Target) (*StockRef, error) {
+	if err := l.migrateFlatStock(vendor, codename); err != nil {
+		return nil, err
+	}
+	sha := stockSum(t)
+	for _, ref := range l.StockBuilds(vendor, codename) {
+		if ref.Meta.SHA256 == sha {
+			return &ref, nil
+		}
+	}
+	build = l.nameBuild(vendor, build, t, sha)
+	dir := l.stockBuildDir(vendor, codename, build)
 	if err := os.RemoveAll(dir); err != nil { // replace wholesale to avoid stale parts
-		return "", err
-	}
-	for fn, b := range t.Parts {
-		if err := writeFile(filepath.Join(dir, "parts", fn), b); err != nil {
-			return "", err
-		}
-	}
-	if t.GPT != nil {
-		if err := writeFile(filepath.Join(dir, "gpt.bin"), t.GPT); err != nil {
-			return "", err
-		}
+		return nil, err
 	}
 	meta := StockMeta{
 		Storage:  t.Storage,
 		FlashMap: t.FlashMap,
 		Source:   t.Source,
 		Added:    time.Now().UTC().Format(time.RFC3339),
+		SHA256:   sha,
 	}
-	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
-		return "", err
+	if err := l.writeStock(dir, t, meta); err != nil {
+		return nil, err
 	}
-	return dir, nil
+	return &StockRef{Vendor: vendor, Codename: codename, Build: build, Meta: meta}, nil
+}
+
+func (l *Library) writeStock(dir string, t *blankflash.Target, meta StockMeta) error {
+	for fn, b := range t.Parts {
+		if err := writeFile(filepath.Join(dir, "parts", fn), b); err != nil {
+			return err
+		}
+	}
+	if t.GPT != nil {
+		if err := writeFile(filepath.Join(dir, "gpt.bin"), t.GPT); err != nil {
+			return err
+		}
+	}
+	return writeJSON(filepath.Join(dir, "meta.json"), meta)
+}
+
+// migrateFlatStock moves a pre-build-keyed layout (parts/ and meta.json directly
+// under the device dir) into a build subdirectory, so earlier imports survive
+// rather than being orphaned by the new layout.
+func (l *Library) migrateFlatStock(vendor, codename string) error {
+	dev := l.stockDeviceDir(vendor, codename)
+	if _, err := os.Stat(filepath.Join(dev, "meta.json")); err != nil {
+		return nil // already build-keyed, or nothing stored
+	}
+	t, meta, err := l.readStock(dev)
+	if err != nil {
+		return err
+	}
+	if meta.SHA256 == "" {
+		meta.SHA256 = stockSum(t)
+	}
+	build := l.nameBuild(vendor, "", t, meta.SHA256)
+	tmp := dev + ".migrating"
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
+	}
+	if err := l.writeStock(tmp, t, meta); err != nil {
+		return err
+	}
+	// Only discard the old layout once the copy is safely written.
+	for _, n := range []string{"parts", "gpt.bin", "meta.json"} {
+		if err := os.RemoveAll(filepath.Join(dev, n)); err != nil {
+			return err
+		}
+	}
+	return os.Rename(tmp, l.stockBuildDir(vendor, codename, build))
 }
 
 func (l *Library) HasStock(vendor, codename string) bool {
-	_, err := os.Stat(filepath.Join(l.stockDir(vendor, codename), "meta.json"))
-	return err == nil
+	return len(l.StockBuilds(vendor, codename)) > 0
 }
 
-// FindStock rebuilds a Target from stored stock for a device.
-func (l *Library) FindStock(vendor, codename string) (*blankflash.Target, error) {
-	dir := l.stockDir(vendor, codename)
+// StockBuilds lists a device's stored stock builds, newest (by build id, which
+// the vendor stamps date-first) last.
+func (l *Library) StockBuilds(vendor, codename string) []StockRef {
+	entries, err := os.ReadDir(l.stockDeviceDir(vendor, codename))
+	if err != nil {
+		return nil
+	}
+	var out []StockRef
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		var meta StockMeta
+		b, err := os.ReadFile(filepath.Join(l.stockBuildDir(vendor, codename, e.Name()), "meta.json"))
+		if err != nil {
+			continue
+		}
+		_ = json.Unmarshal(b, &meta)
+		out = append(out, StockRef{Vendor: vendor, Codename: codename, Build: e.Name(), Meta: meta})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Build < out[j].Build })
+	return out
+}
+
+// readStock loads a Target and its metadata from one stored stock directory.
+func (l *Library) readStock(dir string) (*blankflash.Target, StockMeta, error) {
+	var meta StockMeta
 	b, err := os.ReadFile(filepath.Join(dir, "meta.json"))
 	if err != nil {
-		return nil, fmt.Errorf("no stock for %s/%s: %w", vendor, codename, err)
+		return nil, meta, err
 	}
-	var meta StockMeta
 	if err := json.Unmarshal(b, &meta); err != nil {
-		return nil, err
+		return nil, meta, err
 	}
 	parts := map[string][]byte{}
 	if entries, err := os.ReadDir(filepath.Join(dir, "parts")); err == nil {
@@ -288,8 +429,35 @@ func (l *Library) FindStock(vendor, codename string) (*blankflash.Target, error)
 		FlashMap: meta.FlashMap,
 		GPT:      gpt,
 		Storage:  meta.Storage,
-		Source:   "library:" + vendor + "/" + codename,
-	}, nil
+	}, meta, nil
+}
+
+// FindStock rebuilds a Target from stored stock for a device. build selects a
+// specific stored build; empty takes the newest.
+func (l *Library) FindStock(vendor, codename, build string) (*blankflash.Target, *StockRef, error) {
+	builds := l.StockBuilds(vendor, codename)
+	if len(builds) == 0 {
+		return nil, nil, fmt.Errorf("no stock for %s/%s", vendor, codename)
+	}
+	ref := &builds[len(builds)-1] // newest: build ids sort chronologically
+	if build != "" {
+		ref = nil
+		for i := range builds {
+			if builds[i].Build == build {
+				ref = &builds[i]
+				break
+			}
+		}
+		if ref == nil {
+			return nil, nil, fmt.Errorf("no stock build %q for %s/%s", build, vendor, codename)
+		}
+	}
+	t, _, err := l.readStock(l.stockBuildDir(vendor, codename, ref.Build))
+	if err != nil {
+		return nil, nil, err
+	}
+	t.Source = "library:" + vendor + "/" + codename + "@" + ref.Build
+	return t, ref, nil
 }
 
 // Loaders lists the families with a stored loader.
@@ -382,9 +550,17 @@ func (l *Library) LoadersForJTAGs(vendor string, jtags []string) []LoaderRef {
 // CandidateLoaders resolves a device to its candidate loaders, lowest-SW_ID
 // first: by the authoritative JTAG_ID key when the device records one, else via
 // the cpu_name bridge. The single point where derive and `catalog list` agree.
+//
+// A pinned JTAG_ID does not rule out the cpu_name bridge entirely. A loader
+// whose cert we cannot parse is filed under its cpu_name instead of a JTAG, so
+// its silicon is unknown rather than known-different; excluding it would leave a
+// device with a recorded JTAG_ID no loader at all. So the bridge still answers
+// when the JTAG key finds nothing.
 func (l *Library) CandidateLoaders(d *catalog.Device) []LoaderRef {
 	if len(d.JTAGIDs) > 0 {
-		return l.LoadersForJTAGs(d.Vendor, d.JTAGIDs)
+		if out := l.LoadersForJTAGs(d.Vendor, d.JTAGIDs); len(out) > 0 {
+			return out
+		}
 	}
 	return l.LoadersForCPU(d.Vendor, d.CPUName)
 }
@@ -395,9 +571,13 @@ func (l *Library) HasLoaderForCPU(vendor, cpu string) bool {
 }
 
 // StockRef is a vendor/codename pair with stored stock.
-type StockRef struct{ Vendor, Codename string }
+type StockRef struct {
+	Vendor, Codename string
+	Build            string
+	Meta             StockMeta
+}
 
-// Stock lists the devices with stored stock firmware.
+// Stock lists every stored stock build, across all devices.
 func (l *Library) Stock() []StockRef {
 	var out []StockRef
 	base := filepath.Join(l.Root, "stock")
@@ -409,7 +589,7 @@ func (l *Library) Stock() []StockRef {
 		devs, _ := os.ReadDir(filepath.Join(base, v.Name()))
 		for _, d := range devs {
 			if d.IsDir() {
-				out = append(out, StockRef{Vendor: v.Name(), Codename: d.Name()})
+				out = append(out, l.StockBuilds(v.Name(), d.Name())...)
 			}
 		}
 	}
@@ -417,7 +597,10 @@ func (l *Library) Stock() []StockRef {
 		if out[i].Vendor != out[j].Vendor {
 			return out[i].Vendor < out[j].Vendor
 		}
-		return out[i].Codename < out[j].Codename
+		if out[i].Codename != out[j].Codename {
+			return out[i].Codename < out[j].Codename
+		}
+		return out[i].Build < out[j].Build
 	})
 	return out
 }
