@@ -25,10 +25,15 @@ package blankflash
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
-// bootOrder is the flash order used by Motorola stock recipes (xbl last).
+// bootOrder is the fallback flash order, used only when the target's own
+// recipe did not survive harvesting. It is deliberately not the whole story:
+// which partitions a device flashes varies by SoC -- aop, cmnlib, cmnlib64,
+// cpucp, shrm, spss1p, spss2p, uefi, XblRamdump and aop_devcfg all appear in
+// genuine packages -- so Target.FlashOrder is preferred when present.
 var bootOrder = []string{
 	"abl", "devcfg", "hyp", "keymaster", "tz", "storsec",
 	"prov", "rpm", "qupfw", "uefisecapp", "xbl_config", "xbl",
@@ -88,6 +93,30 @@ func carryDirectives(recipes map[string][]byte) (backups, restores []string) {
 	return backups, restores
 }
 
+// flashOrderOf prefers the order the device's own recipe used, appending any
+// mapped partition it did not mention so nothing is silently dropped.
+func flashOrderOf(target *Target) []string {
+	if len(target.FlashOrder) == 0 {
+		return bootOrder
+	}
+	seen := make(map[string]bool, len(target.FlashOrder))
+	out := make([]string, 0, len(target.FlashMap))
+	for _, l := range target.FlashOrder {
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	extra := make([]string, 0, len(target.FlashMap))
+	for l := range target.FlashMap {
+		if !seen[l] {
+			extra = append(extra, l)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
+}
+
 func defaultXML(target *Target, slot, storage string, provision []byte, backups, restores []string) []byte {
 	lines := []string{`<?xml version="1.0" ?>`, "<recipe>"}
 	if len(backups) > 0 {
@@ -107,7 +136,7 @@ func defaultXML(target *Target, slot, storage string, provision []byte, backups,
 		`	<storage operation="reinit"/>`,
 		`	<print what="Flashing bootloader..."/>`,
 	)
-	for _, label := range bootOrder {
+	for _, label := range flashOrderOf(target) {
 		fn := target.FlashMap[label]
 		if fn != "" {
 			if _, ok := target.Parts[fn]; ok {
@@ -162,7 +191,7 @@ func Forge(donor *Donor, target *Target, slot, storage string, provision []byte)
 		{Name: "default.xml", Data: defaultXML(target, slot, storage, provision, backups, restores)},
 		{Name: "programmer.elf", Data: donor.Programmer},
 	}
-	for _, label := range bootOrder {
+	for _, label := range flashOrderOf(target) {
 		fn := target.FlashMap[label]
 		if fn != "" {
 			if v, ok := target.Parts[fn]; ok {

@@ -43,9 +43,14 @@ var defaultMap = map[string]string{
 type Target struct {
 	Parts    map[string][]byte // filename (as flashed) -> bytes
 	FlashMap map[string]string // partition label -> filename
-	GPT      []byte            // gpt.bin (kept whole; qboot flashes it as-is)
-	Storage  string            // emmc / ufs, if determinable
-	Source   string
+	// FlashOrder is the order the device's own recipe flashes those labels in.
+	// The set matters as much as the order: a fixed list omits whatever a given
+	// SoC adds (aop, cmnlib, cpucp, shrm, spss...), and a forged package that
+	// skips them does not flash firmware the genuine one does.
+	FlashOrder []string
+	GPT        []byte // gpt.bin (kept whole; qboot flashes it as-is)
+	Storage    string // emmc / ufs, if determinable
+	Source     string
 }
 
 var (
@@ -54,16 +59,22 @@ var (
 	reGPTMain  = regexp.MustCompile(`^gpt_main\d+\.bin$`)
 )
 
-func flashMapFromRecipe(recipeXML []byte) map[string]string {
+func flashMapFromRecipe(recipeXML []byte) (map[string]string, []string) {
 	txt := string(recipeXML)
 	out := map[string]string{}
+	var order []string
 	for _, m := range rePartFile.FindAllStringSubmatch(txt, -1) {
 		label, fn := m[1], m[2]
-		if label != "partition" { // "partition" is the GPT pseudo-target
-			out[reSlot.ReplaceAllString(label, "")] = fn
+		if label == "partition" { // the GPT pseudo-target
+			continue
 		}
+		label = reSlot.ReplaceAllString(label, "")
+		if _, seen := out[label]; !seen {
+			order = append(order, label)
+		}
+		out[label] = fn
 	}
-	return out
+	return out, order
 }
 
 func inferStorage(gpt, recipeXML []byte) string {
@@ -103,7 +114,7 @@ func FromBootloaderImg(img, gpt []byte) (*Target, error) {
 			break
 		}
 	}
-	flashMap := flashMapFromRecipe(recipe)
+	flashMap, flashOrder := flashMapFromRecipe(recipe)
 	if len(flashMap) == 0 {
 		flashMap = map[string]string{}
 		for k, v := range defaultMap {
@@ -117,11 +128,12 @@ func FromBootloaderImg(img, gpt []byte) (*Target, error) {
 		}
 	}
 	return &Target{
-		Parts:    parts,
-		FlashMap: flashMap,
-		GPT:      gpt,
-		Storage:  inferStorage(gpt, recipe),
-		Source:   "bootloader.img",
+		Parts:      parts,
+		FlashMap:   flashMap,
+		FlashOrder: flashOrder,
+		GPT:        gpt,
+		Storage:    inferStorage(gpt, recipe),
+		Source:     "bootloader.img",
 	}, nil
 }
 

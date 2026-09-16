@@ -124,11 +124,15 @@ type LoaderMeta struct {
 }
 
 type StockMeta struct {
-	Storage  string            `json:"storage,omitempty"`
-	FlashMap map[string]string `json:"flash_map"`
-	Source   string            `json:"source"`
-	Added    string            `json:"added"`
-	SHA256   string            `json:"sha256"` // over parts+GPT, to dedupe re-imports
+	Storage string `json:"storage,omitempty"`
+	// FlashOrder is the order the device's own recipe flashes its partitions
+	// in. Without it a forged package falls back to a fixed list and silently
+	// omits whatever that list lacks.
+	FlashOrder []string          `json:"flash_order,omitempty"`
+	FlashMap   map[string]string `json:"flash_map"`
+	Source     string            `json:"source"`
+	Added      string            `json:"added"`
+	SHA256     string            `json:"sha256"` // over parts+GPT, to dedupe re-imports
 }
 
 // stockSum hashes a target's parts and GPT so the same extract, imported twice
@@ -345,6 +349,15 @@ func (l *Library) AddStock(vendor, codename, build string, t *blankflash.Target)
 	sha := stockSum(t)
 	for _, ref := range l.StockBuilds(vendor, codename) {
 		if ref.Meta.SHA256 == sha {
+			// Same bytes, but the metadata may predate a field. Refresh it so an
+			// existing library gains the flash order without re-importing.
+			if len(ref.Meta.FlashOrder) == 0 && len(t.FlashOrder) > 0 {
+				ref.Meta.FlashOrder = t.FlashOrder
+				dir := l.stockBuildDir(vendor, codename, ref.Build)
+				if err := writeJSON(filepath.Join(dir, "meta.json"), ref.Meta); err != nil {
+					return nil, err
+				}
+			}
 			return &ref, nil
 		}
 	}
@@ -354,11 +367,12 @@ func (l *Library) AddStock(vendor, codename, build string, t *blankflash.Target)
 		return nil, err
 	}
 	meta := StockMeta{
-		Storage:  t.Storage,
-		FlashMap: t.FlashMap,
-		Source:   t.Source,
-		Added:    time.Now().UTC().Format(time.RFC3339),
-		SHA256:   sha,
+		Storage:    t.Storage,
+		FlashOrder: t.FlashOrder,
+		FlashMap:   t.FlashMap,
+		Source:     t.Source,
+		Added:      time.Now().UTC().Format(time.RFC3339),
+		SHA256:     sha,
 	}
 	if err := l.writeStock(dir, t, meta); err != nil {
 		return nil, err
@@ -466,10 +480,11 @@ func (l *Library) readStock(dir string) (*blankflash.Target, StockMeta, error) {
 		gpt = gb
 	}
 	return &blankflash.Target{
-		Parts:    parts,
-		FlashMap: meta.FlashMap,
-		GPT:      gpt,
-		Storage:  meta.Storage,
+		Parts:      parts,
+		FlashMap:   meta.FlashMap,
+		FlashOrder: meta.FlashOrder,
+		GPT:        gpt,
+		Storage:    meta.Storage,
 	}, meta, nil
 }
 

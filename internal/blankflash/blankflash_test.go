@@ -266,3 +266,79 @@ func TestForgeWarnsWhenDonorHasNoBackups(t *testing.T) {
 		t.Errorf("expected a warning about missing backup directives, got %v", res.Warnings)
 	}
 }
+
+// Which partitions a device flashes varies by SoC. Validating 113 forged
+// packages against their genuine counterparts found a fixed list silently
+// omitting aop on 65 devices, cmnlib/cmnlib64 on 34, cpucp/shrm on 28 and
+// more, so the device's own recipe order is what must drive the flash steps.
+func TestForgeFlashesEverySoCPartition(t *testing.T) {
+	order := []string{"abl", "cmnlib", "cmnlib64", "devcfg", "aop", "xbl"}
+	tgt := &Target{
+		Parts: map[string][]byte{
+			"abl.elf": []byte("A"), "cmnlib.mbn": []byte("C"), "cmnlib64.mbn": []byte("C6"),
+			"devcfg.mbn": []byte("D"), "aop.mbn": []byte("AO"), "xbl.elf": []byte("X"),
+		},
+		FlashMap: map[string]string{
+			"abl": "abl.elf", "cmnlib": "cmnlib.mbn", "cmnlib64": "cmnlib64.mbn",
+			"devcfg": "devcfg.mbn", "aop": "aop.mbn", "xbl": "xbl.elf",
+		},
+		FlashOrder: order,
+		GPT:        []byte("GPT"),
+	}
+	res, err := Forge(&Donor{Programmer: []byte("L")}, tgt, "a", "ufs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := Parse(res.Singleimage)
+	var recipe string
+	names := map[string]bool{}
+	for _, r := range recs {
+		names[r.Name] = true
+		if r.Name == "default.xml" {
+			recipe = string(r.Data)
+		}
+	}
+	// Every mapped partition must be both flashed and carried.
+	for _, label := range order {
+		fn := tgt.FlashMap[label]
+		if !strings.Contains(recipe, `partition="`+label+`_a"`) {
+			t.Errorf("recipe does not flash %s", label)
+		}
+		if !names[fn] {
+			t.Errorf("package does not carry %s", fn)
+		}
+	}
+	// And in the device's own order, not the fallback's.
+	if i, j := strings.Index(recipe, `"cmnlib_a"`), strings.Index(recipe, `"devcfg_a"`); i > j {
+		t.Error("flash order should follow the device's recipe")
+	}
+}
+
+// With no recipe to go on, the fallback list still produces a usable package.
+func TestForgeFallsBackWithoutFlashOrder(t *testing.T) {
+	tgt := &Target{
+		Parts:    map[string][]byte{"xbl.elf": []byte("X"), "abl.elf": []byte("A")},
+		FlashMap: map[string]string{"xbl": "xbl.elf", "abl": "abl.elf"},
+		GPT:      []byte("GPT"),
+	}
+	res, err := Forge(&Donor{Programmer: []byte("L")}, tgt, "a", "emmc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := Parse(res.Singleimage)
+	var recipe string
+	for _, r := range recs {
+		if r.Name == "default.xml" {
+			recipe = string(r.Data)
+		}
+	}
+	for _, want := range []string{`partition="abl_a"`, `partition="xbl_a"`} {
+		if !strings.Contains(recipe, want) {
+			t.Errorf("fallback recipe missing %s", want)
+		}
+	}
+	// xbl is flashed last in Motorola's order; the fallback must keep that.
+	if strings.Index(recipe, `"xbl_a"`) < strings.Index(recipe, `"abl_a"`) {
+		t.Error("xbl should be flashed last")
+	}
+}
