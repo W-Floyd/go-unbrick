@@ -214,3 +214,61 @@ func TestNonELF(t *testing.T) {
 		t.Error("expected an error for non-ELF input")
 	}
 }
+
+// fakeAnalyzer stands in for a registered format handler.
+type fakeAnalyzer struct {
+	kind   string
+	marker byte
+	report Report
+}
+
+func (f fakeAnalyzer) Kind() string { return f.kind }
+
+func (f fakeAnalyzer) Detect(c Chunk) bool {
+	return len(c.Data) > 0 && c.Data[0] == f.marker
+}
+
+func (f fakeAnalyzer) Compare(a, b Chunk) (Report, bool) { return f.report, true }
+
+// An analyzer only runs on segments it recognizes on BOTH sides; otherwise a
+// segment that merely resembles a format would be reported on.
+func TestAnalyzeRequiresBothSides(t *testing.T) {
+	a := fakeAnalyzer{kind: "fake", marker: 'X', report: Report{Kind: "fake", Unit: "thing", Compared: 3}}
+	got := analyzeWith([]Analyzer{a}, Chunk{[]byte("Xyz"), 0}, Chunk{[]byte("Qyz"), 0})
+	if len(got) != 0 {
+		t.Errorf("should not report when only one side matches: %+v", got)
+	}
+	got = analyzeWith([]Analyzer{a}, Chunk{[]byte("Xyz"), 0}, Chunk{[]byte("Xab"), 0})
+	if len(got) != 1 || got[0].Kind != "fake" {
+		t.Errorf("should report when both sides match: %+v", got)
+	}
+}
+
+// Layout-independent comparison pairs segments by format, not position.
+func TestAnalyzeImagesPairsByFormat(t *testing.T) {
+	a := fakeAnalyzer{kind: "fake", marker: 'X', report: Report{Kind: "fake", Unit: "thing", Compared: 2}}
+	// The matching segment sits at a different index in each image.
+	imgA := []Chunk{{[]byte("aaa"), 0}, {[]byte("Xhit"), 0}}
+	imgB := []Chunk{{[]byte("Xhit"), 0}, {[]byte("bbb"), 0}}
+	got := analyzeImagesWith([]Analyzer{a}, imgA, imgB)
+	if len(got) != 1 {
+		t.Fatalf("format should be paired across differing positions: %+v", got)
+	}
+}
+
+func TestReportSummary(t *testing.T) {
+	cases := []struct {
+		r    Report
+		want string
+	}{
+		{Report{Unit: "value", Compared: 188, Equivalent: true}, "188 values, all match"},
+		{Report{Unit: "module", Compared: 1, Differing: 1}, "1 of 1 module differs"},
+		{Report{Unit: "module", Compared: 94, Differing: 87}, "87 of 94 modules differ"},
+		{Report{Compared: 2, Equivalent: true}, "2 items, all match"},
+	}
+	for _, c := range cases {
+		if got := c.r.Summary(); got != c.want {
+			t.Errorf("Summary() = %q want %q", got, c.want)
+		}
+	}
+}

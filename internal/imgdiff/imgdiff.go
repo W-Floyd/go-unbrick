@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"sort"
 
-	"go-unbrick/internal/devcfg"
 	"go-unbrick/internal/secboot"
 )
 
@@ -58,9 +57,10 @@ type SegmentDiff struct {
 	NamesB       []string
 	NamesEqual   bool // same set of names, possibly reordered
 	NamesOrdered bool // same names in the same order
-	// DevCfg is set when the segment is a Qualcomm device-configuration payload,
-	// which can be compared by property rather than by byte.
-	DevCfg *devcfg.Diff
+	// Reports holds whatever the registered analyzers made of the segment. A
+	// segment whose format none of them recognizes has none, and only the
+	// byte-level findings above apply.
+	Reports []Report
 }
 
 // Opaque reports whether every differing run is high-entropy. Such bytes carry
@@ -96,38 +96,25 @@ type Result struct {
 	// Stamps are the differing texts found outside the segments, e.g. the two
 	// images' build signatures.
 	StampA, StampB string
-	// DevCfg is a device-configuration comparison made independently of segment
-	// layout. It is how two images whose layouts do not correspond -- different
-	// devices, or builds far enough apart that segments moved -- can still be
-	// compared by content.
-	DevCfg *devcfg.Diff
-	Note   string
+	// Reports holds comparisons made independently of segment layout, by
+	// pairing segments on format instead of position. It is how two images
+	// whose layouts do not correspond -- different devices, or builds far
+	// enough apart that segments moved -- can still be compared by content.
+	Reports []Report
+	Note    string
 }
 
-// findDevCfg locates and parses a device-configuration payload anywhere in an
-// image, independently of how its segments line up with another image's.
-func findDevCfg(img []byte) *devcfg.Config {
+// chunks lists an image's segments for the analyzers.
+func chunks(img []byte) []Chunk {
 	segs, err := secboot.Segments(img)
 	if err != nil {
 		return nil
 	}
+	out := make([]Chunk, 0, len(segs))
 	for _, s := range segs {
-		seg := img[s.Offset : s.Offset+s.Filesz]
-		if c, ok := devcfg.Parse(seg, s.Paddr); ok {
-			return c
-		}
+		out = append(out, Chunk{img[s.Offset : s.Offset+s.Filesz], s.Paddr})
 	}
-	return nil
-}
-
-// compareDevCfg attaches a layout-independent configuration comparison.
-func compareDevCfg(res *Result, a, b []byte) {
-	ca, cb := findDevCfg(a), findDevCfg(b)
-	if ca == nil || cb == nil {
-		return
-	}
-	d := devcfg.Compare(ca, cb)
-	res.DevCfg = &d
+	return out
 }
 
 // Compare diffs two signed images.
@@ -145,7 +132,7 @@ func Compare(a, b []byte) (*Result, error) {
 		res.Verdict = Incomparable
 		res.Note = fmt.Sprintf("segment counts differ (%d vs %d); these are not two builds of one image",
 			len(segsA), len(segsB))
-		compareDevCfg(res, a, b)
+		res.Reports = analyzeImages(chunks(a), chunks(b))
 		return res, nil
 	}
 
@@ -155,7 +142,7 @@ func Compare(a, b []byte) (*Result, error) {
 		if sa.Filesz != sb.Filesz || sa.Paddr != sb.Paddr {
 			res.Verdict = Incomparable
 			res.Note = fmt.Sprintf("segment %d has a different size or load address; layouts do not correspond", i)
-			compareDevCfg(res, a, b)
+			res.Reports = analyzeImages(chunks(a), chunks(b))
 			return res, nil
 		}
 		da := a[sa.Offset : sa.Offset+sa.Filesz]
@@ -169,12 +156,7 @@ func Compare(a, b []byte) (*Result, error) {
 		sd.Runs = runs(da, db)
 		sd.NamesA, sd.NamesB = nameTable(da), nameTable(db)
 		sd.NamesEqual, sd.NamesOrdered = compareNames(sd.NamesA, sd.NamesB)
-		if ca, ok := devcfg.Parse(da, sa.Paddr); ok {
-			if cb, ok := devcfg.Parse(db, sb.Paddr); ok {
-				d := devcfg.Compare(ca, cb)
-				sd.DevCfg = &d
-			}
-		}
+		sd.Reports = analyze(Chunk{da, sa.Paddr}, Chunk{db, sb.Paddr})
 		res.Segments = append(res.Segments, sd)
 		if sa.Hash {
 			signatureChanged = true
@@ -188,15 +170,15 @@ func Compare(a, b []byte) (*Result, error) {
 	switch {
 	case payloadChanged:
 		res.Verdict = Changed
-		// A decoded configuration whose readable content matches is worth
-		// saying, but it is not a claim of equivalence: the payload also holds
-		// regions this package cannot read.
+		// An analyzer finding no difference in its own terms is worth saying,
+		// but it is not a claim of equivalence: the payload also holds regions
+		// no analyzer reads.
 		for _, s := range res.Segments {
-			if s.DevCfg != nil && s.Differing > 0 && s.DevCfg.Equivalent() {
-				res.Note = fmt.Sprintf(
-					"device config: identical name sets, and the %d decoded values agree; "+
-						"the rest is layout and undecoded regions",
-					s.DevCfg.ComparedValues)
+			for _, r := range s.Reports {
+				if s.Differing > 0 && r.Equivalent {
+					res.Note = fmt.Sprintf("%s: %s; the rest is layout and undecoded regions",
+						r.Kind, r.Summary())
+				}
 			}
 		}
 	case signatureChanged || res.OutsideDiffering > 0:

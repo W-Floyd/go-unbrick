@@ -130,11 +130,8 @@ func newDiffCmd() *cobra.Command {
 				switch {
 				case s.Hash:
 					note = "  (re-signed; expected)"
-				case s.DevCfg != nil && s.DevCfg.Equivalent():
-					note = fmt.Sprintf("  (device config: %d values, all match)", s.DevCfg.ComparedValues)
-				case s.DevCfg != nil:
-					note = fmt.Sprintf("  (device config: %d of %d values differ)",
-						len(s.DevCfg.Values), s.DevCfg.ComparedValues)
+				case len(s.Reports) > 0:
+					note = "  (" + s.Reports[0].Summary() + ")"
 				case s.Opaque():
 					note = "  (opaque: compressed or key material)"
 				case s.NamesEqual && !s.NamesOrdered:
@@ -163,31 +160,14 @@ func newDiffCmd() *cobra.Command {
 					}
 					fmt.Printf("      name table: %d names, identical set, %s\n", len(s.NamesA), order)
 				}
-				if d := s.DevCfg; d != nil {
-					fmt.Printf("      device config: %d values compared, %d differ; index %s\n",
-						d.ComparedValues, len(d.Values), map[bool]string{true: "reordered", false: "stable"}[d.Reordered])
-					for _, v := range d.Values {
-						fmt.Printf("        %s\n", v)
-					}
-					for _, n := range d.NamesOnlyA {
-						fmt.Printf("        only in first:  %s\n", n)
-					}
-					for _, n := range d.NamesOnlyB {
-						fmt.Printf("        only in second: %s\n", n)
-					}
+				for _, rep := range s.Reports {
+					printReport("      ", rep)
 				}
 			}
-			if d := r.DevCfg; d != nil {
-				fmt.Printf("  device config (compared independently of layout): %d values, %d differ\n",
-					d.ComparedValues, len(d.Values))
-				for _, v := range d.Values {
-					fmt.Printf("      %s\n", v)
-				}
-				for _, n := range d.NamesOnlyA {
-					fmt.Printf("      only in first:  %s\n", n)
-				}
-				for _, n := range d.NamesOnlyB {
-					fmt.Printf("      only in second: %s\n", n)
+			for _, rep := range r.Reports {
+				fmt.Printf("  %s, compared independently of layout: %s\n", rep.Kind, rep.Summary())
+				for _, line := range rep.Detail {
+					fmt.Printf("      %s\n", line)
 				}
 			}
 			if r.OutsideDiffering > 0 {
@@ -201,6 +181,16 @@ func newDiffCmd() *cobra.Command {
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy")
 	return c
+}
+
+// printReport renders an analyzer's finding. The command prints what an
+// analyzer produced without knowing which formats exist; teaching the tool a
+// new one means registering an analyzer, not editing this.
+func printReport(indent string, r imgdiff.Report) {
+	fmt.Printf("%s%s: %s\n", indent, r.Kind, r.Summary())
+	for _, line := range r.Detail {
+		fmt.Printf("%s  %s\n", indent, line)
+	}
 }
 
 // ---- stock package ----
