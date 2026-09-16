@@ -283,11 +283,11 @@ func TestHashSegmentPairsAcrossAddresses(t *testing.T) {
 	}
 }
 
-// Only when nothing loads at a shared address are two images genuinely
-// incomparable.
-func TestIncomparableWhenNoSharedAddress(t *testing.T) {
+// Two images are incomparable only when nothing corresponds: no segment pairs
+// at the same length under either alignment.
+func TestIncomparableWhenNothingCorresponds(t *testing.T) {
 	a := elf([]seg{{0, 0x1000, []byte("AAAA")}}, nil)
-	b := elf([]seg{{0, 0x9000, []byte("BBBB")}}, nil)
+	b := elf([]seg{{0, 0x9000, []byte("BBBBBBBBBBBBBBBB")}, {0, 0xa000, []byte("CCC")}}, nil)
 	r, err := Compare(a, b)
 	if err != nil {
 		t.Fatal(err)
@@ -358,5 +358,51 @@ func TestReportSummary(t *testing.T) {
 		if got := c.r.Summary(); got != c.want {
 			t.Errorf("Summary() = %q want %q", got, c.want)
 		}
+	}
+}
+
+// A segment that resizes slides every later segment's address. Pairing on
+// address then matches a segment against whatever moved into its old slot --
+// on real keymaster images, its metadata against a block of zeros -- so the
+// alignment that keeps the structure has to win.
+func TestResizeShiftsAddressesButKeepsStructure(t *testing.T) {
+	sig := []byte("SIG")
+	meta := []byte("keymaster64\x001.0\x00")
+	pad := make([]byte, 32)
+	// b's code segment shrinks, sliding the two after it down by 0x3000.
+	a := elf([]seg{
+		{hashFlags, 0x56000, sig},
+		{0, 0x0, bytes.Repeat([]byte("C"), 400)},
+		{0, 0x4e000, meta},
+		{0, 0x51000, pad},
+	}, nil)
+	b := elf([]seg{
+		{hashFlags, 0x53000, sig},
+		{0, 0x0, bytes.Repeat([]byte("C"), 200)},
+		{0, 0x4b000, meta},
+		{0, 0x4e000, pad},
+	}, nil)
+	r, err := Compare(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range r.Segments {
+		if s.OnlyA() || s.OnlyB() {
+			t.Errorf("structure is unchanged; nothing should be unpaired: %+v", s)
+		}
+	}
+	// The metadata segment must pair with the metadata segment, not with the
+	// padding that took over its address.
+	var found bool
+	for _, s := range r.Segments {
+		if s.SizeA == len(meta) && s.SizeB == len(meta) {
+			found = true
+			if s.Differing != 0 {
+				t.Errorf("metadata should pair with metadata, got %d differing", s.Differing)
+			}
+		}
+	}
+	if !found {
+		t.Error("metadata segment was not paired with its counterpart")
 	}
 }

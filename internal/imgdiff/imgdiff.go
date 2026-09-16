@@ -154,12 +154,13 @@ func Compare(a, b []byte) (*Result, error) {
 	}
 	res := &Result{SizeA: len(a), SizeB: len(b), RawDiffering: countDiff(a, b)}
 
-	pairs := pairByPaddr(segsA, segsB)
-	if aligned(pairs) == 0 {
-		// Nothing loads at a shared address: these are not two builds of one
-		// image, and a per-segment diff would be meaningless.
+	pairs := alignSegments(segsA, segsB)
+	// Segments of equal length are what establish that the two images
+	// correspond at all. With none, the best alignment is a guess and a
+	// per-segment diff would invent structure that is not there.
+	if sameSize, _ := score(pairs); sameSize == 0 {
 		res.Verdict = Incomparable
-		res.Note = fmt.Sprintf("no segment loads at a shared address (%d vs %d segments); "+
+		res.Note = fmt.Sprintf("no segment pairs at the same length (%d vs %d segments); "+
 			"these are not two builds of one image", len(segsA), len(segsB))
 		res.Reports = analyzeImages(chunks(a), chunks(b))
 		return res, nil
