@@ -42,50 +42,86 @@ func IsELF(b []byte) bool {
 	return len(b) >= 4 && b[0] == 0x7f && b[1] == 'E' && b[2] == 'L' && b[3] == 'F'
 }
 
-// hashSegment returns the Qualcomm hash-table segment (program-header flags with
-// segment-type nibble 2). Handles both ELFCLASS64 (aarch64 loaders) and ELFCLASS32
-// (older 32-bit programmers); the nibble-2 convention is identical, only the ELF
-// header and program-header field offsets differ. Little-endian only — every QC
+// Segment is one program-header entry of a Qualcomm signed image.
+type Segment struct {
+	Index                 int
+	Offset, Filesz, Paddr uint64
+	Flags                 uint64
+	// Hash marks the Qualcomm hash-table segment: the SHA table, signature and
+	// cert chain. It is re-generated on every build, so it differs between two
+	// images even when their payload is identical.
+	Hash bool
+}
+
+// Segments lists an image's program headers. Handles both ELFCLASS64 (aarch64
+// loaders) and ELFCLASS32 (older 32-bit programmers); the layout convention is
+// identical, only the header field offsets differ. Little-endian only — every QC
 // image is.
-func hashSegment(b []byte) ([]byte, error) {
-	if !IsELF(b) || len(b) < 0x34 {
-		return nil, fmt.Errorf("not an ELF")
+func Segments(b []byte) ([]Segment, error) {
+	phoff, phentsize, phnum, pOffset, pFilesz, pFlags, pPaddr, err := elfWalk(b)
+	if err != nil {
+		return nil, err
 	}
-	var phoff uint64
-	var phentsize, phnum int
-	var pOffset, pFilesz, pFlags func(o int) uint64
-	switch b[4] {
-	case 1: // ELFCLASS32: p_offset@4, p_filesz@16, p_flags@24
-		phoff = uint64(binary.LittleEndian.Uint32(b[0x1c:]))
-		phentsize = int(binary.LittleEndian.Uint16(b[0x2a:]))
-		phnum = int(binary.LittleEndian.Uint16(b[0x2c:]))
-		pOffset = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+4:])) }
-		pFilesz = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+16:])) }
-		pFlags = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+24:])) }
-	case 2: // ELFCLASS64: p_flags@4, p_offset@8, p_filesz@32
-		phoff = binary.LittleEndian.Uint64(b[0x20:])
-		phentsize = int(binary.LittleEndian.Uint16(b[0x36:]))
-		phnum = int(binary.LittleEndian.Uint16(b[0x38:]))
-		pOffset = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+8:]) }
-		pFilesz = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+32:]) }
-		pFlags = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+4:])) }
-	default:
-		return nil, fmt.Errorf("unknown ELF class %d", b[4])
-	}
+	var out []Segment
 	for i := 0; i < phnum; i++ {
 		o := int(phoff) + i*phentsize
 		if o < 0 || o+phentsize > len(b) {
 			break
 		}
-		if (pFlags(o)>>24)&0xf == 2 {
-			off, end := pOffset(o), pOffset(o)+pFilesz(o)
-			if off > uint64(len(b)) || end > uint64(len(b)) || end < off {
-				return nil, fmt.Errorf("hash segment out of range")
-			}
-			return b[off:end], nil
+		off, sz := pOffset(o), pFilesz(o)
+		if off > uint64(len(b)) || off+sz > uint64(len(b)) {
+			continue
+		}
+		out = append(out, Segment{
+			Index: i, Offset: off, Filesz: sz, Paddr: pPaddr(o),
+			Flags: pFlags(o), Hash: (pFlags(o)>>24)&0xf == 2,
+		})
+	}
+	return out, nil
+}
+
+// hashSegment returns the Qualcomm hash-table segment (program-header flags with
+// segment-type nibble 2).
+func hashSegment(b []byte) ([]byte, error) {
+	segs, err := Segments(b)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range segs {
+		if s.Hash {
+			return b[s.Offset : s.Offset+s.Filesz], nil
 		}
 	}
 	return nil, fmt.Errorf("no hash-table segment (unsigned or not a QC image?)")
+}
+
+// elfWalk resolves the class-dependent program-header accessors.
+func elfWalk(b []byte) (phoff uint64, phentsize, phnum int,
+	pOffset, pFilesz, pFlags, pPaddr func(o int) uint64, err error) {
+	if !IsELF(b) || len(b) < 0x34 {
+		return 0, 0, 0, nil, nil, nil, nil, fmt.Errorf("not an ELF")
+	}
+	switch b[4] {
+	case 1: // ELFCLASS32: p_offset@4, p_paddr@12, p_filesz@16, p_flags@24
+		phoff = uint64(binary.LittleEndian.Uint32(b[0x1c:]))
+		phentsize = int(binary.LittleEndian.Uint16(b[0x2a:]))
+		phnum = int(binary.LittleEndian.Uint16(b[0x2c:]))
+		pOffset = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+4:])) }
+		pPaddr = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+12:])) }
+		pFilesz = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+16:])) }
+		pFlags = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+24:])) }
+	case 2: // ELFCLASS64: p_flags@4, p_offset@8, p_paddr@24, p_filesz@32
+		phoff = binary.LittleEndian.Uint64(b[0x20:])
+		phentsize = int(binary.LittleEndian.Uint16(b[0x36:]))
+		phnum = int(binary.LittleEndian.Uint16(b[0x38:]))
+		pOffset = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+8:]) }
+		pPaddr = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+24:]) }
+		pFilesz = func(o int) uint64 { return binary.LittleEndian.Uint64(b[o+32:]) }
+		pFlags = func(o int) uint64 { return uint64(binary.LittleEndian.Uint32(b[o+4:])) }
+	default:
+		return 0, 0, 0, nil, nil, nil, nil, fmt.Errorf("unknown ELF class %d", b[4])
+	}
+	return phoff, phentsize, phnum, pOffset, pFilesz, pFlags, pPaddr, nil
 }
 
 // carveCerts finds the concatenated DER certificates in the hash segment.
