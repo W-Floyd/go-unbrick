@@ -447,8 +447,10 @@ func readProvision(path string) ([]byte, error) {
 
 // writeForgeOutput writes singleimage.bin + aux and prints the standard summary.
 func writeForgeOutput(outDir string, res *blankflash.ForgeResult) error {
-	if err := write(filepath.Join(outDir, "singleimage.bin"), res.Singleimage); err != nil {
-		return err
+	if len(res.Singleimage) > 0 {
+		if err := write(filepath.Join(outDir, "singleimage.bin"), res.Singleimage); err != nil {
+			return err
+		}
 	}
 	for n, b := range res.Aux {
 		if err := write(filepath.Join(outDir, n), b); err != nil {
@@ -739,14 +741,22 @@ func newForgeCmd() *cobra.Command {
 		if err := writeForgeOutput(out, res); err != nil {
 			return err
 		}
-		recs, _ := blankflash.Parse(res.Singleimage)
-		fmt.Printf("forged singleimage.bin: %d bytes, %d records\n", len(res.Singleimage), len(blankflash.Index(recs)))
+		if len(res.Singleimage) > 0 {
+			recs, _ := blankflash.Parse(res.Singleimage)
+			fmt.Printf("forged singleimage.bin: %d bytes, %d records\n", len(res.Singleimage), len(blankflash.Index(recs)))
+		} else {
+			fmt.Printf("forged QFIL recovery bundle: %d files\n", len(res.Aux))
+		}
 		fmt.Printf("  donor loader: %s  cpu.name=%s\n", d.Source, d.CPUName)
 		fmt.Printf("  target: %s  storage=%s\n", t.Source, firstNonEmpty(t.Storage, storage))
 		for _, w := range res.Warnings {
 			fmt.Fprintf(os.Stderr, "  ! %s\n", w)
 		}
-		fmt.Printf("-> %s  (run blank-flash.bat / blank-flash.sh with the device in EDL 9008)\n", out)
+		runScript := "blank-flash.bat / blank-flash.sh"
+		if len(res.Singleimage) == 0 {
+			runScript = "flash.bat / flash.sh"
+		}
+		fmt.Printf("-> %s  (run %s with the device in EDL 9008)\n", out, runScript)
 		return nil
 	}
 	return c
@@ -856,12 +866,16 @@ func newCatalogCmd() *cobra.Command {
 
 var (
 	reCodename = regexp.MustCompile(`(?i)blankflash[_-]`)
-	reModel    = regexp.MustCompile(`(?i)XT\d{3,4}[A-Z]?`)
 )
 
-// codenameFromSource parses a device codename from a donor filename, e.g.
-// "…/blankflash_GUAMP_RETBR_11_RPX31.Q2-58-17-7.zip" -> "guamp".
-func codenameFromSource(src string) string {
+// codenameFromSource matches a device codename from the catalog YAML, falling
+// back to parsing the donor filename if the device is uncatalogued.
+func codenameFromSource(cat *catalog.Catalog, src string) string {
+	if cat != nil {
+		if code := cat.CodenameFromFilename(src); code != "" {
+			return code
+		}
+	}
 	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	if loc := reCodename.FindStringIndex(base); loc != nil {
 		base = base[loc[1]:]
@@ -872,8 +886,15 @@ func codenameFromSource(src string) string {
 	return strings.ToLower(base)
 }
 
-func modelFromSource(src string) string {
-	return strings.ToUpper(reModel.FindString(filepath.Base(src)))
+// modelFromSource finds a device model number in the filename based on the models
+// defined in the catalog YAML (no hardcoded model prefixes or patterns).
+func modelFromSource(cat *catalog.Catalog, src string) string {
+	if cat != nil {
+		if m := cat.ModelFromFilename(src); m != "" {
+			return m
+		}
+	}
+	return ""
 }
 
 // isRealJTAG accepts only a genuine fused MSM id: 8 hex digits, not all-zero.
@@ -900,7 +921,7 @@ func newCatalogStubCmd() *cobra.Command {
 			byCode := map[string]*catalog.Device{}
 			for _, fam := range lib.Loaders() {
 				for _, b := range lib.Builds(fam) {
-					code := codenameFromSource(b.Meta.Source)
+					code := codenameFromSource(cat, b.Meta.Source)
 					if code == "" || code == "from" { // "from" = generic/unknown donor name
 						continue
 					}
@@ -917,7 +938,7 @@ func newCatalogStubCmd() *cobra.Command {
 					if isRealJTAG(fam.JTAGID) && !slices.Contains(d.JTAGIDs, fam.JTAGID) {
 						d.JTAGIDs = append(d.JTAGIDs, fam.JTAGID)
 					}
-					if m := modelFromSource(b.Meta.Source); m != "" && len(d.Models) == 0 {
+					if m := modelFromSource(cat, b.Meta.Source); m != "" && len(d.Models) == 0 {
 						d.Models = []string{m}
 					}
 					if b.Meta.Storage != "" && len(d.Storage) == 0 {
@@ -992,8 +1013,8 @@ func newCatalogBackfillCmd() *cobra.Command {
 			}
 			for _, fam := range lib.Loaders() {
 				for _, b := range lib.Builds(fam) {
-					add(fam.Vendor, codenameFromSource(b.Meta.Source), fam.JTAGID)
-					add(fam.Vendor, modelFromSource(b.Meta.Source), fam.JTAGID)
+					add(fam.Vendor, codenameFromSource(cat, b.Meta.Source), fam.JTAGID)
+					add(fam.Vendor, modelFromSource(cat, b.Meta.Source), fam.JTAGID)
 				}
 			}
 
@@ -1041,7 +1062,8 @@ func newCatalogBackfillCmd() *cobra.Command {
 					disc[j] = true
 				}
 				for _, m := range d.Models {
-					for j := range byIdent[key{d.Vendor, strings.ToUpper(reModel.FindString(m))}] {
+					mClean := strings.TrimSpace(m)
+					for j := range byIdent[key{d.Vendor, mClean}] {
 						disc[j] = true
 					}
 				}
@@ -1695,9 +1717,14 @@ func newDeriveCmd() *cobra.Command {
 		if err := writeForgeOutput(out, res); err != nil {
 			return err
 		}
-		recs, _ := blankflash.Parse(res.Singleimage)
-		fmt.Printf("derived %s (%s) blankflash: %d bytes, %d records\n",
-			dev.Codename, dev.Name, len(res.Singleimage), len(blankflash.Index(recs)))
+		if len(res.Singleimage) > 0 {
+			recs, _ := blankflash.Parse(res.Singleimage)
+			fmt.Printf("derived %s (%s) blankflash: %d bytes, %d records\n",
+				dev.Codename, dev.Name, len(res.Singleimage), len(blankflash.Index(recs)))
+		} else {
+			fmt.Printf("derived %s (%s) QFIL recovery bundle: %d files\n",
+				dev.Codename, dev.Name, len(res.Aux))
+		}
 		fmt.Printf("  family: %s  loader: %s@%s SW_ID=%d (from %s)\n", fam, fam, lref.Build, lref.Meta.SWID, lref.Meta.Source)
 		fmt.Printf("  target: %s  storage=%s\n", target.Source, firstNonEmpty(target.Storage, storage))
 		if sref != nil {

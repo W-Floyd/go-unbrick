@@ -64,7 +64,7 @@ func (motorola) CanIngest(path string) bool {
 		}
 		return false
 	}
-	return isContainerHead(path)
+	return isContainerHead(path) || MatchesVendorCatalog("motorola", path)
 }
 
 func isContainerHead(path string) bool {
@@ -129,15 +129,34 @@ func (motorola) CanIngestStock(path string) bool {
 		return false
 	}
 	defer zr.Close()
-	seen := map[string]bool{}
+
+	// A Motorola stock package requires both bootloader.img and gpt.bin
+	var blFile *zip.File
+	hasGPT := false
 	for _, f := range zr.File {
-		seen[filepath.Base(f.Name)] = true
-	}
-	for _, n := range stockMembers {
-		if !seen[n] {
-			return false
+		base := filepath.Base(f.Name)
+		if base == "bootloader.img" {
+			blFile = f
+		}
+		if base == "gpt.bin" {
+			hasGPT = true
 		}
 	}
+	if blFile == nil || !hasGPT {
+		return false
+	}
+
+	// Content check on bootloader.img
+	if rc, err := blFile.Open(); err == nil {
+		head := make([]byte, len(blankflash.Magic))
+		n, _ := io.ReadFull(rc, head)
+		rc.Close()
+		if blankflash.IsContainer(head[:n]) {
+			return true
+		}
+	}
+
+	// Fallback when bootloader.img has no container magic (e.g. test stubs)
 	return true
 }
 

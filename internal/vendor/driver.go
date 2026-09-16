@@ -7,9 +7,12 @@ package vendor
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"go-unbrick/internal/blankflash"
+	"go-unbrick/internal/catalog"
 )
 
 // ErrUnsupported marks a vendor operation that is recognized but not implemented.
@@ -174,3 +177,15 @@ func ids() []string {
 	sort.Strings(out)
 	return out
 }
+
+// MatchesVendorCatalog reports whether the filename matches any device, model, or brand
+// token associated with vendorID in the YAML catalog.
+func MatchesVendorCatalog(vendorID, path string) bool {
+	cat, err := catalog.Default()
+	if err != nil || cat == nil {
+		base := strings.ToLower(filepath.Base(path))
+		return strings.Contains(base, strings.ToLower(vendorID))
+	}
+	return cat.MatchesVendor(vendorID, path)
+}
+

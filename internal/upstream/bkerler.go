@@ -21,6 +21,8 @@ import (
 // VendorDir maps a catalog vendor id to its directory in bkerler/Loaders.
 var VendorDir = map[string]string{
 	"motorola": "lenovo_motorola",
+	"qualcomm": "qualcomm",
+	"xiaomi":   "xiaomi",
 }
 
 const (

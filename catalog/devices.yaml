@@ -642,3 +642,104 @@ devices:
       models: []
       storage:
         - ufs
+    - codename: apollo
+      name: Xiaomi Mi 10T / Mi 10T Pro
+      vendor: xiaomi
+      cpu_name: SM8250
+      jtag_id:
+        - "0014D0E1"
+      soc: Qualcomm SM8250 Snapdragon 865
+      models: []
+      storage:
+        - ufs
+    - codename: cmi
+      name: Xiaomi Mi 10 Pro
+      vendor: xiaomi
+      cpu_name: SM8250
+      jtag_id:
+        - "0014D0E1"
+      soc: Qualcomm SM8250 Snapdragon 865
+      models: []
+      storage:
+        - ufs
+    - codename: vayu
+      name: POCO X3 Pro
+      vendor: xiaomi
+      cpu_name: SM8150
+      jtag_id:
+        - "000C30E1"
+        - "0010A0E1"
+      soc: Qualcomm SM8150 Snapdragon 860
+      models: []
+      storage:
+        - ufs
+    - codename: whyred
+      name: Xiaomi Redmi Note 5 Pro
+      vendor: xiaomi
+      cpu_name: SDM636
+      jtag_id:
+        - "000BA0E1"
+      soc: Qualcomm SDM636 Snapdragon 636
+      models: []
+      storage:
+        - emmc
+    - codename: mido
+      name: Xiaomi Redmi Note 4X
+      vendor: xiaomi
+      cpu_name: MSM8953
+      jtag_id:
+        - "000460E1"
+      soc: Qualcomm MSM8953 Snapdragon 625
+      models: []
+      storage:
+        - emmc
+    - codename: blazer
+      name: Google Pixel 10
+      vendor: google
+      cpu_name: LAGUNA
+      soc: Google Tensor G5 (Laguna)
+      models: []
+      storage:
+        - ufs
+    - codename: stallion
+      name: Google Pixel 9a
+      vendor: google
+      cpu_name: ZUMAPRO
+      soc: Google Tensor G4 (Zuma Pro)
+      models: []
+      storage:
+        - ufs
+    - codename: cubs
+      name: Google Pixel 11 Pro
+      vendor: google
+      cpu_name: MALIBU
+      soc: Google Tensor G6 (Malibu)
+      models: []
+      storage:
+        - ufs
+    - codename: grizzly
+      name: Google Pixel 11 Pro XL
+      vendor: google
+      cpu_name: MALIBU
+      soc: Google Tensor G6 (Malibu)
+      models: []
+      storage:
+        - ufs
+    - codename: kodiak
+      name: Google Pixel 11 Fold
+      vendor: google
+      cpu_name: MALIBU
+      soc: Google Tensor G6 (Malibu)
+      models: []
+      storage:
+        - ufs
+    - codename: yogi
+      name: Google Pixel Tablet 2 / Fold
+      vendor: google
+      cpu_name: MALIBU
+      soc: Google Tensor G6 (Malibu)
+      models: []
+      storage:
+        - ufs
+
+

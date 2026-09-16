@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	yaml "go.yaml.in/yaml/v4"
 )
@@ -166,4 +167,146 @@ func Render(devs []*Device) ([]byte, error) {
 	sorted := append([]*Device{}, devs...)
 	sort.Slice(sorted, func(i, j int) bool { return deviceLess(sorted[i], sorted[j]) })
 	return yaml.Marshal(catalogFile{Devices: sorted})
+}
+
+var (
+	defaultCatalogMu sync.Mutex
+	defaultCatalog   *Catalog
+)
+
+// FindCatalogDir locates the catalog directory by checking UNBRICK_CATALOG,
+// "catalog", and searching upwards from the current working directory.
+func FindCatalogDir() string {
+	if env := os.Getenv("UNBRICK_CATALOG"); env != "" {
+		if fi, err := os.Stat(env); err == nil && fi.IsDir() {
+			return env
+		}
+	}
+	if fi, err := os.Stat("catalog"); err == nil && fi.IsDir() {
+		return "catalog"
+	}
+	dir, err := os.Getwd()
+	if err == nil {
+		for {
+			cand := filepath.Join(dir, "catalog")
+			if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+				files, _ := filepath.Glob(filepath.Join(cand, "*.yaml"))
+				if len(files) > 0 {
+					return cand
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	return "catalog"
+}
+
+// Default returns a cached Catalog instance loaded from FindCatalogDir().
+func Default() (*Catalog, error) {
+	defaultCatalogMu.Lock()
+	defer defaultCatalogMu.Unlock()
+	if defaultCatalog != nil {
+		return defaultCatalog, nil
+	}
+	dir := FindCatalogDir()
+	c, err := Load(dir)
+	if err != nil {
+		return nil, err
+	}
+	defaultCatalog = c
+	return defaultCatalog, nil
+}
+
+// SetDefault sets the default catalog instance (useful for testing).
+func SetDefault(c *Catalog) {
+	defaultCatalogMu.Lock()
+	defer defaultCatalogMu.Unlock()
+	defaultCatalog = c
+}
+
+// MatchesVendor reports whether the filename matches any device, model, or brand
+// token associated with vendorID in the YAML catalog.
+func (c *Catalog) MatchesVendor(vendorID, filename string) bool {
+	if c == nil {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(filename))
+	vLower := strings.ToLower(vendorID)
+	if strings.Contains(base, vLower) {
+		return true
+	}
+
+	for _, d := range c.devices {
+		if !strings.EqualFold(d.Vendor, vendorID) {
+			continue
+		}
+		// Match against device codename from YAML
+		if d.Codename != "" && strings.Contains(base, strings.ToLower(d.Codename)) {
+			return true
+		}
+		// Match against device models from YAML
+		for _, m := range d.Models {
+			mClean := strings.TrimSpace(strings.ToLower(m))
+			if mClean != "" && strings.Contains(base, mClean) {
+				return true
+			}
+		}
+		// Match against significant brand/model tokens in device Name from YAML
+		if d.Name != "" {
+			for _, token := range strings.FieldsFunc(d.Name, func(r rune) bool {
+				return r == ' ' || r == '/' || r == '-' || r == '(' || r == ')'
+			}) {
+				token = strings.ToLower(strings.TrimSpace(token))
+				if len(token) >= 3 && !isNumeric(token) && strings.Contains(base, token) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// ModelFromFilename searches all catalog devices for any known model number appearing in filename.
+func (c *Catalog) ModelFromFilename(filename string) string {
+	if c == nil {
+		return ""
+	}
+	base := strings.ToLower(filepath.Base(filename))
+	for _, d := range c.devices {
+		for _, m := range d.Models {
+			mClean := strings.TrimSpace(m)
+			if mClean != "" && strings.Contains(base, strings.ToLower(mClean)) {
+				return mClean
+			}
+		}
+	}
+	return ""
+}
+
+// CodenameFromFilename searches all catalog devices for any known codename appearing in filename.
+func (c *Catalog) CodenameFromFilename(filename string) string {
+	if c == nil {
+		return ""
+	}
+	base := strings.ToLower(filepath.Base(filename))
+	for _, d := range c.devices {
+		cClean := strings.TrimSpace(d.Codename)
+		if cClean != "" && strings.Contains(base, strings.ToLower(cClean)) {
+			return cClean
+		}
+	}
+	return ""
+}
+
+func isNumeric(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

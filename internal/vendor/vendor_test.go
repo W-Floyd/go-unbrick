@@ -368,3 +368,130 @@ func TestSamsungOpsUnsupported(t *testing.T) {
 		t.Errorf("Assemble should wrap ErrUnsupported: %v", err)
 	}
 }
+
+func TestQualcommDriver(t *testing.T) {
+	q, ok := For("qualcomm")
+	if !ok {
+		t.Fatal("qualcomm driver not found")
+	}
+	if q.Platform() != PlatformQualcomm {
+		t.Errorf("got platform %q, want %q", q.Platform(), PlatformQualcomm)
+	}
+	if len(q.OEMIDs()) != 1 || q.OEMIDs()[0] != "0000" {
+		t.Errorf("unexpected OEMIDs: %v", q.OEMIDs())
+	}
+
+	dir := t.TempDir()
+	progPath := filepath.Join(dir, "prog_firehose_lite.elf")
+	os.WriteFile(progPath, []byte("QUALCOMM_PROGRAMMER"), 0o644)
+
+	if !q.CanIngest(progPath) {
+		t.Errorf("CanIngest should be true for %s", progPath)
+	}
+
+	donor, err := q.IngestDonor(progPath)
+	if err != nil {
+		t.Fatalf("IngestDonor failed: %v", err)
+	}
+	if string(donor.Programmer) != "QUALCOMM_PROGRAMMER" {
+		t.Errorf("unexpected programmer: %s", string(donor.Programmer))
+	}
+
+	// Test HarvestStock from dumps dir
+	dumpsDir := filepath.Join(dir, "dumps")
+	os.MkdirAll(dumpsDir, 0o755)
+	os.WriteFile(filepath.Join(dumpsDir, "xbl_a.img"), []byte("XBL_BYTES"), 0o644)
+	os.WriteFile(filepath.Join(dumpsDir, "abl_a.img"), []byte("ABL_BYTES"), 0o644)
+	os.WriteFile(filepath.Join(dumpsDir, "gpt.bin"), []byte("GPT_BYTES"), 0o644)
+
+	tgt, err := q.HarvestStock(TargetSource{Parts: dumpsDir, Slot: "a"})
+	if err != nil {
+		t.Fatalf("HarvestStock failed: %v", err)
+	}
+	if len(tgt.Parts) < 2 {
+		t.Errorf("expected harvested parts, got %v", tgt.Parts)
+	}
+
+	// Test Assemble
+	res, err := q.Assemble(donor, tgt, AssembleOptions{Slot: "a"})
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+	if res.Singleimage != nil {
+		t.Errorf("standard Qualcomm should not produce Singleimage")
+	}
+	if _, ok := res.Aux["rawprogram0.xml"]; !ok {
+		t.Errorf("missing rawprogram0.xml in Aux")
+	}
+	if _, ok := res.Aux["prog_firehose_lite.elf"]; !ok {
+		t.Errorf("missing prog_firehose_lite.elf in Aux")
+	}
+}
+
+// TestContentBasedIngestion verifies that all vendor drivers detect formats by content/magics
+// first, even when filenames are completely arbitrary, non-standard, or obfuscated.
+func TestContentBasedIngestion(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. Samsung PIT magic (0x12349876) with arbitrary filename
+	samsungFile := filepath.Join(dir, "arbitrary_data.bin")
+	os.WriteFile(samsungFile, []byte{0x76, 0x98, 0x34, 0x12, 0x00, 0x00, 0x00, 0x01}, 0o644)
+	if sDriver, ok := For("samsung"); !ok || !sDriver.CanIngest(samsungFile) {
+		t.Errorf("Samsung CanIngest failed to detect PIT binary magic in %s", samsungFile)
+	}
+
+	// 2. MediaTek scatter content with arbitrary filename
+	mtkScatter := filepath.Join(dir, "instructions.txt")
+	os.WriteFile(mtkScatter, []byte("##################\nMTK_PLATFORM_CFG\nplatform: MT6765\npartition_index: SYS0\n"), 0o644)
+	if mtkDriver, ok := For("mediatek"); !ok || !mtkDriver.CanIngest(mtkScatter) {
+		t.Errorf("MediaTek CanIngest failed to detect MTK_PLATFORM_CFG in %s", mtkScatter)
+	}
+
+	// 3. MediaTek preloader binary magic (EMMC_BOOT) with arbitrary filename
+	mtkPreloader := filepath.Join(dir, "boot_header.bin")
+	os.WriteFile(mtkPreloader, []byte("EMMC_BOOT\x00\x00\x00\x01\x00\x00"), 0o644)
+	if mtkDriver, ok := For("mediatek"); !ok || !mtkDriver.CanIngest(mtkPreloader) {
+		t.Errorf("MediaTek CanIngest failed to detect EMMC_BOOT magic in %s", mtkPreloader)
+	}
+
+	// 4. Qualcomm rawprogram XML with arbitrary filename
+	qcRawProg := filepath.Join(dir, "partition_table.xml")
+	os.WriteFile(qcRawProg, []byte(`<?xml version="1.0" ?><data><program SECTOR_SIZE_IN_BYTES="512" filename="xbl.elf" label="xbl"/></data>`), 0o644)
+	if qcDriver, ok := For("qualcomm"); !ok || !qcDriver.CanIngest(qcRawProg) {
+		t.Errorf("Qualcomm CanIngest failed to detect rawprogram XML in %s", qcRawProg)
+	}
+
+	// 5. Qualcomm Firehose binary content with arbitrary filename
+	qcFirehose := filepath.Join(dir, "firmware_chunk.bin")
+	os.WriteFile(qcFirehose, []byte("\x7fELF\x02\x01\x01\x00Qualcomm Firehose Loader version 1.0"), 0o644)
+	if qcDriver, ok := For("qualcomm"); !ok || !qcDriver.CanIngest(qcFirehose) {
+		t.Errorf("Qualcomm CanIngest failed to detect Firehose marker in %s", qcFirehose)
+	}
+
+	// 6. Motorola SINGLE_N_LONELY container magic with arbitrary filename
+	motoContainer := filepath.Join(dir, "firmware.rom")
+	blob, _ := blankflash.Build(blankflash.WithTrailer([]blankflash.Record{{Name: "programmer.elf", Data: []byte("x")}}))
+	os.WriteFile(motoContainer, blob, 0o644)
+	if motoDriver, ok := For("motorola"); !ok || !motoDriver.CanIngest(motoContainer) {
+		t.Errorf("Motorola CanIngest failed to detect SINGLE_N_LONELY container in %s", motoContainer)
+	}
+
+	// 7. Google Pixel stock OTA zip detected by metadata content (post-build=google/)
+	pixelZip := filepath.Join(dir, "android_update.zip")
+	writeZip(t, pixelZip, map[string]string{
+		"META-INF/com/android/metadata": "post-build=google/blazer/blazer:16/BD1A.250702.001/1234:user/release-keys\npre-device=blazer\n",
+	})
+	if googleDriver, ok := For("google"); !ok || !googleDriver.CanIngest(pixelZip) {
+		t.Errorf("Google CanIngest failed to detect post-build=google/ in %s", pixelZip)
+	}
+
+	// 8. Xiaomi stock OTA zip detected by metadata content (post-build=xiaomi/)
+	xiaomiZip := filepath.Join(dir, "custom_update.zip")
+	writeZip(t, xiaomiZip, map[string]string{
+		"META-INF/com/android/metadata": "post-build=xiaomi/apollo/apollo:12/SKQ1.211006.001/V14.0.1.0:user/release-keys\n",
+	})
+	if xiaomiDriver, ok := For("xiaomi"); !ok || !xiaomiDriver.CanIngest(xiaomiZip) {
+		t.Errorf("Xiaomi CanIngest failed to detect post-build=xiaomi/ in %s", xiaomiZip)
+	}
+}
+
