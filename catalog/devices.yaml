@@ -1,9 +1,50 @@
 devices:
+    - codename: blazer
+      name: Google Pixel 10
+      vendor: google
+      cpu_name: LAGUNA
+      models: []
+      storage:
+        - ufs
+    - codename: cubs
+      name: Google Pixel 11 Pro
+      vendor: google
+      cpu_name: MALIBU
+      models: []
+      storage:
+        - ufs
+    - codename: grizzly
+      name: Google Pixel 11 Pro XL
+      vendor: google
+      cpu_name: MALIBU
+      models: []
+      storage:
+        - ufs
+    - codename: kodiak
+      name: Google Pixel 11 Fold
+      vendor: google
+      cpu_name: MALIBU
+      models: []
+      storage:
+        - ufs
+    - codename: yogi
+      name: Google Pixel Tablet 2 / Fold
+      vendor: google
+      cpu_name: MALIBU
+      models: []
+      storage:
+        - ufs
+    - codename: stallion
+      name: Google Pixel 9a
+      vendor: google
+      cpu_name: ZUMAPRO
+      models: []
+      storage:
+        - ufs
     - codename: fogo
       name: moto g 5G - 2024
       vendor: motorola
       cpu_name: CONIC
-      soc: Qualcomm SM4375 Snapdragon 4 Gen 1
       models:
         - XT2417-1
       storage:
@@ -12,7 +53,8 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: MSM8953
-      soc: ""
+      jtag_id:
+        - 000BA0E1
       models: []
       storage:
         - emmc
@@ -22,7 +64,6 @@ devices:
       cpu_name: SDM710
       jtag_id:
         - 000DB0E1
-      soc: ""
       models: []
       storage:
         - emmc
@@ -32,7 +73,6 @@ devices:
       cpu_name: SM6150
       jtag_id:
         - "000950E1"
-      soc: ""
       models: []
       storage:
         - ufs
@@ -42,7 +82,6 @@ devices:
       cpu_name: SM7150
       jtag_id:
         - 000E60E1
-      soc: ""
       models: []
       storage:
         - ufs
@@ -52,7 +91,6 @@ devices:
       cpu_name: SM7150
       jtag_id:
         - 000E60E1
-      soc: ""
       models: []
       storage:
         - ufs
@@ -62,7 +100,6 @@ devices:
       cpu_name: SM7150
       jtag_id:
         - 000E60E1
-      soc: ""
       models: []
       storage:
         - ufs
@@ -72,7 +109,6 @@ devices:
       cpu_name: SM8250
       jtag_id:
         - 000C30E1
-      soc: Qualcomm SM8250-AC Snapdragon 870
       models: []
       storage:
         - ufs
@@ -80,7 +116,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM8250
-      soc: Qualcomm SM8250-AC Snapdragon 870
       models: []
       storage:
         - ufs
@@ -90,7 +125,6 @@ devices:
       cpu_name: SM8250
       jtag_id:
         - 000C30E1
-      soc: Qualcomm SM8250-AC Snapdragon 870
       models:
         - XT2153-1
       storage:
@@ -99,7 +133,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM8250
-      soc: Qualcomm SM8250-AC Snapdragon 870
       models: []
       storage:
         - ufs
@@ -109,7 +142,6 @@ devices:
       cpu_name: SM_BITRA
       jtag_id:
         - 0013F0E1
-      soc: ""
       models: []
       storage:
         - ufs
@@ -119,7 +151,6 @@ devices:
       cpu_name: SM_BITRA
       jtag_id:
         - 0013F0E1
-      soc: ""
       models: []
       storage:
         - ufs
@@ -127,7 +158,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_CAMANO
-      soc: ""
       models: []
       storage:
         - ufs
@@ -137,7 +167,6 @@ devices:
       cpu_name: SM_DIVAR
       jtag_id:
         - 001B80E1
-      soc: SM6225 (Snapdragon 680)
       models:
         - XT2235
       storage: []
@@ -147,7 +176,6 @@ devices:
       cpu_name: SM_DIVAR
       jtag_id:
         - 001B80E1
-      soc: SM6225 (Snapdragon 680)
       models:
         - XT2413
       storage: []
@@ -157,7 +185,6 @@ devices:
       cpu_name: SM_DIVAR
       jtag_id:
         - 001B80E1
-      soc: SM6225 (Snapdragon 680)
       models:
         - XT2233
       storage: []
@@ -167,7 +194,6 @@ devices:
       cpu_name: SM_DIVAR
       jtag_id:
         - 001B80E1
-      soc: SM6225 (Snapdragon 680)
       models:
         - XT2221
       storage: []
@@ -175,7 +201,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_FILLMORE
-      soc: ""
       models: []
       storage:
         - ufs
@@ -183,7 +208,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAILUA
-      soc: ""
       models: []
       storage:
         - ufs
@@ -191,7 +215,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KAILUA
-      soc: ""
       models: []
       storage:
         - ufs
@@ -201,7 +224,6 @@ devices:
       cpu_name: SM_KAMORTA
       jtag_id:
         - "001360E1"
-      soc: ""
       models: []
       storage:
         - emmc
@@ -211,7 +233,6 @@ devices:
       cpu_name: SM_KAMORTA
       jtag_id:
         - "001360E1"
-      soc: ""
       models: []
       storage:
         - emmc
@@ -221,7 +242,6 @@ devices:
       cpu_name: SM_KAMORTA
       jtag_id:
         - "001360E1"
-      soc: ""
       models: []
       storage:
         - emmc
@@ -231,7 +251,6 @@ devices:
       cpu_name: SM_KAMORTA_H
       jtag_id:
         - "001360E1"
-      soc: Qualcomm SM6115 Snapdragon 662
       models:
         - XT2083-8
         - XT2083-9
@@ -243,7 +262,6 @@ devices:
       cpu_name: SM_KAMORTA_H
       jtag_id:
         - "001360E1"
-      soc: Qualcomm SM6115 Snapdragon 662
       models:
         - XT2117-1
         - XT2117-2
@@ -257,7 +275,6 @@ devices:
       cpu_name: SM_KAMORTA_H
       jtag_id:
         - "001360E1"
-      soc: Qualcomm SM6115 Snapdragon 662
       models: []
       storage:
         - emmc
@@ -267,7 +284,6 @@ devices:
       cpu_name: SM_KAMORTA_H
       jtag_id:
         - "001360E1"
-      soc: Qualcomm SM6115 Snapdragon 662
       models: []
       storage:
         - emmc
@@ -277,7 +293,6 @@ devices:
       cpu_name: SM_KODIAK
       jtag_id:
         - "001920E1"
-      soc: ""
       models:
         - XT2143-1
       storage:
@@ -286,7 +301,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_KODIAK
-      soc: ""
       models: []
       storage:
         - ufs
@@ -296,7 +310,6 @@ devices:
       cpu_name: SM_KODIAK
       jtag_id:
         - "001920E1"
-      soc: ""
       models:
         - XT2141-2
       storage:
@@ -307,7 +320,6 @@ devices:
       cpu_name: SM_KODIAK
       jtag_id:
         - "001920E1"
-      soc: ""
       models:
         - XT2203-1
       storage:
@@ -318,7 +330,6 @@ devices:
       cpu_name: SM_LAHAINA
       jtag_id:
         - "001350E1"
-      soc: ""
       models: []
       storage:
         - ufs
@@ -328,7 +339,6 @@ devices:
       cpu_name: SM_LAHAINA
       jtag_id:
         - "001350E1"
-      soc: ""
       models: []
       storage:
         - ufs
@@ -336,7 +346,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_LAHAINA
-      soc: ""
       models: []
       storage:
         - ufs
@@ -346,7 +355,6 @@ devices:
       cpu_name: SM_MANNAR
       jtag_id:
         - 0016F0E1
-      soc: Qualcomm SM4350 Snapdragon 480
       models: []
       storage:
         - ufs
@@ -354,7 +362,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_MANNAR
-      soc: Qualcomm SM4350 Snapdragon 480
       models: []
       storage:
         - ufs
@@ -364,7 +371,6 @@ devices:
       cpu_name: SM_MANNAR
       jtag_id:
         - 0016F0E1
-      soc: Qualcomm SM4350 Snapdragon 480
       models:
         - XT2131-1
       storage:
@@ -375,7 +381,6 @@ devices:
       cpu_name: SM_MANNAR
       jtag_id:
         - 0016F0E1
-      soc: Qualcomm SM4350 Snapdragon 480
       models:
         - XT2137-1
       storage:
@@ -384,7 +389,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_MANNAR
-      soc: Qualcomm SM4350 Snapdragon 480
       models: []
       storage:
         - ufs
@@ -394,7 +398,6 @@ devices:
       cpu_name: SM_MANNAR
       jtag_id:
         - 0016F0E1
-      soc: Qualcomm SM4350 Snapdragon 480
       models:
         - XT2335
       storage:
@@ -405,7 +408,6 @@ devices:
       cpu_name: SM_MANNAR
       jtag_id:
         - 0016F0E1
-      soc: Qualcomm SM4350 Snapdragon 480
       models: []
       storage:
         - ufs
@@ -413,7 +415,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NETRANI
-      soc: ""
       models: []
       storage:
         - ufs
@@ -421,7 +422,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NETRANI
-      soc: ""
       models: []
       storage:
         - ufs
@@ -429,7 +429,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NETRANI
-      soc: ""
       models: []
       storage:
         - ufs
@@ -437,7 +436,6 @@ devices:
       name: edge 2024
       vendor: motorola
       cpu_name: SM_NETRANI7
-      soc: Qualcomm SM7435-AB Snapdragon 7s Gen 2
       models:
         - XT2405-1
         - XT2405V
@@ -447,7 +445,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NETRANI7
-      soc: Qualcomm SM7435-AB Snapdragon 7s Gen 2
       models: []
       storage:
         - ufs
@@ -457,7 +454,6 @@ devices:
       cpu_name: SM_NICOBAR
       jtag_id:
         - 0010A0E1
-      soc: ""
       models: []
       storage:
         - emmc
@@ -467,7 +463,6 @@ devices:
       cpu_name: SM_NICOBAR
       jtag_id:
         - 0010A0E1
-      soc: ""
       models: []
       storage:
         - emmc
@@ -475,7 +470,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_NICOBAR
-      soc: ""
       models: []
       storage:
         - emmc
@@ -485,7 +479,6 @@ devices:
       cpu_name: SM_NICOBAR
       jtag_id:
         - 0010A0E1
-      soc: ""
       models: []
       storage:
         - emmc
@@ -493,7 +486,6 @@ devices:
       name: ThinkPhone by motorola
       vendor: motorola
       cpu_name: SM_PALIMA
-      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
       models:
         - XT2309-2
         - XT2309-3
@@ -503,7 +495,6 @@ devices:
       name: edge 30 ultra
       vendor: motorola
       cpu_name: SM_PALIMA
-      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
       models:
         - XT2241-1
         - XT2241-2
@@ -513,7 +504,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_PALIMA
-      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
       models: []
       storage:
         - ufs
@@ -521,7 +511,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_PALIMA
-      soc: Qualcomm SM8475 Snapdragon 8+ Gen1
       models: []
       storage:
         - ufs
@@ -531,7 +520,6 @@ devices:
       cpu_name: SM_SAIPAN
       jtag_id:
         - 0011E0E1
-      soc: Qualcomm SM7250 Snapdragon 765G
       models: []
       storage:
         - ufs
@@ -541,7 +529,6 @@ devices:
       cpu_name: SM_SAIPAN
       jtag_id:
         - 0011E0E1
-      soc: Qualcomm SM7250 Snapdragon 765G
       models:
         - XT2063-2
         - XT2063-3
@@ -551,7 +538,6 @@ devices:
       name: moto g84 5G
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models:
         - XT2347-1
         - XT2347-2
@@ -561,7 +547,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -569,7 +554,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -577,7 +561,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -585,7 +568,6 @@ devices:
       name: edge 30 neo
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models:
         - XT2245-1
       storage:
@@ -594,7 +576,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -602,7 +583,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -610,7 +590,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -618,7 +597,6 @@ devices:
       name: ""
       vendor: motorola
       cpu_name: SM_STRAIT
-      soc: Qualcomm SM6375 Snapdragon 695
       models: []
       storage:
         - ufs
@@ -628,7 +606,6 @@ devices:
       cpu_name: SM_WAIPIO
       jtag_id:
         - "001870E1"
-      soc: ""
       models: []
       storage:
         - ufs
@@ -638,7 +615,34 @@ devices:
       cpu_name: SM_WAIPIO
       jtag_id:
         - "001870E1"
-      soc: ""
+      models: []
+      storage:
+        - ufs
+    - codename: mido
+      name: Xiaomi Redmi Note 4X
+      vendor: xiaomi
+      cpu_name: MSM8953
+      jtag_id:
+        - "000460E1"
+      models: []
+      storage:
+        - emmc
+    - codename: whyred
+      name: Xiaomi Redmi Note 5 Pro
+      vendor: xiaomi
+      cpu_name: SDM636
+      jtag_id:
+        - 000BA0E1
+      models: []
+      storage:
+        - emmc
+    - codename: vayu
+      name: POCO X3 Pro
+      vendor: xiaomi
+      cpu_name: SM8150
+      jtag_id:
+        - 000C30E1
+        - 0010A0E1
       models: []
       storage:
         - ufs
@@ -647,8 +651,7 @@ devices:
       vendor: xiaomi
       cpu_name: SM8250
       jtag_id:
-        - "0014D0E1"
-      soc: Qualcomm SM8250 Snapdragon 865
+        - 0014D0E1
       models: []
       storage:
         - ufs
@@ -657,89 +660,7 @@ devices:
       vendor: xiaomi
       cpu_name: SM8250
       jtag_id:
-        - "0014D0E1"
-      soc: Qualcomm SM8250 Snapdragon 865
+        - 0014D0E1
       models: []
       storage:
         - ufs
-    - codename: vayu
-      name: POCO X3 Pro
-      vendor: xiaomi
-      cpu_name: SM8150
-      jtag_id:
-        - "000C30E1"
-        - "0010A0E1"
-      soc: Qualcomm SM8150 Snapdragon 860
-      models: []
-      storage:
-        - ufs
-    - codename: whyred
-      name: Xiaomi Redmi Note 5 Pro
-      vendor: xiaomi
-      cpu_name: SDM636
-      jtag_id:
-        - "000BA0E1"
-      soc: Qualcomm SDM636 Snapdragon 636
-      models: []
-      storage:
-        - emmc
-    - codename: mido
-      name: Xiaomi Redmi Note 4X
-      vendor: xiaomi
-      cpu_name: MSM8953
-      jtag_id:
-        - "000460E1"
-      soc: Qualcomm MSM8953 Snapdragon 625
-      models: []
-      storage:
-        - emmc
-    - codename: blazer
-      name: Google Pixel 10
-      vendor: google
-      cpu_name: LAGUNA
-      soc: Google Tensor G5 (Laguna)
-      models: []
-      storage:
-        - ufs
-    - codename: stallion
-      name: Google Pixel 9a
-      vendor: google
-      cpu_name: ZUMAPRO
-      soc: Google Tensor G4 (Zuma Pro)
-      models: []
-      storage:
-        - ufs
-    - codename: cubs
-      name: Google Pixel 11 Pro
-      vendor: google
-      cpu_name: MALIBU
-      soc: Google Tensor G6 (Malibu)
-      models: []
-      storage:
-        - ufs
-    - codename: grizzly
-      name: Google Pixel 11 Pro XL
-      vendor: google
-      cpu_name: MALIBU
-      soc: Google Tensor G6 (Malibu)
-      models: []
-      storage:
-        - ufs
-    - codename: kodiak
-      name: Google Pixel 11 Fold
-      vendor: google
-      cpu_name: MALIBU
-      soc: Google Tensor G6 (Malibu)
-      models: []
-      storage:
-        - ufs
-    - codename: yogi
-      name: Google Pixel Tablet 2 / Fold
-      vendor: google
-      cpu_name: MALIBU
-      soc: Google Tensor G6 (Malibu)
-      models: []
-      storage:
-        - ufs
-
-

@@ -22,7 +22,9 @@ func elf(segs []seg, trailer []byte) []byte {
 	const phoff, phentsize = 64, 56
 	hdr := make([]byte, phoff+phentsize*len(segs))
 	copy(hdr, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0})
+	binary.LittleEndian.PutUint32(hdr[0x14:], 1)  // e_version
 	binary.LittleEndian.PutUint64(hdr[0x20:], phoff)
+	binary.LittleEndian.PutUint16(hdr[0x34:], 64) // e_ehsize
 	binary.LittleEndian.PutUint16(hdr[0x36:], phentsize)
 	binary.LittleEndian.PutUint16(hdr[0x38:], uint16(len(segs)))
 

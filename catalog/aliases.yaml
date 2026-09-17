@@ -1,0 +1,14 @@
+# Partition Filename Aliases
+# Maps recovery package, fastboot archive, and firmware-update/ filenames
+# to standard partition labels.
+
+aliases:
+  qupv3fw.elf: qupfw
+  uefi_sec.mbn: uefisecapp
+  km4.mbn: keymaster
+  km3.mbn: keymaster
+  NON-HLOS.bin: modem
+  BTFM.bin: bluetooth
+  dspso.bin: dsp
+  featenabler.mbn: featenabler
+

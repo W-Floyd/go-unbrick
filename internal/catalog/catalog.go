@@ -27,7 +27,7 @@ type Device struct {
 	Vendor   string   `yaml:"vendor"`   // OEM id, e.g. "motorola" — with cpu_name, the family key
 	CPUName  string   `yaml:"cpu_name"` // qboot loader-signing token, e.g. "SM_DIVAR"
 	JTAGIDs  []string `yaml:"jtag_id,omitempty"` // known fused MSM ids; the authoritative loader key when present, since the PBL checks JTAG_ID, not cpu_name. Optional — derive falls back to the cpu_name bridge.
-	SoC      string   `yaml:"soc"`      // marketing SoC name (cosmetic, may be empty)
+	SoC      string   `yaml:"soc,omitempty"`      // marketing SoC name (cosmetic, resolved from variants if omitted)
 	Models   []string `yaml:"models"`   // model numbers (carrier/region variants)
 	Storage  []string `yaml:"storage"`  // advisory; real storage is inferred from firmware
 }
@@ -51,13 +51,30 @@ func (f Family) String() string { return f.Vendor + "/" + f.JTAGID }
 // sibling detection — not a loader key (see Family).
 func (d *Device) CPUFamily() string { return d.Vendor + "/" + d.CPUName }
 
+type VendorConfig struct {
+	Name        string   `yaml:"name,omitempty"`
+	UpstreamDir string   `yaml:"upstream_dir,omitempty"`
+	Platform    string   `yaml:"platform,omitempty"`
+	OEMIDs      []string `yaml:"oem_ids,omitempty"`
+}
+
 type catalogFile struct {
-	Devices []*Device `yaml:"devices"`
+	Devices  []*Device                `yaml:"devices,omitempty"`
+	Variants map[string]string        `yaml:"variants,omitempty"`
+	Aliases  map[string]string        `yaml:"aliases,omitempty"`
+	Vendors  map[string]*VendorConfig `yaml:"vendors,omitempty"`
+	SWIDs    map[uint64]string        `yaml:"sw_ids,omitempty"`
+	EFIGUIDs map[string]string        `yaml:"efi_guids,omitempty"`
 }
 
 type Catalog struct {
-	devices []*Device
-	byCode  map[string]*Device
+	devices  []*Device
+	byCode   map[string]*Device
+	variants map[string]string
+	aliases  map[string]string
+	vendors  map[string]*VendorConfig
+	swIDs    map[uint64]string
+	efiGUIDs map[string]string
 }
 
 // Load reads every *.yaml under dir as a device list and merges them.
@@ -67,7 +84,22 @@ func Load(dir string) (*Catalog, error) {
 		return nil, err
 	}
 	sort.Strings(files)
-	c := &Catalog{byCode: map[string]*Device{}}
+	c := &Catalog{
+		byCode:   map[string]*Device{},
+		variants: map[string]string{},
+		aliases:  map[string]string{},
+		vendors:  map[string]*VendorConfig{},
+		swIDs:    map[uint64]string{},
+		efiGUIDs: map[string]string{},
+	}
+
+	type fileItem struct {
+		filename string
+		cf       catalogFile
+	}
+	var items []fileItem
+
+	// Pass 1: Decode all YAML files and populate global variants, aliases, vendors
 	for _, f := range files {
 		b, err := os.ReadFile(f)
 		if err != nil {
@@ -79,22 +111,64 @@ func Load(dir string) (*Catalog, error) {
 		if err := dec.Decode(&cf); err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(f), err)
 		}
-		for _, d := range cf.Devices {
+		items = append(items, fileItem{filename: filepath.Base(f), cf: cf})
+
+		for k, v := range cf.Variants {
+			kClean := strings.ToLower(strings.TrimSpace(k))
+			vClean := strings.TrimSpace(v)
+			if kClean != "" && vClean != "" {
+				c.variants[kClean] = vClean
+			}
+		}
+		for k, v := range cf.Aliases {
+			kClean := strings.TrimSpace(k)
+			vClean := strings.TrimSpace(v)
+			if kClean != "" && vClean != "" {
+				c.aliases[kClean] = vClean
+			}
+		}
+		for k, v := range cf.Vendors {
+			kClean := strings.ToLower(strings.TrimSpace(k))
+			if kClean != "" && v != nil {
+				c.vendors[kClean] = v
+			}
+		}
+		for k, v := range cf.SWIDs {
+			if vClean := strings.TrimSpace(v); vClean != "" {
+				c.swIDs[k] = vClean
+			}
+		}
+		for k, v := range cf.EFIGUIDs {
+			kClean := strings.ToLower(strings.TrimSpace(k))
+			vClean := strings.TrimSpace(v)
+			if kClean != "" && vClean != "" {
+				c.efiGUIDs[kClean] = vClean
+			}
+		}
+	}
+
+	// Pass 2: Process all devices and resolve missing SoC names from variants
+	for _, item := range items {
+		for _, d := range item.cf.Devices {
 			if d.Codename == "" {
-				return nil, fmt.Errorf("%s: device missing codename", filepath.Base(f))
+				return nil, fmt.Errorf("%s: device missing codename", item.filename)
 			}
 			if d.Vendor == "" || d.CPUName == "" {
-				return nil, fmt.Errorf("%s: %q missing vendor or cpu_name", filepath.Base(f), d.Codename)
+				return nil, fmt.Errorf("%s: %q missing vendor or cpu_name", item.filename, d.Codename)
 			}
 			for i, j := range d.JTAGIDs {
 				j = strings.ToUpper(strings.TrimSpace(j))
 				if len(j) != 8 || strings.TrimLeft(j, "0123456789ABCDEF") != "" {
-					return nil, fmt.Errorf("%s: %q jtag_id %q is not 8 hex digits", filepath.Base(f), d.Codename, d.JTAGIDs[i])
+					return nil, fmt.Errorf("%s: %q jtag_id %q is not 8 hex digits", item.filename, d.Codename, d.JTAGIDs[i])
 				}
 				d.JTAGIDs[i] = j
 			}
+			// Auto-resolve SoC from variants if not explicitly given in YAML
+			if d.SoC == "" {
+				d.SoC = c.ResolveVariant(d.CPUName, "")
+			}
 			if prev, dup := c.byCode[d.Codename]; dup {
-				return nil, fmt.Errorf("%s: duplicate codename %q (also vendor %s)", filepath.Base(f), d.Codename, prev.Vendor)
+				return nil, fmt.Errorf("%s: duplicate codename %q (also vendor %s)", item.filename, d.Codename, prev.Vendor)
 			}
 			c.byCode[d.Codename] = d
 			c.devices = append(c.devices, d)
@@ -127,7 +201,7 @@ func (c *Catalog) Siblings(codename string) ([]*Device, bool) {
 }
 
 // SoCByCPUName reports whether a (vendor, cpu_name) family is in the catalog, and
-// its marketing SoC name if any device carries one.
+// its marketing SoC name if any device carries one or if resolved from variants.
 func (c *Catalog) SoCByCPUName(vendor, cpu string) (string, bool) {
 	soc, found := "", false
 	for _, d := range c.devices {
@@ -138,8 +212,207 @@ func (c *Catalog) SoCByCPUName(vendor, cpu string) (string, bool) {
 			}
 		}
 	}
-	return soc, found
+	if !found {
+		return "", false
+	}
+	if soc == "" {
+		soc = c.ResolveVariant(cpu, "")
+	}
+	return soc, true
 }
+
+// DeviceByJTAG returns the first catalog device matching the given 8-character JTAG ID.
+func (c *Catalog) DeviceByJTAG(jtag string) (*Device, bool) {
+	if c == nil {
+		return nil, false
+	}
+	jtag = strings.ToUpper(strings.TrimSpace(jtag))
+	if len(jtag) != 8 || jtag == "00000000" {
+		return nil, false
+	}
+	for _, d := range c.devices {
+		for _, j := range d.JTAGIDs {
+			if j == jtag {
+				return d, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// SoCByJTAG returns the commercial SoC name for a JTAG ID if any catalog device matches.
+func (c *Catalog) SoCByJTAG(jtag string) (string, bool) {
+	d, ok := c.DeviceByJTAG(jtag)
+	if !ok {
+		return "", false
+	}
+	if d.SoC != "" {
+		return d.SoC, true
+	}
+	if soc := c.ResolveVariant(d.CPUName, ""); soc != "" {
+		return soc, true
+	}
+	return "", false
+}
+
+// AddVariant registers or updates an in-memory variant mapping.
+func (c *Catalog) AddVariant(token, soc string) {
+	if c == nil {
+		return
+	}
+	tClean := strings.ToLower(strings.TrimSpace(token))
+	sClean := strings.TrimSpace(soc)
+	if tClean != "" && sClean != "" {
+		c.variants[tClean] = sClean
+	}
+}
+
+// Variants returns a copy of all loaded variant-to-SoC mappings.
+func (c *Catalog) Variants() map[string]string {
+	if c == nil {
+		return nil
+	}
+	out := make(map[string]string, len(c.variants))
+	for k, v := range c.variants {
+		out[k] = v
+	}
+	return out
+}
+
+// ResolveVariant matches an image variant string or Qualcomm build version string
+// against known SoC platform tokens in the catalog.
+func (c *Catalog) ResolveVariant(variant, qcVersion string) string {
+	if c == nil || len(c.variants) == 0 {
+		return ""
+	}
+
+	// Sort keys by length descending to match most specific tokens first
+	keys := make([]string, 0, len(c.variants))
+	for k := range c.variants {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
+	vLower := strings.ToLower(variant)
+	if vLower != "" {
+		// Pass 1: exact match or substring with full key
+		for _, k := range keys {
+			if strings.HasPrefix(vLower, k) || strings.Contains(vLower, k) {
+				return c.variants[k]
+			}
+		}
+		// Pass 2: match core token without "soc" prefix (e.g. "socdivar" -> "divar" matches "sm_divar")
+		for _, k := range keys {
+			core := strings.TrimPrefix(k, "soc")
+			if len(core) >= 4 && (strings.Contains(vLower, core) || strings.HasPrefix(vLower, core)) {
+				return c.variants[k]
+			}
+		}
+	}
+
+	qUpper := strings.ToUpper(qcVersion)
+	if qUpper != "" {
+		// First pass: exact token in QCVersion (e.g. SDM7150, MSM8998)
+		for _, k := range keys {
+			if strings.Contains(qUpper, strings.ToUpper(k)) {
+				return c.variants[k]
+			}
+		}
+		// Second pass: core token without "soc" prefix (e.g. "sockailua" -> "KAILUA")
+		for _, k := range keys {
+			core := strings.TrimPrefix(k, "soc")
+			if len(core) >= 4 && strings.Contains(qUpper, strings.ToUpper(core)) {
+				return c.variants[k]
+			}
+		}
+	}
+
+	return ""
+}
+
+// Aliases returns a copy of all loaded partition filename aliases.
+func (c *Catalog) Aliases() map[string]string {
+	if c == nil {
+		return nil
+	}
+	out := make(map[string]string, len(c.aliases))
+	for k, v := range c.aliases {
+		out[k] = v
+	}
+	return out
+}
+
+// CanonicalPartition translates a partition filename into a clean partition label
+// using catalog aliases and stripping firmware extensions (.img, .bin, .elf, .mbn).
+func (c *Catalog) CanonicalPartition(filename string) string {
+	base := filepath.Base(filename)
+	if c != nil && len(c.aliases) > 0 {
+		if mapped, ok := c.aliases[base]; ok {
+			return mapped
+		}
+		if mapped, ok := c.aliases[strings.ToLower(base)]; ok {
+			return mapped
+		}
+	}
+	lower := strings.ToLower(base)
+	for _, ext := range []string{".img", ".bin", ".elf", ".mbn"} {
+		if strings.HasSuffix(lower, ext) {
+			return strings.TrimSuffix(lower, ext)
+		}
+	}
+	return lower
+}
+
+// Vendors returns a copy of all loaded vendor configurations.
+func (c *Catalog) Vendors() map[string]*VendorConfig {
+	if c == nil {
+		return nil
+	}
+	out := make(map[string]*VendorConfig, len(c.vendors))
+	for k, v := range c.vendors {
+		out[k] = v
+	}
+	return out
+}
+
+// VendorDir returns the upstream repository directory name in bkerler/Loaders
+// for vendorID, or vendorID itself as fallback.
+func (c *Catalog) VendorDir(vendorID string) string {
+	if c != nil {
+		if vc, ok := c.vendors[vendorID]; ok && vc != nil && vc.UpstreamDir != "" {
+			return vc.UpstreamDir
+		}
+		if vc, ok := c.vendors[strings.ToLower(vendorID)]; ok && vc != nil && vc.UpstreamDir != "" {
+			return vc.UpstreamDir
+		}
+	}
+	return vendorID
+}
+
+// SWIDName returns the descriptive firmware stage name for a Qualcomm secboot SW_ID.
+func (c *Catalog) SWIDName(swid uint64) string {
+	if c != nil && len(c.swIDs) > 0 {
+		if name, ok := c.swIDs[swid]; ok && name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// EFIGUIDName returns the human-readable name for a canonical UEFI GUID.
+func (c *Catalog) EFIGUIDName(guid string) string {
+	if c != nil && len(c.efiGUIDs) > 0 {
+		gLower := strings.ToLower(strings.TrimSpace(guid))
+		if name, ok := c.efiGUIDs[gLower]; ok && name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+
 
 // AllDevices returns every device in canonical order (see deviceLess).
 func (c *Catalog) AllDevices() []*Device {
@@ -162,9 +435,19 @@ func deviceLess(a, b *Device) bool {
 }
 
 // Render marshals devices to canonical block-style YAML, sorted by vendor,
-// cpu_name, then codename for a stable diff.
+// cpu_name, then codename for a stable diff. If a device's SoC matches what is
+// derived from its CPUName in the catalog, it is omitted to keep devices.yaml clean.
 func Render(devs []*Device) ([]byte, error) {
-	sorted := append([]*Device{}, devs...)
+	sorted := make([]*Device, len(devs))
+	for i, d := range devs {
+		cp := *d
+		if cat, err := Default(); err == nil && cat != nil {
+			if cp.SoC == cat.ResolveVariant(cp.CPUName, "") {
+				cp.SoC = ""
+			}
+		}
+		sorted[i] = &cp
+	}
 	sort.Slice(sorted, func(i, j int) bool { return deviceLess(sorted[i], sorted[j]) })
 	return yaml.Marshal(catalogFile{Devices: sorted})
 }

@@ -1,0 +1,25 @@
+# Qualcomm Secboot Software ID (SW_ID) Stage Dictionary
+# Maps numeric SW_ID anti-rollback tokens to human-readable firmware stages and execution targets.
+
+sw_ids:
+  0: "PBL / Primary Boot Loader"
+  1: "SBL1 / Secondary Boot Loader"
+  2: "SBL2"
+  3: "Emergency Firehose Programmer"
+  4: "TrustZone / QSEE Monitor"
+  5: "DEVCFG / Device Configuration"
+  6: "RPM / AOP Power Manager"
+  7: "TrustZone OS (TZ)"
+  8: "WCNSS / Wireless Subsystem"
+  9: "Secure Execution Environment (QSEE)"
+  10: "Sensor / Low-Power Processor (SLPI)"
+  11: "HYP / Hypervisor"
+  12: "Modem Firmware (MPSS)"
+  13: "Firehose Flash Programmer"
+  14: "Multi-Image Boot Container"
+  18: "QUPFW / Universal Peripheral FW"
+  21: "TrustZone Executable"
+  27: "XBL_CONFIG / Multi-Image"
+  28: "ABL / Android Bootloader"
+  33: "TME / Trust Management Engine"
+  36: "QUPFW (Hexagon DSP)"

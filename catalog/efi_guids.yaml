@@ -1,0 +1,11 @@
+# UEFI Module GUID Dictionary
+# Maps canonical 8-4-4-4-12 GUIDs to human-readable UEFI module names for modules without UI sections.
+
+efi_guids:
+  8af09f13-44c5-96ec-1437-dd899cb5ee5d: "QcomPlatformCfg"
+  fc510ee7-ffdc-11d4-bd41-0080c73c8881: "FvInfo"
+  ee4e5898-3914-4259-9d6e-dc7bd79403cf: "LzmaDecompress"
+  1d301fe9-be79-4353-91c2-d23bc959ae0c: "QcomGzipDecompress"
+  96b582de-1fb2-45f7-baea-66b9e41a3134: "LinuxLoader"
+  b025b42d-2092-494b-97e3-0d5b62b1b3fb: "FastbootApp"
+  f27c4b4a-a00d-4299-bbcf-e3250b86a8ff: "QcomChargerDxe"

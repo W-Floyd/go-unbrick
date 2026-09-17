@@ -158,3 +158,240 @@ func TestYAMLMatching(t *testing.T) {
 	}
 }
 
+func TestVariantsLoadingAndResolution(t *testing.T) {
+	devicesYAML := `devices:
+  - {codename: pstar, vendor: motorola, cpu_name: SM_KONA, name: "Motorola Edge 20 Pro"}
+`
+	variantsYAML := `variants:
+  soc8250: Qualcomm SM8250 Snapdragon 865/870
+  sockailua: Qualcomm SM8550 Snapdragon 8 Gen 2
+`
+	c, err := Load(writeCatalog(t, map[string]string{
+		"devices.yaml":  devicesYAML,
+		"variants.yaml": variantsYAML,
+	}))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	vars := c.Variants()
+	if len(vars) != 2 {
+		t.Fatalf("expected 2 variants, got %d", len(vars))
+	}
+	if vars["soc8250"] != "Qualcomm SM8250 Snapdragon 865/870" {
+		t.Errorf("soc8250 variant mismatch: %q", vars["soc8250"])
+	}
+
+	// Test ResolveVariant with variant string
+	if got := c.ResolveVariant("Soc8250LAA", ""); got != "Qualcomm SM8250 Snapdragon 865/870" {
+		t.Errorf("ResolveVariant(Soc8250LAA): got %q", got)
+	}
+	// Test ResolveVariant with QCVersion fallback
+	if got := c.ResolveVariant("", "BOOT.XF.3.2-00336-KAILUA-1"); got != "Qualcomm SM8550 Snapdragon 8 Gen 2" {
+		t.Errorf("ResolveVariant(QCVersion): got %q", got)
+	}
+	// Test ResolveVariant with unknown variant
+	if got := c.ResolveVariant("SocUnknown", "UNKNOWN_VER"); got != "" {
+		t.Errorf("expected empty string for unknown variant, got %q", got)
+	}
+}
+
+func TestDefaultCatalogHasVariants(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+	vars := c.Variants()
+	if len(vars) == 0 {
+		t.Fatal("expected Default() catalog to load variants from catalog/variants.yaml")
+	}
+	if vars["soc8250"] == "" {
+		t.Error("expected soc8250 variant in default catalog")
+	}
+	if got := c.ResolveVariant("Soc8250LAA", ""); got != "Qualcomm SM8250 Snapdragon 865/870" {
+		t.Errorf("ResolveVariant(Soc8250LAA): got %q", got)
+	}
+}
+
+func TestAliasesAndCanonicalPartition(t *testing.T) {
+	aliasesYAML := `aliases:
+  qupv3fw.elf: qupfw
+  NON-HLOS.bin: modem
+`
+	c, err := Load(writeCatalog(t, map[string]string{
+		"aliases.yaml": aliasesYAML,
+	}))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	aliases := c.Aliases()
+	if len(aliases) != 2 {
+		t.Fatalf("expected 2 aliases, got %d", len(aliases))
+	}
+	if aliases["qupv3fw.elf"] != "qupfw" {
+		t.Errorf("expected qupfw, got %q", aliases["qupv3fw.elf"])
+	}
+
+	// CanonicalPartition with alias
+	if p := c.CanonicalPartition("qupv3fw.elf"); p != "qupfw" {
+		t.Errorf("CanonicalPartition(qupv3fw.elf): got %q", p)
+	}
+	if p := c.CanonicalPartition("firmware-update/NON-HLOS.bin"); p != "modem" {
+		t.Errorf("CanonicalPartition(NON-HLOS.bin): got %q", p)
+	}
+
+	// CanonicalPartition extension stripping
+	if p := c.CanonicalPartition("images/xbl_a.img"); p != "xbl_a" {
+		t.Errorf("CanonicalPartition(xbl_a.img): got %q", p)
+	}
+	if p := c.CanonicalPartition("prog_firehose.mbn"); p != "prog_firehose" {
+		t.Errorf("CanonicalPartition(prog_firehose.mbn): got %q", p)
+	}
+}
+
+func TestVendorsAndVendorDir(t *testing.T) {
+	vendorsYAML := `vendors:
+  motorola:
+    name: Motorola
+    upstream_dir: lenovo_motorola
+  xiaomi:
+    upstream_dir: xiaomi
+`
+	c, err := Load(writeCatalog(t, map[string]string{
+		"vendors.yaml": vendorsYAML,
+	}))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if dir := c.VendorDir("motorola"); dir != "lenovo_motorola" {
+		t.Errorf("VendorDir(motorola): got %q, want lenovo_motorola", dir)
+	}
+	if dir := c.VendorDir("xiaomi"); dir != "xiaomi" {
+		t.Errorf("VendorDir(xiaomi): got %q, want xiaomi", dir)
+	}
+	if dir := c.VendorDir("unknown"); dir != "unknown" {
+		t.Errorf("VendorDir(unknown): got %q, want unknown", dir)
+	}
+}
+
+func TestDeviceSoCAutoResolvedFromVariants(t *testing.T) {
+	devicesYAML := `devices:
+  - {codename: fogo, vendor: motorola, cpu_name: CONIC, name: "moto g 5G"}
+  - {codename: blazer, vendor: google, cpu_name: LAGUNA, name: "Google Pixel 10"}
+`
+	variantsYAML := `variants:
+  conic: Qualcomm SM4375 Snapdragon 4 Gen 1
+  laguna: Google Tensor G5 (Laguna)
+`
+	// Note: write with devices.yaml sort-ordered BEFORE variants.yaml to test two-pass resolution
+	c, err := Load(writeCatalog(t, map[string]string{
+		"a_devices.yaml":  devicesYAML,
+		"z_variants.yaml": variantsYAML,
+	}))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	dFogo, ok := c.Device("fogo")
+	if !ok {
+		t.Fatal("fogo not found")
+	}
+	if dFogo.SoC != "Qualcomm SM4375 Snapdragon 4 Gen 1" {
+		t.Errorf("fogo auto-resolved SoC: got %q", dFogo.SoC)
+	}
+
+	dBlazer, ok := c.Device("blazer")
+	if !ok {
+		t.Fatal("blazer not found")
+	}
+	if dBlazer.SoC != "Google Tensor G5 (Laguna)" {
+		t.Errorf("blazer auto-resolved SoC: got %q", dBlazer.SoC)
+	}
+}
+
+func TestSWIDsAndEFIGUIDs(t *testing.T) {
+	swidsYAML := `sw_ids:
+  3: "Emergency Firehose Programmer"
+  28: "ABL / Android Bootloader"
+`
+	guidsYAML := `efi_guids:
+  8af09f13-44c5-96ec-1437-dd899cb5ee5d: "QcomPlatformCfg"
+`
+	c, err := Load(writeCatalog(t, map[string]string{
+		"sw_ids.yaml":    swidsYAML,
+		"efi_guids.yaml": guidsYAML,
+	}))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if name := c.SWIDName(3); name != "Emergency Firehose Programmer" {
+		t.Errorf("SWIDName(3): got %q", name)
+	}
+	if name := c.SWIDName(28); name != "ABL / Android Bootloader" {
+		t.Errorf("SWIDName(28): got %q", name)
+	}
+	if name := c.SWIDName(999); name != "" {
+		t.Errorf("expected empty string for unknown SW_ID, got %q", name)
+	}
+
+	if name := c.EFIGUIDName("8af09f13-44c5-96ec-1437-dd899cb5ee5d"); name != "QcomPlatformCfg" {
+		t.Errorf("EFIGUIDName: got %q", name)
+	}
+	if name := c.EFIGUIDName("8AF09F13-44C5-96EC-1437-DD899CB5EE5D"); name != "QcomPlatformCfg" {
+		t.Errorf("EFIGUIDName (case-insensitive): got %q", name)
+	}
+	if name := c.EFIGUIDName("00000000-0000-0000-0000-000000000000"); name != "" {
+		t.Errorf("expected empty string for unknown GUID, got %q", name)
+	}
+}
+
+func TestDefaultCatalogHasSWIDsAndEFIGUIDs(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+	if name := c.SWIDName(3); name != "Emergency Firehose Programmer" {
+		t.Errorf("Default catalog SWIDName(3): got %q", name)
+	}
+	if name := c.EFIGUIDName("8af09f13-44c5-96ec-1437-dd899cb5ee5d"); name != "QcomPlatformCfg" {
+		t.Errorf("Default catalog EFIGUIDName: got %q", name)
+	}
+}
+
+func TestDeviceAndSoCByJTAG(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+
+	// Test 000BA0E1 (ginna -> MSM8953)
+	d, ok := c.DeviceByJTAG("000BA0E1")
+	if !ok || d.Codename != "ginna" {
+		t.Fatalf("DeviceByJTAG(000BA0E1): got %v, want ginna", d)
+	}
+	soc, ok := c.SoCByJTAG("000ba0e1")
+	if !ok || soc != "Qualcomm MSM8953 Snapdragon 625/632" {
+		t.Errorf("SoCByJTAG(000ba0e1): got %q, want Qualcomm MSM8953 Snapdragon 625/632", soc)
+	}
+
+	// Unknown or wildcard JTAG
+	if _, ok := c.DeviceByJTAG("00000000"); ok {
+		t.Error("wildcard 00000000 should not resolve to a device")
+	}
+	if _, ok := c.DeviceByJTAG("FFFFFFFF"); ok {
+		t.Error("unknown FFFFFFFF should not resolve")
+	}
+
+	// AddVariant in-memory test
+	c.AddVariant("customtest", "Custom SoC Name")
+	if resolved := c.ResolveVariant("customtest", ""); resolved != "Custom SoC Name" {
+		t.Errorf("AddVariant resolve: got %q, want Custom SoC Name", resolved)
+	}
+}
+
+
+
+

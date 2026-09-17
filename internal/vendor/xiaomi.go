@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"go-unbrick/internal/blankflash"
+	"go-unbrick/internal/catalog"
 	"go-unbrick/internal/payload"
 	"go-unbrick/internal/qfil"
 	"go-unbrick/internal/secboot"
@@ -28,18 +29,6 @@ func init() { Register(xiaomi{}) }
 func (xiaomi) ID() string       { return "xiaomi" }
 func (xiaomi) Platform() string { return PlatformQualcomm }
 func (xiaomi) OEMIDs() []string { return []string{"0072", "0000", "0001", "0003"} }
-
-// Xiaomi partition filename aliases mapped from recovery packages / firmware-update/.
-var xiaomiAliases = map[string]string{
-	"qupv3fw.elf":     "qupfw",
-	"uefi_sec.mbn":    "uefisecapp",
-	"km4.mbn":         "keymaster",
-	"km3.mbn":         "keymaster",
-	"NON-HLOS.bin":    "modem",
-	"BTFM.bin":        "bluetooth",
-	"dspso.bin":       "dsp",
-	"featenabler.mbn": "featenabler",
-}
 
 func (xiaomi) CanIngest(path string) bool {
 	fi, err := os.Stat(path)
@@ -680,14 +669,13 @@ func (x xiaomi) harvestFromTar(tarPath string, slot string, gpt []byte) (*blankf
 	return target, nil
 }
 
-// canonicalPartitionName translates filenames (including extensions and Xiaomi aliases)
-// into clean partition identifiers.
+// canonicalPartitionName translates filenames (including extensions and aliases)
+// into clean partition identifiers using the catalog.
 func canonicalPartitionName(filename string) string {
-	base := filepath.Base(filename)
-	if mapped, ok := xiaomiAliases[base]; ok {
-		return mapped
+	if cat, err := catalog.Default(); err == nil && cat != nil {
+		return cat.CanonicalPartition(filename)
 	}
-	// Strip known firmware image extensions
+	base := filepath.Base(filename)
 	lower := strings.ToLower(base)
 	for _, ext := range []string{".img", ".bin", ".elf", ".mbn"} {
 		if strings.HasSuffix(lower, ext) {

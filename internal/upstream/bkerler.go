@@ -16,13 +16,26 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go-unbrick/internal/catalog"
 )
 
-// VendorDir maps a catalog vendor id to its directory in bkerler/Loaders.
+// VendorDir maps a catalog vendor id to its directory in bkerler/Loaders (default fallback).
 var VendorDir = map[string]string{
 	"motorola": "lenovo_motorola",
 	"qualcomm": "qualcomm",
 	"xiaomi":   "xiaomi",
+}
+
+// ResolveVendorDir resolves the directory in bkerler/Loaders for vendorID,
+// preferring catalog/vendors.yaml over the default fallback map.
+func ResolveVendorDir(vendorID string) string {
+	if cat, err := catalog.Default(); err == nil && cat != nil {
+		if d := cat.VendorDir(vendorID); d != "" && d != vendorID {
+			return d
+		}
+	}
+	return VendorDir[vendorID]
 }
 
 const (

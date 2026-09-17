@@ -13,6 +13,7 @@ target/
 # Build artifacts
 /bfforge
 /blankflash-forge
+/go-unbrick
 *.test
 
 # Local firmware library (blankflashes + stock). The catalog/ mapping IS tracked.

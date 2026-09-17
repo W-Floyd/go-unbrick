@@ -1,0 +1,39 @@
+# Vendor Metadata and Community Upstream Directory Mappings
+# Maps catalog vendor IDs to upstream bkerler/Loaders directories, secboot OEM IDs, and platform types.
+
+vendors:
+  motorola:
+    name: Motorola / Lenovo
+    upstream_dir: lenovo_motorola
+    platform: qualcomm
+    oem_ids:
+      - "02E8"
+  qualcomm:
+    name: Qualcomm Reference
+    upstream_dir: qualcomm
+    platform: qualcomm
+    oem_ids:
+      - "0000"
+  xiaomi:
+    name: Xiaomi / Redmi / POCO
+    upstream_dir: xiaomi
+    platform: qualcomm
+    oem_ids:
+      - "0072"
+      - "0000"
+      - "0001"
+      - "0003"
+  samsung:
+    name: Samsung Electronics
+    platform: qualcomm
+    oem_ids:
+      - "0020"
+  google:
+    name: Google Pixel
+    platform: tensor
+    oem_ids:
+      - "0000"
+  mediatek:
+    name: MediaTek
+    platform: mediatek
+

@@ -32,10 +32,12 @@ func makeCert(t *testing.T, subject pkix.Name, key *rsa.PrivateKey) []byte {
 // header is a Qualcomm hash-table segment (flags type nibble 2).
 func buildSignedELF(seg []byte) []byte {
 	b := make([]byte, 128)
-	copy(b, []byte{0x7f, 'E', 'L', 'F', 2})     // EI_MAG + 64-bit
-	binary.LittleEndian.PutUint64(b[0x20:], 64) // e_phoff
-	binary.LittleEndian.PutUint16(b[0x36:], 56) // e_phentsize
-	binary.LittleEndian.PutUint16(b[0x38:], 1)  // e_phnum
+	copy(b, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1}) // EI_MAG + 64-bit + EI_DATA (1) + EI_VERSION (1)
+	binary.LittleEndian.PutUint32(b[0x14:], 1)      // e_version
+	binary.LittleEndian.PutUint64(b[0x20:], 64)     // e_phoff
+	binary.LittleEndian.PutUint16(b[0x34:], 64)     // e_ehsize
+	binary.LittleEndian.PutUint16(b[0x36:], 56)     // e_phentsize
+	binary.LittleEndian.PutUint16(b[0x38:], 1)      // e_phnum
 	o := 64
 	binary.LittleEndian.PutUint32(b[o+4:], 0x02000000)        // p_flags: type nibble 2
 	binary.LittleEndian.PutUint64(b[o+8:], 128)               // p_offset
@@ -47,10 +49,12 @@ func buildSignedELF(seg []byte) []byte {
 // p_flags@24 in the 32-byte program header.
 func buildSignedELF32(seg []byte) []byte {
 	b := make([]byte, 128)
-	copy(b, []byte{0x7f, 'E', 'L', 'F', 1})     // EI_MAG + 32-bit
-	binary.LittleEndian.PutUint32(b[0x1c:], 52) // e_phoff
-	binary.LittleEndian.PutUint16(b[0x2a:], 32) // e_phentsize
-	binary.LittleEndian.PutUint16(b[0x2c:], 1)  // e_phnum
+	copy(b, []byte{0x7f, 'E', 'L', 'F', 1, 1, 1}) // EI_MAG + 32-bit + EI_DATA (1) + EI_VERSION (1)
+	binary.LittleEndian.PutUint32(b[0x14:], 1)      // e_version
+	binary.LittleEndian.PutUint32(b[0x1c:], 52)     // e_phoff
+	binary.LittleEndian.PutUint16(b[0x28:], 52)     // e_ehsize
+	binary.LittleEndian.PutUint16(b[0x2a:], 32)     // e_phentsize
+	binary.LittleEndian.PutUint16(b[0x2c:], 1)      // e_phnum
 	o := 52
 	binary.LittleEndian.PutUint32(b[o+4:], 128)               // p_offset
 	binary.LittleEndian.PutUint32(b[o+16:], uint32(len(seg))) // p_filesz
@@ -135,11 +139,42 @@ func TestFromELFRejectsUnsigned(t *testing.T) {
 	if _, err := FromELF([]byte("not an elf")); err == nil {
 		t.Error("expected error on non-ELF")
 	}
-	// A valid ELF header with no hash segment.
+	// A valid ELF header with no hash segment and no embedded ELF.
 	b := make([]byte, 64)
-	copy(b, []byte{0x7f, 'E', 'L', 'F', 2})
+	copy(b, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
+	binary.LittleEndian.PutUint32(b[0x14:], 1)  // e_version
+	binary.LittleEndian.PutUint16(b[0x34:], 64) // e_ehsize
 	if _, err := FromELF(b); err == nil {
 		t.Error("expected error on ELF without hash segment")
+	}
+}
+
+func TestFromELFEmbedded(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	leaf := makeCert(t, pkix.Name{
+		Organization: []string{"Motorola Inc"},
+		CommonName:   "Attestation CA",
+		OrganizationalUnit: []string{
+			"04 02E8 OEM_ID",
+			"02 001870E102E80000 HW_ID",
+		},
+	}, key)
+	seg := append(make([]byte, 64), leaf...)
+	inner := buildSignedELF(seg)
+
+	// Wrap in an outer ELF that has no hash segment
+	outer := make([]byte, 128)
+	copy(outer, []byte{0x7f, 'E', 'L', 'F', 1, 1, 1})
+	binary.LittleEndian.PutUint32(outer[0x14:], 1)  // e_version
+	binary.LittleEndian.PutUint16(outer[0x28:], 52) // e_ehsize
+	wrapped := append(outer, inner...)
+
+	id, err := FromELF(wrapped)
+	if err != nil {
+		t.Fatalf("FromELF wrapped: %v", err)
+	}
+	if id.OEMID != "02E8" || id.JTAGID != "001870E1" {
+		t.Errorf("got %q / %q, want 02E8 / 001870E1", id.OEMID, id.JTAGID)
 	}
 }
 
