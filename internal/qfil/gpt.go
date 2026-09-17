@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"go-unbrick/internal/blankflash"
 )
 
 const (
@@ -31,6 +35,10 @@ type Table struct {
 	DiskGUID   [16]byte
 	Partitions []Partition
 	Raw        []byte
+	// LUNGPT maps a physical LUN to its own flashable primary-GPT image
+	// (gpt_mainN.bin). Populated only for multi-LUN UFS tables unpacked from a
+	// SINGLE_N_LONELY container; nil for a single eMMC/plain GPT.
+	LUNGPT map[int][]byte
 }
 
 // PartitionByName looks up a partition by label. If not found directly, it tries
@@ -64,8 +72,70 @@ func (t *Table) PartitionByName(name string) (Partition, bool) {
 // ParseGPT parses a GPT partition table from raw disk or image bytes.
 // Accepts raw dumps starting with protective MBR (header at offset 512),
 // header-first dumps (header at offset 0), or scans for the "EFI PART" signature.
+//
+// A Motorola SINGLE_N_LONELY container (UFS gpt.bin, several gpt_mainN.bin
+// packed together) is unpacked and every LUN parsed: the returned Table merges
+// all partitions, tags each with its physical LUN, and carries the per-LUN
+// flashable images in LUNGPT. Parsing the container as one blob would key on the
+// first inner header at a non-sector-aligned offset and misread everything.
 func ParseGPT(data []byte) (*Table, error) {
+	if blankflash.IsContainer(data) {
+		return parseContainerGPT(data)
+	}
 	return ParseGPTWithLUN(data, 0)
+}
+
+// parseContainerGPT unpacks a SINGLE_N_LONELY gpt.bin and merges its per-LUN
+// gpt_mainN.bin images into one Table.
+func parseContainerGPT(data []byte) (*Table, error) {
+	recs, err := blankflash.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("unpacking gpt container: %w", err)
+	}
+	merged := &Table{Raw: data, LUNGPT: map[int][]byte{}}
+	var luns []int
+	byLUN := map[int]*Table{}
+	for _, r := range recs {
+		lun, ok := gptMainLUN(r.Name)
+		if !ok {
+			continue
+		}
+		t, err := ParseGPTWithLUN(r.Data, lun)
+		if err != nil {
+			continue // a per-LUN table we cannot read is skipped, not fatal
+		}
+		merged.LUNGPT[lun] = r.Data
+		byLUN[lun] = t
+		luns = append(luns, lun)
+	}
+	if len(luns) == 0 {
+		return nil, fmt.Errorf("no gpt_main* images in container")
+	}
+	sort.Ints(luns)
+	for _, lun := range luns {
+		t := byLUN[lun]
+		if merged.SectorSize == 0 {
+			merged.SectorSize = t.SectorSize
+			merged.DiskGUID = t.DiskGUID
+		}
+		merged.Partitions = append(merged.Partitions, t.Partitions...)
+	}
+	return merged, nil
+}
+
+// gptMainLUN extracts the physical LUN index N from a "gpt_mainN.bin" record
+// name (the backup image is "gpt_backupN.bin"; only primaries are flashed here).
+func gptMainLUN(name string) (int, bool) {
+	rest, ok := strings.CutPrefix(name, "gpt_main")
+	if !ok {
+		return 0, false
+	}
+	rest = strings.TrimSuffix(rest, ".bin")
+	n, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // ParseGPTWithLUN parses GPT bytes and tags the resulting partitions with physical LUN.

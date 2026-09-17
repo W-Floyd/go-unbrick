@@ -356,6 +356,51 @@ func TestHarvestDonorStock(t *testing.T) {
 	}
 }
 
+func TestCarrierFromFlashfile(t *testing.T) {
+	ff := []byte(`<?xml version="1.0" ?>
+<flashing>
+  <header>
+    <phone_model model="fogona_g"/>
+    <subsidy_lock_config MD5="3cd2" name="slcf_rev_d_ccaws_v5.0.nvm"/>
+    <cid_value value="0x0032"/>
+  </header>
+  <steps interface="AP">
+    <step operation="flash" partition="bootloader" filename="bootloader.img"/>
+  </steps>
+</flashing>`)
+	cid, slcf := carrierFromFlashfile(ff)
+	if cid != "0x0032" || slcf != "slcf_rev_d_ccaws_v5.0.nvm" {
+		t.Errorf("got cid=%q slcf=%q", cid, slcf)
+	}
+	// A service/donor package has no channel header; that is not an error.
+	for _, b := range [][]byte{nil, []byte("not xml"), []byte(`<flashing><steps/></flashing>`)} {
+		if cid, slcf := carrierFromFlashfile(b); cid != "" || slcf != "" {
+			t.Errorf("headerless input yielded cid=%q slcf=%q", cid, slcf)
+		}
+	}
+}
+
+func TestEDLCommandsAreVendorSpecific(t *testing.T) {
+	// Motorola's own route leads; nothing else is fired at it first.
+	moto := EDLCommands(motorola{})
+	if len(moto) == 0 || strings.Join(moto[0], " ") != "oem blankflash" {
+		t.Errorf("motorola EDL route: %v", moto)
+	}
+	for _, c := range moto {
+		if strings.Join(c, " ") == "reboot edl" {
+			t.Error("a target current AOSP fastboot rejects locally should not be in a known-vendor route")
+		}
+	}
+	// A driver with no EDL route says so by omitting the capability, rather than
+	// inheriting another vendor's commands.
+	if got := EDLCommands(google{}); got != nil {
+		t.Errorf("google should offer no EDL route, got %v", got)
+	}
+	if got := EDLCommands(qualcomm{}); len(got) == 0 {
+		t.Error("the generic Qualcomm driver should carry the reference routes")
+	}
+}
+
 func TestSamsungOpsUnsupported(t *testing.T) {
 	s, _ := For("samsung")
 	if _, err := s.IngestDonor("x"); !errors.Is(err, ErrUnsupported) {

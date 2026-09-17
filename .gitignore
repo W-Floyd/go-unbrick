@@ -21,3 +21,9 @@ target/
 /library/**
 !/library/**/
 !/library/**/.gitkeep
+
+# Downloaded loaders and clone cache
+/temblast_loaders/
+/.gh_loader_repos/
+
+unbrick

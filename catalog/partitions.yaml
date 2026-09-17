@@ -1,0 +1,295 @@
+# Protected Partition Catalog & Safeguard Rules
+# Defines per-device calibration, radio NVRAM, and identity partitions across
+# Qualcomm, MediaTek, and Samsung platforms.
+#
+# Criticality:
+#   irreplaceable: Unique per-device hardware keys, IMEI, RF calibration, baseband tuning.
+#                  If erased or overwritten, causes permanent radio failure or hardware brick.
+#   important:     Factory calibration, sensors, carrier provisioning, customer ID, FRP locks.
+#   replaceable:   Generic vendor/stock bootloader binaries that can be safely flashed.
+
+partitions:
+  # --- Radio / Baseband / NVRAM / IMEI (Irreplaceable) ---
+  modemst1:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Primary modem NVRAM (IMEI, SIM lock, baseband calibration)"
+  modemst2:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Secondary modem NVRAM (IMEI backup, network profiles)"
+  fsg:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Golden copy of modem file system (radio parameters)"
+  fsc:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Modem filesystem cookies and encryption keys"
+  nvram:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek baseband NVRAM (IMEI, RF calibration, MAC addresses)"
+  nvdata:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek dynamic NVRAM data partition"
+  proinfo:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek factory product information and barcode/serial"
+  protect1:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek protected calibration partition 1"
+  protect2:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek protected calibration partition 2"
+  nvcfg:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek non-volatile carrier configuration"
+  efs:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: samsung
+    description: "Samsung encrypted filesystem (IMEI, MAC, baseband NV)"
+  sec_efs:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: samsung
+    description: "Samsung secondary secure EFS backup"
+  nv_data:
+    category: radio
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: samsung
+    description: "Samsung baseband NVRAM data"
+
+  # --- Sensor & Factory Calibration ---
+  persist:
+    category: calibration
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Factory sensor, camera, audio, display and DRM calibration"
+  prodpersist:
+    category: calibration
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Motorola production persist partition (factory test results & calibration)"
+  sns:
+    category: calibration
+    criticality: important
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Sensor subsystem hardware calibration"
+  sensorhub:
+    category: calibration
+    criticality: important
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Context hub / sensor fusion calibration"
+  kpan:
+    category: calibration
+    criticality: important
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Motorola kernel panic & diagnostic calibration logs"
+  carrier:
+    category: calibration
+    criticality: important
+    action: backup_and_preserve
+    vendor: generic
+    description: "Carrier specific customization and APN provisioning"
+
+  # --- Device Identity & Cryptographic State ---
+  cid:
+    category: identity
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Carrier / Customer ID and device software channel lock"
+  frp:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: generic
+    description: "Factory Reset Protection lock state and persistent tokens"
+  devinfo:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: qualcomm
+    description: "Device bootloader lock flags, tamper bits, and integrity tokens"
+  utags:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Motorola NV configuration tags (serial number, bar code, SKU)"
+  utagsbackup:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Motorola redundant backup of UTAGs configuration"
+  hw:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Hardware revision and board variant identifier"
+  sp:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: motorola
+    description: "Secure partition / security processor key store"
+  misc:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: generic
+    description: "BCB bootloader control block and recovery command buffer"
+  seccfg:
+    category: identity
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek security configuration and lock status"
+  tee1:
+    category: identity
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek primary Trusted Execution Environment keystore"
+  tee2:
+    category: identity
+    criticality: irreplaceable
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek secondary Trusted Execution Environment keystore"
+  para:
+    category: identity
+    criticality: important
+    action: backup_and_preserve
+    vendor: mediatek
+    description: "MediaTek parameter configuration"
+
+  # --- Standard Flashable Boot Components (Skip during backup) ---
+  xbl:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "eXtensible Boot Loader core (Qualcomm PBL stage 2)"
+  xbl_config:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "XBL multi-image configuration data"
+  abl:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Android Bootloader (UEFI fastboot interface)"
+  tz:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Qualcomm TrustZone / QSEE secure monitor"
+  rpm:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Resource & Power Manager firmware"
+  aop:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Always-On Processor power controller"
+  hyp:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Qualcomm EL2 hypervisor"
+  qupfw:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Qualcomm Universal Peripheral firmware"
+  devcfg:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Qualcomm device configuration blob"
+  keymaster:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Hardware keymaster applet"
+  uefisecapp:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "UEFI secure application service"
+  storsec:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Storage security controller"
+  prov:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Storage provisioning helper"
+  cmnlib:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Common 32-bit crypto/runtime library"
+  cmnlib64:
+    category: boot
+    criticality: replaceable
+    action: flash_and_skip_backup
+    vendor: qualcomm
+    description: "Common 64-bit crypto/runtime library"
+

@@ -245,6 +245,30 @@ func newForgeCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
+
+		// Pre-flight secboot identity and anti-rollback validation
+		if tgID := targetIdentity(t); tgID != nil && len(d.Programmer) > 0 {
+			if ldID, err := secboot.FromELF(d.Programmer); err == nil {
+				oemOK, reasons := secboot.Compatible(ldID, tgID)
+				swStr := fmt.Sprintf("SW_ID=%d", ldID.SWID)
+				if swName := activeCatalog().SWIDName(ldID.SWID); swName != "" {
+					swStr = fmt.Sprintf("SW_ID=%d (%s)", ldID.SWID, swName)
+				}
+				fmt.Printf("  identity: loader OEM=%s HW=%s root=CA %s %s  vs target OEM=%s HW=%s root=CA %s\n",
+					ldID.OEMID, ldID.HWID, ldID.Root, swStr, tgID.OEMID, tgID.HWID, tgID.Root)
+				for _, r := range reasons {
+					fmt.Fprintf(os.Stderr, "  ! %s\n", r)
+				}
+				if !oemOK {
+					return fmt.Errorf("refusing to forge: loader OEM_ID %s != target OEM_ID %s (will not authenticate)", ldID.OEMID, tgID.OEMID)
+				}
+				rb := secboot.ValidateRollback(ldID, tgID)
+				for _, r := range rb.Reasons {
+					fmt.Fprintf(os.Stderr, "  ! [anti-rollback] %s\n", r)
+				}
+			}
+		}
+
 		res, err := drv.Assemble(d, t, vendor.AssembleOptions{Slot: tf.slot, Storage: storage, Provision: provision})
 		if err != nil {
 			return err

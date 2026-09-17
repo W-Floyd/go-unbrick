@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func orderedNames(blob []byte) []string {
@@ -264,6 +265,108 @@ func TestForgeWarnsWhenDonorHasNoBackups(t *testing.T) {
 	}
 	if !warned {
 		t.Errorf("expected a warning about missing backup directives, got %v", res.Warnings)
+	}
+	// Verify that the forged recipe now carries synthesized safeguards
+	recs, err := Parse(res.Singleimage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recipe string
+	for _, r := range recs {
+		if r.Name == "default.xml" {
+			recipe = string(r.Data)
+		}
+	}
+	for _, want := range []string{
+		`<backup name="cid"/>`,
+		`<backup name="persist"/>`,
+		`<backup name="modemst1"/>`,
+		`<backup commit="1"/>`,
+		`<restore dummy="foo"/>`,
+	} {
+		if !strings.Contains(recipe, want) {
+			t.Errorf("recipe missing synthesized safeguard %s\n%s", want, recipe)
+		}
+	}
+}
+
+// A donor whose recipe misses protected partitions present in the target GPT
+// must have those partitions automatically augmented into its backup directives.
+func TestForgeAugmentsTargetProtectedPartitions(t *testing.T) {
+	// Create mock GPT with prodpersist and modemst1
+	buf := make([]byte, 512+512+128*128)
+	hdr := buf[512:1024]
+	copy(hdr[0:8], "EFI PART")
+	binary.LittleEndian.PutUint32(hdr[8:12], 0x00010000)
+	binary.LittleEndian.PutUint32(hdr[12:16], 92)
+	binary.LittleEndian.PutUint64(hdr[24:32], 1)
+	binary.LittleEndian.PutUint64(hdr[72:80], 2)
+	binary.LittleEndian.PutUint32(hdr[80:84], 128)
+	binary.LittleEndian.PutUint32(hdr[84:88], 128)
+
+	writeEntry := func(idx int, name string) {
+		ent := buf[1024+idx*128 : 1024+(idx+1)*128]
+		ent[0] = 0xAA // non-zero type
+		u16 := utf16.Encode([]rune(name))
+		for j, code := range u16 {
+			if j >= 36 {
+				break
+			}
+			binary.LittleEndian.PutUint16(ent[56+j*2:56+(j+1)*2], code)
+		}
+	}
+	writeEntry(0, "prodpersist")
+	writeEntry(1, "modemst1")
+	writeEntry(2, "xbl_a")
+
+	// Donor recipe only backs up cid and frp
+	donorRecipe := []byte(`<?xml version="1.0" ?>
+<recipe>
+	<backup name="cid"/>
+	<backup name="frp"/>
+	<backup commit="1"/>
+	<flash partition="xbl_a" filename="xbl.elf" verbose="true"/>
+	<restore dummy="foo"/>
+</recipe>`)
+
+	d := &Donor{
+		Programmer: []byte("LOADER"),
+		Recipes:    map[string][]byte{"default.xml": donorRecipe},
+	}
+	tgt := &Target{
+		Parts:    map[string][]byte{"xbl.elf": []byte("XBL")},
+		FlashMap: map[string]string{"xbl": "xbl.elf"},
+		GPT:      buf,
+		Storage:  "ufs",
+	}
+
+	res, err := Forge(d, tgt, "a", "ufs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recs, err := Parse(res.Singleimage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recipe string
+	for _, r := range recs {
+		if r.Name == "default.xml" {
+			recipe = string(r.Data)
+		}
+	}
+
+	for _, want := range []string{
+		`<backup name="cid"/>`,
+		`<backup name="frp"/>`,
+		`<backup name="prodpersist"/>`,
+		`<backup name="modemst1"/>`,
+		`<backup commit="1"/>`,
+		`<restore dummy="foo"/>`,
+	} {
+		if !strings.Contains(recipe, want) {
+			t.Errorf("augmented recipe missing %s\n%s", want, recipe)
+		}
 	}
 }
 

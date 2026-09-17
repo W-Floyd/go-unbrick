@@ -1,0 +1,48 @@
+# Motorola CID — `fastboot getvar cid`, reported as a 16-bit hex value (0x0032).
+# ABL reads it out of the factory-provisioned `cid` partition (see partitions.yaml:
+# identity, irreplaceable), so it survives flashing and identifies the carrier /
+# subsidy channel the unit was built for.
+#
+# It is the package-matching key, and the match is a plain header comparison, not part
+# of any code signature: a retail package declares its target in flashfile.xml as
+# `<cid_value value="0x0032"/>` — same hex spelling as the getvar — alongside the
+# `cid_template.dat` and the channel's `subsidy_lock_config`. A package whose cid_value
+# does not match the device's CID is refused, so this decides which stock build a unit
+# will accept.
+#
+# There is no published CID table, and a CID names a distribution channel rather than a
+# tier like "open market": cid50's own package carries the channel-specific subsidy lock
+# `slcf_rev_d_ccaws_v5.0.nvm`, even though the device reports `ro.carrier: retus`. Every
+# entry here is read off an observed package; unattested CIDs stay absent rather than
+# guessed. Keys are decimal, matching the `cidNN` filename token (0x0032 -> 50).
+#
+# Ingest harvests cid_value and the subsidy lock into each stock build's meta.json, so
+# `library.CarrierIDs()` is the standing evidence for what belongs here; recon falls
+# back to it for a CID this file does not name.
+#
+# `channelid` (also in the `cid` partition, observed 0x18 and 0x8d) is a separate
+# software-channel byte and is deliberately not catalogued: nothing in the corpus
+# attests a value-to-meaning mapping for it. Note flashfile.xml *erases* the `carrier`
+# partition rather than provisioning it from any channel value.
+# Motorola's own list of the CIDs whose devices the unlock portal will serve,
+# posted by Motorola support on the Lenovo developer forum:
+# https://forums.lenovo.com/t5/MOTOROLA-Android-Developer/Bootloader-Unlock-Problems/m-p/3222809
+#
+# The rule is closed-world: a CID absent from this list is not eligible, which the
+# source states explicitly ("as well as any other not listed"). So an unknown CID
+# is a predicted refusal, not an unknown — the opposite of how the carrier_ids
+# table below treats an unrecorded value.
+#
+# This is a vendor claim from a forum post with no date on the list itself, not
+# something this repo has verified; eligibility can change with new channels.
+# Corroborated so far by two devices: cid 0x0032 (listed) is unlocked, and it is
+# the retail channel, while 0x0033 (absent) ships a carrier subsidy lock.
+unlock_eligible_cids:
+  [0x0000, 0x0003, 0x0007, 0x0009, 0x000B, 0x000C, 0x000D, 0x000E, 0x0014, 0x0015, 0x00DE, 0x0032]
+
+carrier_ids:
+  # XT2413-2_FOGONA_CC_14_U1TF34.100-35_subsidy-CCAWS_regulatory-DEFAULT_cid50_R4_CFC
+  # flashfile.xml: cid_value 0x0032, subsidy_lock_config slcf_rev_d_ccaws_v5.0.nvm
+  50: "CC channel (subsidy lock CCAWS)"
+  # XT2413V_FOGONA_TRACFONE_14_U1TFS34.100-35-14-1-4_subsidy-TRAC_VISIBLE_RSU_regulatory-DEFAULT_cid51_CFC
+  51: "TracFone / Visible (subsidy TRAC_VISIBLE_RSU)"

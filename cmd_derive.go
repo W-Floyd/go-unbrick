@@ -17,7 +17,7 @@ import (
 // ---- derive ----
 
 func newDeriveCmd() *cobra.Command {
-	var storage, provisionFrom, out, loaderBuild, stockBuild string
+	var storage, provisionFrom, out, loaderBuild, stockBuild, format string
 	var stripModel bool
 	c := &cobra.Command{
 		Use:   "derive <codename>",
@@ -29,6 +29,7 @@ func newDeriveCmd() *cobra.Command {
 	c.Flags().StringVar(&stockBuild, "stock", "", "stock build id to use (default: newest)")
 	c.Flags().BoolVar(&stripModel, "strip-model", false, "strip the QCDT model field so a sibling-model boot chain matches (cross-model donation)")
 	c.Flags().StringVar(&storage, "storage", "", "override target storage type (emmc/ufs)")
+	c.Flags().StringVar(&format, "format", "", "output format: native vendor format (default) or 'qfil'/'edl' for a bkerler/edl rawprogram bundle")
 	c.Flags().StringVar(&provisionFrom, "provision-from", "", "XML file with a target-specific provisioning block")
 	c.Flags().StringVarP(&out, "out", "o", "", "output directory")
 	c.MarkFlagRequired("out")
@@ -129,10 +130,31 @@ func newDeriveCmd() *cobra.Command {
 				if !oemOK {
 					return fmt.Errorf("refusing to forge: loader OEM_ID %s != target OEM_ID %s (will not authenticate)", ldID.OEMID, tgID.OEMID)
 				}
+				rb := secboot.ValidateRollback(ldID, tgID)
+				for _, r := range rb.Reasons {
+					fmt.Fprintf(os.Stderr, "  ! [anti-rollback] %s\n", r)
+				}
 			}
 		}
 
-		res, err := drv.Assemble(donor, target, vendor.AssembleOptions{Slot: tf.slot, Storage: storage, Provision: provisionData})
+		// The vendor driver ingests the loader and harvests stock; the output
+		// format is a separate axis. --format qfil re-runs Assemble through the
+		// generic Qualcomm driver (bkerler/edl rawprogram bundle) instead of the
+		// vendor's native package. The signed programmer authenticates against the
+		// fused JTAG_ID regardless of which host tool drives Sahara/Firehose.
+		asm := drv
+		switch format {
+		case "", "native":
+		case "qfil", "edl":
+			q, ok := vendor.For("qualcomm")
+			if !ok {
+				return fmt.Errorf("qualcomm driver unavailable")
+			}
+			asm = q
+		default:
+			return fmt.Errorf("unknown --format %q (want native, qfil, or edl)", format)
+		}
+		res, err := asm.Assemble(donor, target, vendor.AssembleOptions{Slot: tf.slot, Storage: storage, Provision: provisionData})
 		if err != nil {
 			return err
 		}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +82,10 @@ func (l *Library) buildDir(f catalog.Family, build string) string {
 func (l *Library) stockDeviceDir(vendor, codename string) string {
 	return filepath.Join(l.Root, "stock", vendor, codename)
 }
+func (l *Library) StockBuildDir(vendor, codename, build string) string {
+	return l.stockBuildDir(vendor, codename, build)
+}
+
 func (l *Library) stockBuildDir(vendor, codename, build string) string {
 	return filepath.Join(l.stockDeviceDir(vendor, codename), build)
 }
@@ -129,10 +134,17 @@ type StockMeta struct {
 	// in. Without it a forged package falls back to a fixed list and silently
 	// omits whatever that list lacks.
 	FlashOrder []string          `json:"flash_order,omitempty"`
-	FlashMap   map[string]string `json:"flash_map"`
-	Source     string            `json:"source"`
-	Added      string            `json:"added"`
-	SHA256     string            `json:"sha256"` // over parts+GPT, to dedupe re-imports
+	FlashMap map[string]string `json:"flash_map"`
+	// CID and SubsidyLock are the channel identity the package's flashfile.xml
+	// declares: the CID a device must report for the bootloader to accept this
+	// build, and the subsidy-lock config that names that channel. Harvesting them
+	// per build is what lets a CID be resolved to a channel from evidence instead
+	// of a guessed table.
+	CID         string `json:"cid,omitempty"`
+	SubsidyLock string `json:"subsidy_lock,omitempty"`
+	Source      string `json:"source"`
+	Added       string `json:"added"`
+	SHA256      string `json:"sha256"` // over parts+GPT, to dedupe re-imports
 }
 
 // stockSum hashes a target's parts and GPT so the same extract, imported twice
@@ -351,8 +363,16 @@ func (l *Library) AddStock(vendor, codename, build string, t *blankflash.Target)
 		if ref.Meta.SHA256 == sha {
 			// Same bytes, but the metadata may predate a field. Refresh it so an
 			// existing library gains the flash order without re-importing.
+			stale := false
 			if len(ref.Meta.FlashOrder) == 0 && len(t.FlashOrder) > 0 {
 				ref.Meta.FlashOrder = t.FlashOrder
+				stale = true
+			}
+			if ref.Meta.CID == "" && t.CID != "" {
+				ref.Meta.CID, ref.Meta.SubsidyLock = t.CID, t.SubsidyLock
+				stale = true
+			}
+			if stale {
 				dir := l.stockBuildDir(vendor, codename, ref.Build)
 				if err := writeJSON(filepath.Join(dir, "meta.json"), ref.Meta); err != nil {
 					return nil, err
@@ -367,12 +387,14 @@ func (l *Library) AddStock(vendor, codename, build string, t *blankflash.Target)
 		return nil, err
 	}
 	meta := StockMeta{
-		Storage:    t.Storage,
-		FlashOrder: t.FlashOrder,
-		FlashMap:   t.FlashMap,
-		Source:     t.Source,
-		Added:      time.Now().UTC().Format(time.RFC3339),
-		SHA256:     sha,
+		Storage:     t.Storage,
+		FlashOrder:  t.FlashOrder,
+		FlashMap:    t.FlashMap,
+		CID:         t.CID,
+		SubsidyLock: t.SubsidyLock,
+		Source:      t.Source,
+		Added:       time.Now().UTC().Format(time.RFC3339),
+		SHA256:      sha,
 	}
 	if err := l.writeStock(dir, t, meta); err != nil {
 		return nil, err
@@ -480,11 +502,13 @@ func (l *Library) readStock(dir string) (*blankflash.Target, StockMeta, error) {
 		gpt = gb
 	}
 	return &blankflash.Target{
-		Parts:      parts,
-		FlashMap:   meta.FlashMap,
-		FlashOrder: meta.FlashOrder,
-		GPT:        gpt,
-		Storage:    meta.Storage,
+		Parts:       parts,
+		FlashMap:    meta.FlashMap,
+		FlashOrder:  meta.FlashOrder,
+		GPT:         gpt,
+		Storage:     meta.Storage,
+		CID:         meta.CID,
+		SubsidyLock: meta.SubsidyLock,
 	}, meta, nil
 }
 
@@ -624,6 +648,39 @@ func (l *Library) CandidateLoaders(d *catalog.Device) []LoaderRef {
 // HasLoaderForCPU reports whether any stored loader serves a device's cpu_name.
 func (l *Library) HasLoaderForCPU(vendor, cpu string) bool {
 	return len(l.LoadersForCPU(vendor, cpu)) > 0
+}
+
+// NormalizeCID renders a Motorola CID in the canonical hex spelling flashfile.xml
+// and `fastboot getvar cid` share, so a device's report and a package's claim
+// compare as strings. Unparseable input is returned trimmed, never dropped.
+func NormalizeCID(cid string) string {
+	v := strings.TrimSpace(cid)
+	base := 10
+	if lower := strings.ToLower(v); strings.HasPrefix(lower, "0x") {
+		v, base = lower[2:], 16
+	}
+	n, err := strconv.ParseUint(v, base, 64)
+	if err != nil {
+		return strings.TrimSpace(cid)
+	}
+	return fmt.Sprintf("0x%04X", n)
+}
+
+// CarrierIDs reports the CID -> subsidy-lock-config pairs every stored stock build
+// declared, keyed by NormalizeCID. It is the evidence behind catalog/carrier_ids.yaml:
+// a CID the catalog does not name can still be identified from a package that
+// targeted it, and new pairs accrue as builds land rather than being hand-entered.
+func (l *Library) CarrierIDs() map[string]string {
+	out := map[string]string{}
+	for _, s := range l.Stock() {
+		if s.Meta.CID == "" {
+			continue
+		}
+		if cid := NormalizeCID(s.Meta.CID); out[cid] == "" {
+			out[cid] = s.Meta.SubsidyLock
+		}
+	}
+	return out
 }
 
 // StockRef is a vendor/codename pair with stored stock.

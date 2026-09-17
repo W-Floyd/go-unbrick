@@ -3,6 +3,7 @@ package vendor
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,6 +26,13 @@ func init() { Register(motorola{}) }
 func (motorola) ID() string       { return "motorola" }
 func (motorola) Platform() string { return PlatformQualcomm }
 func (motorola) OEMIDs() []string { return []string{"02E8"} }
+
+// EDLCommands: Motorola's ABL reaches EDL through `oem blankflash`, which its
+// own `oem help` advertises (observed on fogona, U1TF34.100-35-14). `oem edl` is
+// kept as a second try for older MBM builds that predate it.
+func (motorola) EDLCommands() [][]string {
+	return [][]string{{"oem", "blankflash"}, {"oem", "edl"}}
+}
 
 func (motorola) CanIngest(path string) bool {
 	fi, err := os.Stat(path)
@@ -86,6 +94,31 @@ func (motorola) IngestDonor(path string) (*blankflash.Donor, error) {
 // target's boot chain and partition table. The rest of the package (super
 // chunks, radio, logo...) is not part of a blankflash.
 var stockMembers = []string{"bootloader.img", "gpt.bin"}
+
+// flashfileHeader is the part of a retail package's flashfile.xml that identifies
+// the channel the package is built for, rather than the images it flashes.
+type flashfileHeader struct {
+	CIDValue struct {
+		Value string `xml:"value,attr"`
+	} `xml:"header>cid_value"`
+	SubsidyLock struct {
+		Name string `xml:"name,attr"`
+	} `xml:"header>subsidy_lock_config"`
+}
+
+// carrierFromFlashfile reads the CID and subsidy-lock config a retail package
+// declares. Both are absent from service and donor packages, so a miss is normal
+// and silent: an unparseable or headerless flashfile just yields no channel data.
+func carrierFromFlashfile(b []byte) (cid, subsidyLock string) {
+	if len(b) == 0 {
+		return "", ""
+	}
+	var h flashfileHeader
+	if err := xml.Unmarshal(b, &h); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(h.CIDValue.Value), strings.TrimSpace(h.SubsidyLock.Name)
+}
 
 // zipMembers reads the named top-level members of a zip in one pass. Members are
 // matched on base name, so a crafted path in the archive cannot escape anywhere:
@@ -161,7 +194,7 @@ func (motorola) CanIngestStock(path string) bool {
 }
 
 func (motorola) HarvestStockPackage(path string) (*blankflash.Target, error) {
-	m, err := zipMembers(path, stockMembers)
+	m, err := zipMembers(path, append(stockMembers, "flashfile.xml"))
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +208,7 @@ func (motorola) HarvestStockPackage(path string) (*blankflash.Target, error) {
 		return nil, err
 	}
 	t.Source = path
+	t.CID, t.SubsidyLock = carrierFromFlashfile(m["flashfile.xml"])
 	return t, nil
 }
 

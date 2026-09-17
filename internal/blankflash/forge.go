@@ -27,6 +27,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"go-unbrick/internal/safeguard"
 )
 
 // bootOrder is the fallback flash order, used only when the target's own
@@ -170,12 +172,53 @@ func Forge(donor *Donor, target *Target, slot, storage string, provision []byte)
 				"(SkipStorageInit=1) and relies on the existing UFS layout. That is right "+
 				"for restoring a previously-working unit, but cannot re-create a wiped one.")
 	}
+	var targetParts []string
+	if len(target.GPT) > 0 {
+		if parts, err := safeguard.PartitionNamesFromGPT(target.GPT); err == nil {
+			targetParts = parts
+		}
+	}
+
 	backups, restores := carryDirectives(donor.Recipes)
 	if len(backups) == 0 {
+		backups, restores = safeguard.SynthesizeDirectives(targetParts, flashOrderOf(target))
 		warnings = append(warnings,
-			"donor recipe carries no <backup> directives: the forged recipe will not "+
-				"preserve per-device partitions (cid, frp, utags, devinfo, persist) across "+
-				"the flash. Every genuine Motorola package brackets the flash with them.")
+			"donor recipe carries no <backup> directives: synthesized safe <backup> and <restore> directives "+
+				"to preserve per-device unique calibration and identity partitions across the flash.")
+	} else if len(targetParts) > 0 {
+		// Donor has backup directives, but verify that all protected partitions in the target GPT are safeguarded
+		backupText := strings.Join(backups, "\n")
+		var missing []string
+		for _, tp := range targetParts {
+			if safeguard.IsProtected(tp) {
+				clean := strings.ToLower(tp)
+				base := safeguard.NormalizeBaseName(tp)
+				if !strings.Contains(backupText, `name="`+clean+`"`) && !strings.Contains(backupText, `name="`+base+`"`) {
+					missing = append(missing, fmt.Sprintf("\t<backup name=\"%s\"/>", clean))
+				}
+			}
+		}
+		if len(missing) > 0 {
+			commitIdx := -1
+			for i, b := range backups {
+				if strings.Contains(b, `<backup commit="1"/>`) {
+					commitIdx = i
+					break
+				}
+			}
+			if commitIdx >= 0 {
+				newBackups := make([]string, 0, len(backups)+len(missing)+1)
+				newBackups = append(newBackups, backups[:commitIdx]...)
+				newBackups = append(newBackups, "\t<!-- augmented safeguards: preserve target-specific protected partitions -->")
+				newBackups = append(newBackups, missing...)
+				newBackups = append(newBackups, backups[commitIdx:]...)
+				backups = newBackups
+			} else {
+				backups = append(backups, missing...)
+			}
+			warnings = append(warnings, fmt.Sprintf(
+				"donor recipe was missing %d protected partitions present in target GPT: augmented backup directives.", len(missing)))
+		}
 	}
 	if target.GPT == nil {
 		warnings = append(warnings, "no target gpt.bin: the GPT flash step will fail. Supply --target-gpt.")

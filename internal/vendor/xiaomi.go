@@ -30,6 +30,13 @@ func (xiaomi) ID() string       { return "xiaomi" }
 func (xiaomi) Platform() string { return PlatformQualcomm }
 func (xiaomi) OEMIDs() []string { return []string{"0072", "0000", "0001", "0003"} }
 
+// EDLCommands: Xiaomi's bootloader takes the stock Qualcomm `oem edl`. Note that
+// on a locked Xiaomi this only reaches an authenticated EDL, which refuses
+// unsigned programmers — entering EDL is not the same as being able to flash.
+func (xiaomi) EDLCommands() [][]string {
+	return [][]string{{"oem", "edl"}, {"reboot-edl"}}
+}
+
 func (xiaomi) CanIngest(path string) bool {
 	fi, err := os.Stat(path)
 	if err != nil {

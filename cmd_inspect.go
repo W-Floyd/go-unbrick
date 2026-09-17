@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/bootelf"
 	"go-unbrick/internal/mediatek"
+	"go-unbrick/internal/qfil"
 	"go-unbrick/internal/vendor"
 )
 
@@ -190,6 +192,32 @@ func newInspectCmd() *cobra.Command {
 			b, err := os.ReadFile(path)
 			if err != nil {
 				return err
+			}
+			if blankflash.IsContainer(b) {
+				if recs, err := blankflash.Parse(b); err == nil {
+					var allPartitions []qfil.Partition
+					for _, r := range recs {
+						if strings.HasPrefix(r.Name, "gpt_main") {
+							lun := 0
+							fmt.Sscanf(strings.TrimPrefix(strings.TrimSuffix(r.Name, ".bin"), "gpt_main"), "%d", &lun)
+							if tbl, err := qfil.ParseGPTWithLUN(r.Data, lun); err == nil {
+								allPartitions = append(allPartitions, tbl.Partitions...)
+							}
+						}
+					}
+					if len(allPartitions) > 0 {
+						mergedTable := &qfil.Table{
+							SectorSize: 512,
+							Partitions: allPartitions,
+						}
+						return printGPTAudit(path, mergedTable)
+					}
+				}
+			}
+			if bytes.Contains(b, []byte("EFI PART")) {
+				if tbl, err := qfil.ParseGPT(b); err == nil {
+					return printGPTAudit(path, tbl)
+				}
 			}
 			fmt.Printf("%s:\n", path)
 			n, err := inspectBytes(filepath.Base(path), b)

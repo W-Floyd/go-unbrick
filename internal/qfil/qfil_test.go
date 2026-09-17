@@ -290,3 +290,221 @@ func TestParseRealStockGPT(t *testing.T) {
 	}
 }
 
+func TestGenerateReadProgram(t *testing.T) {
+	// Create mock GPT with persist, modemst1, and xbl_a
+	buf := make([]byte, 512+512+128*128)
+	hdr := buf[512:1024]
+	copy(hdr[0:8], "EFI PART")
+	binary.LittleEndian.PutUint32(hdr[8:12], 0x00010000)
+	binary.LittleEndian.PutUint32(hdr[12:16], 92)
+	binary.LittleEndian.PutUint64(hdr[24:32], 1)
+	binary.LittleEndian.PutUint64(hdr[72:80], 2)
+	binary.LittleEndian.PutUint32(hdr[80:84], 128)
+	binary.LittleEndian.PutUint32(hdr[84:88], 128)
+
+	writeEntry := func(idx int, name string, startLBA, endLBA uint64) {
+		ent := buf[1024+idx*128 : 1024+(idx+1)*128]
+		ent[0] = 0xAA
+		binary.LittleEndian.PutUint64(ent[32:40], startLBA)
+		binary.LittleEndian.PutUint64(ent[40:48], endLBA)
+		u16 := utf16.Encode([]rune(name))
+		for j, code := range u16 {
+			if j >= 36 {
+				break
+			}
+			binary.LittleEndian.PutUint16(ent[56+j*2:56+(j+1)*2], code)
+		}
+	}
+
+	writeEntry(0, "persist", 5000, 6999)  // 2000 sectors
+	writeEntry(1, "modemst1", 7000, 7999) // 1000 sectors
+	writeEntry(2, "xbl_a", 1000, 1999)    // not protected
+
+	tbl, err := ParseGPT(buf)
+	if err != nil {
+		t.Fatalf("ParseGPT failed: %v", err)
+	}
+
+	xmlData, err := GenerateReadProgram(tbl, []string{"cid"})
+	if err != nil {
+		t.Fatalf("GenerateReadProgram failed: %v", err)
+	}
+
+	entries, err := ParseReadProgram(xmlData)
+	if err != nil {
+		t.Fatalf("ParseReadProgram failed: %v", err)
+	}
+
+	// Should have persist, modemst1, and additional cid
+	if len(entries) != 3 {
+		t.Fatalf("got %d read entries, want 3", len(entries))
+	}
+
+	labels := make(map[string]ReadEntry)
+	for _, e := range entries {
+		labels[e.Label] = e
+	}
+
+	pEnt, ok := labels["persist"]
+	if !ok || pEnt.StartSector != 5000 || pEnt.NumPartitionSectors != 2000 || pEnt.Filename != "backup_persist.img" {
+		t.Errorf("unexpected persist entry: %+v", pEnt)
+	}
+
+	mEnt, ok := labels["modemst1"]
+	if !ok || mEnt.StartSector != 7000 || mEnt.NumPartitionSectors != 1000 || mEnt.Filename != "backup_modemst1.bin" {
+		t.Errorf("unexpected modemst1 entry: %+v", mEnt)
+	}
+
+	cEnt, ok := labels["cid"]
+	if !ok || cEnt.Filename != "backup_cid.bin" {
+		t.Errorf("unexpected cid entry: %+v", cEnt)
+	}
+}
+
+func TestAssembleGeneratesReadProgramAndBackupScripts(t *testing.T) {
+	d := &blankflash.Donor{
+		Programmer: []byte("TEST_LOADER"),
+		Storage:    "emmc",
+	}
+
+	rawGPT := makeMockGPT(t)
+	tgt := &blankflash.Target{
+		GPT: rawGPT,
+		Parts: map[string][]byte{
+			"xbl.elf": []byte("XBL_DATA"),
+		},
+		FlashMap: map[string]string{
+			"xbl": "xbl.elf",
+		},
+	}
+
+	res, err := Assemble(d, tgt, AssembleOptions{Slot: "a", Storage: "emmc"})
+	if err != nil {
+		t.Fatalf("Assemble failed: %v", err)
+	}
+
+	if _, ok := res.Aux["readprogram0.xml"]; !ok {
+		t.Error("Assemble missing readprogram0.xml in Aux")
+	}
+	if _, ok := res.Aux["backup.sh"]; !ok {
+		t.Error("Assemble missing backup.sh in Aux")
+	}
+	if _, ok := res.Aux["backup.bat"]; !ok {
+		t.Error("Assemble missing backup.bat in Aux")
+	}
+}
+
+
+
+// buildLUNGPT builds one flashable per-LUN primary-GPT image with a 4096-byte
+// sector: protective MBR (LBA0) + header (LBA1) + entries (LBA2), matching the
+// Motorola UFS gpt_mainN.bin layout.
+func buildLUNGPT(parts []struct {
+	name             string
+	startLBA, endLBA uint64
+}) []byte {
+	const ss = 4096
+	img := make([]byte, ss*3)
+	hdr := img[ss : ss+92]
+	copy(hdr[0:8], "EFI PART")
+	binary.LittleEndian.PutUint32(hdr[8:12], 0x00010000)
+	binary.LittleEndian.PutUint32(hdr[12:16], 92)
+	binary.LittleEndian.PutUint64(hdr[24:32], 1) // current LBA
+	binary.LittleEndian.PutUint64(hdr[72:80], 2) // partition entries LBA
+	binary.LittleEndian.PutUint32(hdr[80:84], 8)
+	binary.LittleEndian.PutUint32(hdr[84:88], 128)
+	for i, p := range parts {
+		ent := img[ss*2+i*128 : ss*2+(i+1)*128]
+		ent[0] = 0xAA
+		binary.LittleEndian.PutUint64(ent[32:40], p.startLBA)
+		binary.LittleEndian.PutUint64(ent[40:48], p.endLBA)
+		for j, code := range utf16.Encode([]rune(p.name)) {
+			if j >= 36 {
+				break
+			}
+			binary.LittleEndian.PutUint16(ent[56+j*2:56+(j+1)*2], code)
+		}
+	}
+	return img
+}
+
+func TestParseGPTMultiLUNContainer(t *testing.T) {
+	lun0 := buildLUNGPT([]struct {
+		name             string
+		startLBA, endLBA uint64
+	}{{"hw", 32, 2079}})
+	lun3 := buildLUNGPT([]struct {
+		name             string
+		startLBA, endLBA uint64
+	}{{"tz_a", 32, 1055}, {"abl_a", 1760, 2015}})
+
+	container, err := blankflash.Build([]blankflash.Record{
+		{Name: "gpt_main0.bin", Data: lun0},
+		{Name: "gpt_main3.bin", Data: lun3},
+	})
+	if err != nil {
+		t.Fatalf("Build container: %v", err)
+	}
+
+	tbl, err := ParseGPT(container)
+	if err != nil {
+		t.Fatalf("ParseGPT(container): %v", err)
+	}
+	if tbl.SectorSize != 4096 {
+		t.Errorf("sector size = %d, want 4096", tbl.SectorSize)
+	}
+	if len(tbl.LUNGPT) != 2 || tbl.LUNGPT[0] == nil || tbl.LUNGPT[3] == nil {
+		t.Fatalf("LUNGPT = %v, want images for LUN 0 and 3", len(tbl.LUNGPT))
+	}
+	lun := map[string]int{}
+	start := map[string]uint64{}
+	for _, p := range tbl.Partitions {
+		lun[p.Name] = p.LUN
+		start[p.Name] = p.StartLBA
+	}
+	if lun["tz_a"] != 3 || start["tz_a"] != 32 {
+		t.Errorf("tz_a = LUN %d start %d, want LUN 3 start 32", lun["tz_a"], start["tz_a"])
+	}
+	if lun["abl_a"] != 3 || start["abl_a"] != 1760 {
+		t.Errorf("abl_a = LUN %d start %d, want LUN 3 start 1760", lun["abl_a"], start["abl_a"])
+	}
+	if lun["hw"] != 0 {
+		t.Errorf("hw = LUN %d, want 0", lun["hw"])
+	}
+
+	// rawprogram must place the boot chain on its real LUN/sector and emit one
+	// PrimaryGPT per LUN — not stack everything on sector 0.
+	parts := map[string][]byte{
+		"tz.mbn":  bytes.Repeat([]byte("t"), 1024*4096),
+		"abl.elf": bytes.Repeat([]byte("a"), 256*4096),
+	}
+	raw, err := GenerateRawProgram(tbl, parts, map[string]string{"tz_a": "tz.mbn", "abl_a": "abl.elf"}, []string{"tz_a", "abl_a"}, "", "a")
+	if err != nil {
+		t.Fatalf("GenerateRawProgram: %v", err)
+	}
+	entries, err := ParseRawProgram(raw)
+	if err != nil {
+		t.Fatalf("ParseRawProgram: %v", err)
+	}
+	var gptLUNs []int
+	byLabel := map[string]ProgramEntry{}
+	for _, e := range entries {
+		if e.Label == "PrimaryGPT" {
+			gptLUNs = append(gptLUNs, e.PhysicalPartitionNumber)
+			if e.StartSector != 0 {
+				t.Errorf("PrimaryGPT LUN %d start_sector = %d, want 0", e.PhysicalPartitionNumber, e.StartSector)
+			}
+			continue
+		}
+		byLabel[e.Label] = e
+	}
+	if len(gptLUNs) != 2 {
+		t.Errorf("got %d PrimaryGPT entries, want 2 (one per LUN)", len(gptLUNs))
+	}
+	if e := byLabel["tz_a"]; e.PhysicalPartitionNumber != 3 || e.StartSector != 32 || e.SectorSizeInBytes != 4096 {
+		t.Errorf("tz_a program entry = %+v, want LUN 3 start 32 ss 4096", e)
+	}
+	if e := byLabel["abl_a"]; e.PhysicalPartitionNumber != 3 || e.StartSector != 1760 {
+		t.Errorf("abl_a program entry = %+v, want LUN 3 start 1760", e)
+	}
+}

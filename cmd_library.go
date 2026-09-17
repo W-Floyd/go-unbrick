@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ import (
 func newLibraryCmd() *cobra.Command {
 	c := &cobra.Command{Use: "library", Short: "manage the local loader + stock store"}
 	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryAddStockZipCmd(),
-		newLibraryHarvestDonorsCmd(), newLibraryListCmd(), newLibrarySyncCmd())
+		newLibraryHarvestDonorsCmd(), newLibraryListCmd(), newLibrarySyncCmd(), newLibraryImportLoadersCmd())
 	return c
 }
 
@@ -208,8 +209,15 @@ func stockLibrary() (*library.Library, error) {
 // printStockStored reports a stored stock build, naming the build id so the
 // operator can select it later with --stock.
 func printStockStored(ref *library.StockRef, t *blankflash.Target) {
-	fmt.Printf("stored stock %s/%s@%s: parts=%d gpt=%s storage=%s\n",
-		ref.Vendor, ref.Codename, ref.Build, len(t.Parts), yesno(t.GPT != nil), t.Storage)
+	cid := ""
+	if ref.Meta.CID != "" {
+		cid = fmt.Sprintf(" cid=%s", ref.Meta.CID)
+		if ref.Meta.SubsidyLock != "" {
+			cid += " slcf=" + ref.Meta.SubsidyLock
+		}
+	}
+	fmt.Printf("stored stock %s/%s@%s: parts=%d gpt=%s storage=%s%s\n",
+		ref.Vendor, ref.Codename, ref.Build, len(t.Parts), yesno(t.GPT != nil), t.Storage, cid)
 }
 
 func newLibraryAddStockCmd() *cobra.Command {
@@ -448,3 +456,203 @@ func newLibraryListCmd() *cobra.Command {
 		},
 	}
 }
+
+type manifestLoaderRecord struct {
+	Signer    string `json:"signer"`
+	SHA256    string `json:"sha256"`
+	FileMD5   string `json:"file_md5"`
+	Type      string `json:"type"`
+	Site      string `json:"site"`
+	Path      string `json:"path"`
+	SavedFile string `json:"saved_file"`
+}
+
+func normalizeSignerVendor(signer, oemID string) string {
+	s := strings.ToLower(strings.TrimSpace(signer))
+	s = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		if r == ' ' || r == '-' || r == '_' {
+			return '_'
+		}
+		return -1
+	}, s)
+	s = strings.Trim(s, "_")
+	switch s {
+	case "qc_test", "qualcomm_reference", "reference":
+		return "qualcomm"
+	case "motorola_lenovo":
+		return "motorola"
+	case "lenovo_motorola":
+		return "lenovo"
+	case "xiaomi_redmi_poco", "redmi", "poco":
+		return "xiaomi"
+	case "hihonor":
+		return "honor"
+	case "":
+		switch strings.ToUpper(oemID) {
+		case "02E8":
+			return "motorola"
+		case "0020":
+			return "samsung"
+		case "0072":
+			return "xiaomi"
+		case "0000":
+			return "qualcomm"
+		default:
+			return "qualcomm"
+		}
+	default:
+		return s
+	}
+}
+
+func fallbackJTAGFromFilename(filename, currentJTAG string) string {
+	if currentJTAG != "" && currentJTAG != "00000000" {
+		return currentJTAG
+	}
+	base := filepath.Base(filename)
+	parts := strings.Split(base, "_")
+	for _, p := range parts {
+		if len(p) == 16 && isHex(p) && strings.Trim(p[:8], "0") != "" {
+			return strings.ToUpper(p[:8])
+		}
+	}
+	if currentJTAG != "" {
+		return currentJTAG
+	}
+	return "00000000"
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func newLibraryImportLoadersCmd() *cobra.Command {
+	var vendorFilter string
+	var dryRun bool
+	var limit int
+	c := &cobra.Command{
+		Use:   "import-loaders [directory]",
+		Short: "import bare loader files (e.g. from temblast_loaders) into the library store",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := "temblast_loaders"
+			if len(args) > 0 {
+				dir = args[0]
+			}
+			lib := library.Open(libraryDir())
+
+			type workItem struct {
+				path   string
+				signer string
+				source string
+			}
+			var items []workItem
+
+			manifestPath := filepath.Join(dir, "manifest.json")
+			if mBytes, err := os.ReadFile(manifestPath); err == nil {
+				var records []manifestLoaderRecord
+				if err := json.Unmarshal(mBytes, &records); err == nil {
+					for _, rec := range records {
+						target := filepath.Join(dir, rec.SavedFile)
+						items = append(items, workItem{
+							path:   target,
+							signer: rec.Signer,
+							source: filepath.Base(rec.SavedFile),
+						})
+					}
+				}
+			}
+
+			if len(items) == 0 {
+				_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+					if err == nil && !info.IsDir() {
+						ext := strings.ToLower(filepath.Ext(p))
+						if ext == ".elf" || ext == ".bin" || ext == ".mbn" || ext == ".melf" {
+							items = append(items, workItem{
+								path:   p,
+								signer: filepath.Base(filepath.Dir(p)),
+								source: filepath.Base(p),
+							})
+						}
+					}
+					return nil
+				})
+			}
+
+			if len(items) == 0 {
+				return fmt.Errorf("no loader files found in %s", dir)
+			}
+
+			fmt.Printf("Scanning %d loader files in %s...\n", len(items), dir)
+			var added, dup, skipped int
+
+			for i, item := range items {
+				if limit > 0 && i >= limit {
+					break
+				}
+				blob, err := os.ReadFile(item.path)
+				if err != nil {
+					skipped++
+					continue
+				}
+				id, err := secboot.FromImage(blob)
+				if err != nil {
+					skipped++
+					continue
+				}
+				v := normalizeSignerVendor(item.signer, id.OEMID)
+				if vendorFilter != "" && v != strings.ToLower(vendorFilter) {
+					continue
+				}
+				jtag := fallbackJTAGFromFilename(item.source, id.JTAGID)
+				fam := catalog.Family{Vendor: v, JTAGID: jtag}
+				if dryRun {
+					fmt.Printf("  would import %s  JTAG=%s OEM=%s SW_ID=%d (%dB)\n",
+						fam, id.JTAGID, id.OEMID, id.SWID, len(blob))
+					added++
+					continue
+				}
+
+				donor := &blankflash.Donor{
+					Programmer: blob,
+					Source:     item.source,
+				}
+				before := len(lib.Builds(fam))
+				ref, err := lib.AddLoader(fam, donor, item.source)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ! error storing %s: %v\n", item.path, err)
+					skipped++
+					continue
+				}
+				if len(lib.Builds(fam)) == before {
+					dup++
+					continue
+				}
+				added++
+				fmt.Printf("  + %s@%s  JTAG=%s OEM=%s SW_ID=%d (%dB)\n",
+					fam, ref.Build, id.JTAGID, id.OEMID, id.SWID, len(blob))
+			}
+
+			verb := "imported"
+			if dryRun {
+				verb = "would import"
+			}
+			fmt.Printf("\n%s %d loader(s); %d already present, %d skipped (unparseable or unreadable).\n",
+				verb, added, dup, skipped)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&vendorFilter, "vendor", "", "filter by vendor id (e.g. motorola, xiaomi, samsung)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "simulate import without modifying the library")
+	c.Flags().IntVar(&limit, "limit", 0, "max loaders to import (0 = all)")
+	return c
+}
+

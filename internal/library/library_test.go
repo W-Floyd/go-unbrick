@@ -290,6 +290,48 @@ func TestStockDedupesIdenticalImport(t *testing.T) {
 	}
 }
 
+func TestStockCarrierIDsHarvestedAndBackfilled(t *testing.T) {
+	lib := Open(t.TempDir())
+	mk := func(cid, slcf string) *blankflash.Target {
+		return &blankflash.Target{
+			Parts:       map[string][]byte{"xbl.elf": []byte("X")},
+			FlashMap:    map[string]string{"xbl": "xbl.elf"},
+			CID:         cid,
+			SubsidyLock: slcf,
+		}
+	}
+	// A build stored before the CID was harvested gains it on re-import of the
+	// same bytes, without duplicating the build.
+	if _, err := lib.AddStock("m", "d", "240823-aaa", mk("", "")); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := lib.AddStock("m", "d", "240823-aaa", mk("0x0032", "slcf_rev_d_ccaws_v5.0.nvm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Meta.CID != "0x0032" || ref.Meta.SubsidyLock != "slcf_rev_d_ccaws_v5.0.nvm" {
+		t.Fatalf("CID not backfilled: %+v", ref.Meta)
+	}
+	if got := lib.StockBuilds("m", "d"); len(got) != 1 || got[0].Meta.CID != "0x0032" {
+		t.Errorf("stored meta: %+v", got)
+	}
+	if got := lib.CarrierIDs()["0x0032"]; got != "slcf_rev_d_ccaws_v5.0.nvm" {
+		t.Errorf("CarrierIDs: %q", got)
+	}
+}
+
+func TestNormalizeCID(t *testing.T) {
+	// The flashfile's hex and the filename's decimal must collapse to one key.
+	for _, in := range []string{"0x0032", "0X32", "50"} {
+		if got := NormalizeCID(in); got != "0x0032" {
+			t.Errorf("NormalizeCID(%q) = %q", in, got)
+		}
+	}
+	if got := NormalizeCID(" bogus "); got != "bogus" {
+		t.Errorf("unparseable CID should survive trimmed, got %q", got)
+	}
+}
+
 // Stock stored under the old flat layout is moved into a build directory rather
 // than orphaned by the build-keyed one.
 func TestStockMigratesFlatLayout(t *testing.T) {

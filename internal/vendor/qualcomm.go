@@ -29,6 +29,13 @@ func (qualcomm) ID() string       { return "qualcomm" }
 func (qualcomm) Platform() string { return PlatformQualcomm }
 func (qualcomm) OEMIDs() []string { return []string{"0000"} }
 
+// EDLCommands: the reference Qualcomm routes, for a device whose OEM the catalog
+// does not name. `reboot edl` is last because a current AOSP fastboot rejects
+// that target itself, so it never reaches the bootloader.
+func (qualcomm) EDLCommands() [][]string {
+	return [][]string{{"oem", "edl"}, {"reboot-edl"}, {"reboot", "emergency"}, {"reboot", "edl"}}
+}
+
 func (qualcomm) CanIngest(path string) bool {
 	fi, err := os.Stat(path)
 	if err != nil {

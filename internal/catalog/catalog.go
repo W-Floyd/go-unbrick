@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -58,23 +59,40 @@ type VendorConfig struct {
 	OEMIDs      []string `yaml:"oem_ids,omitempty"`
 }
 
+type PartitionRule struct {
+	Category    string `yaml:"category"`
+	Criticality string `yaml:"criticality"`
+	Action      string `yaml:"action"`
+	Vendor      string `yaml:"vendor"`
+	Description string `yaml:"description"`
+}
+
 type catalogFile struct {
-	Devices  []*Device                `yaml:"devices,omitempty"`
-	Variants map[string]string        `yaml:"variants,omitempty"`
-	Aliases  map[string]string        `yaml:"aliases,omitempty"`
-	Vendors  map[string]*VendorConfig `yaml:"vendors,omitempty"`
-	SWIDs    map[uint64]string        `yaml:"sw_ids,omitempty"`
-	EFIGUIDs map[string]string        `yaml:"efi_guids,omitempty"`
+	Devices    []*Device                `yaml:"devices,omitempty"`
+	Variants   map[string]string        `yaml:"variants,omitempty"`
+	Aliases    map[string]string        `yaml:"aliases,omitempty"`
+	Vendors    map[string]*VendorConfig `yaml:"vendors,omitempty"`
+	SWIDs      map[uint64]string        `yaml:"sw_ids,omitempty"`
+	EFIGUIDs   map[string]string        `yaml:"efi_guids,omitempty"`
+	Partitions map[string]PartitionRule `yaml:"partitions,omitempty"`
+	CarrierIDs map[uint64]string        `yaml:"carrier_ids,omitempty"`
+	// UnlockEligibleCIDs is Motorola's published allow-list; absence from it means
+	// ineligible, so this is a closed world unlike carrier_ids.
+	UnlockEligibleCIDs []uint64 `yaml:"unlock_eligible_cids,omitempty"`
 }
 
 type Catalog struct {
-	devices  []*Device
-	byCode   map[string]*Device
-	variants map[string]string
-	aliases  map[string]string
-	vendors  map[string]*VendorConfig
-	swIDs    map[uint64]string
-	efiGUIDs map[string]string
+	devices    []*Device
+	byCode     map[string]*Device
+	variants   map[string]string
+	aliases    map[string]string
+	vendors    map[string]*VendorConfig
+	swIDs      map[uint64]string
+	efiGUIDs   map[string]string
+	partitions  map[string]PartitionRule
+	carrierIDs  map[uint64]string
+	unlockCIDs  map[uint64]bool
+	hasUnlockCn bool // an allow-list was loaded, so "absent" means ineligible
 }
 
 // Load reads every *.yaml under dir as a device list and merges them.
@@ -85,12 +103,15 @@ func Load(dir string) (*Catalog, error) {
 	}
 	sort.Strings(files)
 	c := &Catalog{
-		byCode:   map[string]*Device{},
-		variants: map[string]string{},
-		aliases:  map[string]string{},
-		vendors:  map[string]*VendorConfig{},
-		swIDs:    map[uint64]string{},
-		efiGUIDs: map[string]string{},
+		byCode:     map[string]*Device{},
+		variants:   map[string]string{},
+		aliases:    map[string]string{},
+		vendors:    map[string]*VendorConfig{},
+		swIDs:      map[uint64]string{},
+		efiGUIDs:   map[string]string{},
+		partitions: map[string]PartitionRule{},
+		carrierIDs: map[uint64]string{},
+		unlockCIDs: map[uint64]bool{},
 	}
 
 	type fileItem struct {
@@ -143,6 +164,23 @@ func Load(dir string) (*Catalog, error) {
 			vClean := strings.TrimSpace(v)
 			if kClean != "" && vClean != "" {
 				c.efiGUIDs[kClean] = vClean
+			}
+		}
+		for k, v := range cf.Partitions {
+			kClean := strings.ToLower(strings.TrimSpace(k))
+			if kClean != "" {
+				c.partitions[kClean] = v
+			}
+		}
+		for k, v := range cf.CarrierIDs {
+			if vClean := strings.TrimSpace(v); vClean != "" {
+				c.carrierIDs[k] = vClean
+			}
+		}
+		if len(cf.UnlockEligibleCIDs) > 0 {
+			c.hasUnlockCn = true
+			for _, cid := range cf.UnlockEligibleCIDs {
+				c.unlockCIDs[cid] = true
 			}
 		}
 	}
@@ -397,8 +435,54 @@ func (c *Catalog) SWIDName(swid uint64) string {
 		if name, ok := c.swIDs[swid]; ok && name != "" {
 			return name
 		}
+		// Qualcomm SW_ID splits: bits[31:0] = stage/SW_TYPE, bits[63:32] = anti-rollback version
+		stageType := uint64(uint32(swid & 0xFFFFFFFF))
+		if name, ok := c.swIDs[stageType]; ok && name != "" {
+			return name
+		}
 	}
 	return ""
+}
+
+// CarrierIDName names the carrier / subsidy channel a Motorola CID denotes,
+// accepting the value either as fastboot reports it ("0x0032") or as firmware
+// package filenames spell it ("50"). The mapping is attested only by observed
+// package filenames, so most CIDs are unknown and callers show the raw value.
+func (c *Catalog) CarrierIDName(cid string) string {
+	if c == nil || len(c.carrierIDs) == 0 {
+		return ""
+	}
+	n, err := parseCID(cid)
+	if err != nil {
+		return ""
+	}
+	return c.carrierIDs[n]
+}
+
+// UnlockEligible reports whether Motorola's unlock portal serves this CID, and
+// whether an allow-list was loaded at all. The list is closed-world — Motorola
+// states that any CID not on it is ineligible — so a CID the list does not carry
+// is a predicted refusal rather than an unknown.
+func (c *Catalog) UnlockEligible(cid string) (eligible, known bool) {
+	if c == nil || !c.hasUnlockCn {
+		return false, false
+	}
+	n, err := parseCID(cid)
+	if err != nil {
+		return false, false
+	}
+	return c.unlockCIDs[n], true
+}
+
+// parseCID reads a CID in either spelling: fastboot's hex ("0x0032") or the
+// decimal token a firmware filename carries ("50").
+func parseCID(cid string) (uint64, error) {
+	v := strings.TrimSpace(cid)
+	base := 10
+	if lower := strings.ToLower(v); strings.HasPrefix(lower, "0x") {
+		v, base = lower[2:], 16
+	}
+	return strconv.ParseUint(v, base, 64)
 }
 
 // EFIGUIDName returns the human-readable name for a canonical UEFI GUID.
@@ -410,6 +494,33 @@ func (c *Catalog) EFIGUIDName(guid string) string {
 		}
 	}
 	return ""
+}
+
+// PartitionRule looks up the safeguard classification rule for a partition.
+// Checks exact name first, then strips slot suffixes (_a, _b).
+func (c *Catalog) PartitionRule(name string) (PartitionRule, bool) {
+	if c == nil || len(c.partitions) == 0 {
+		return PartitionRule{}, false
+	}
+	clean := strings.ToLower(strings.TrimSpace(name))
+	if r, ok := c.partitions[clean]; ok {
+		return r, true
+	}
+	base := strings.TrimSuffix(strings.TrimSuffix(clean, "_a"), "_b")
+	if r, ok := c.partitions[base]; ok {
+		return r, true
+	}
+	return PartitionRule{}, false
+}
+
+// IsProtected reports whether a partition holds unique calibration, radio NVRAM,
+// or identity data that must be backed up before flashing.
+func (c *Catalog) IsProtected(name string) bool {
+	r, ok := c.PartitionRule(name)
+	if !ok {
+		return false
+	}
+	return r.Action == "backup_and_preserve" || r.Criticality == "irreplaceable" || r.Criticality == "important"
 }
 
 

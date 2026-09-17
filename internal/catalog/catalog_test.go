@@ -213,6 +213,55 @@ func TestDefaultCatalogHasVariants(t *testing.T) {
 	}
 }
 
+func TestCarrierIDName(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+	// fastboot reports hex, firmware filenames spell the same CID in decimal.
+	for _, in := range []string{"0x0032", "0X32", "50"} {
+		if got := c.CarrierIDName(in); got != "CC channel (subsidy lock CCAWS)" {
+			t.Errorf("CarrierIDName(%q): got %q", in, got)
+		}
+	}
+	if got := c.CarrierIDName("0xFFFF"); got != "" {
+		t.Errorf("unattested CID should be unnamed, got %q", got)
+	}
+	if got := c.CarrierIDName("not-a-number"); got != "" {
+		t.Errorf("garbage CID should be unnamed, got %q", got)
+	}
+}
+
+func TestUnlockEligible(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+	// 0x0032 is on Motorola's published list; the retail fogona carries it.
+	if eligible, known := c.UnlockEligible("0x0032"); !known || !eligible {
+		t.Errorf("0x0032: eligible=%v known=%v", eligible, known)
+	}
+	// The list is closed-world, so the TracFone channel's absence is an answer,
+	// not a gap: known must stay true.
+	if eligible, known := c.UnlockEligible("0x0033"); !known || eligible {
+		t.Errorf("0x0033: eligible=%v known=%v", eligible, known)
+	}
+	if eligible, known := c.UnlockEligible("0x00DE"); !known || !eligible {
+		t.Errorf("0x00DE: eligible=%v known=%v", eligible, known)
+	}
+	if _, known := c.UnlockEligible("not-a-number"); known {
+		t.Error("an unparseable CID cannot be judged")
+	}
+	// A catalog without the list must not imply every CID is ineligible.
+	empty, err := Load(writeCatalog(t, map[string]string{"a.yaml": moto}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, known := empty.UnlockEligible("0x0032"); known {
+		t.Error("no allow-list loaded should report unknown, not ineligible")
+	}
+}
+
 func TestAliasesAndCanonicalPartition(t *testing.T) {
 	aliasesYAML := `aliases:
   qupv3fw.elf: qupfw
@@ -392,6 +441,46 @@ func TestDeviceAndSoCByJTAG(t *testing.T) {
 	}
 }
 
+func TestPartitionsAndSafeguards(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
 
+	// Test irreplaceable partitions
+	for _, p := range []string{"modemst1", "modemst2", "fsg", "persist", "prodpersist", "cid"} {
+		if !c.IsProtected(p) {
+			t.Errorf("expected %s to be protected", p)
+		}
+		rule, ok := c.PartitionRule(p)
+		if !ok {
+			t.Errorf("missing PartitionRule for %s", p)
+		}
+		if rule.Criticality != "irreplaceable" {
+			t.Errorf("partition %s criticality: got %s, want irreplaceable", p, rule.Criticality)
+		}
+	}
 
+	// Test slot-suffixed lookups
+	if !c.IsProtected("persist_a") {
+		t.Error("persist_a should be protected")
+	}
+	if !c.IsProtected("modemst1_b") {
+		t.Error("modemst1_b should be protected")
+	}
 
+	// Test replaceable bootloader partition
+	if c.IsProtected("abl") {
+		t.Error("abl should not be marked protected (it is replaceable)")
+	}
+	if rule, ok := c.PartitionRule("abl_a"); !ok || rule.Category != "boot" {
+		t.Errorf("abl_a rule: got %+v, ok=%v", rule, ok)
+	}
+
+	// Test SW_ID lower 32-bit matching when anti-rollback is set
+	// 0x0000000200000003: Rollback index 2, stage 3 (Emergency Firehose Programmer)
+	swidWithAR := uint64(0x0000000200000003)
+	if name := c.SWIDName(swidWithAR); name != "Emergency Firehose Programmer" {
+		t.Errorf("SWIDName with AR: got %q, want Emergency Firehose Programmer", name)
+	}
+}

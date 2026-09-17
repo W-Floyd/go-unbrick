@@ -57,8 +57,32 @@ func GenerateRawProgram(table *Table, parts map[string][]byte, flashMap map[stri
 
 	var entries []ProgramEntry
 
-	// 1. Primary GPT at sector 0 (if present)
-	if gptFilename != "" {
+	// 1. Primary GPT at sector 0. A multi-LUN UFS table carries one flashable
+	// image per LUN (gpt_mainN.bin); write each to its own physical partition.
+	// A single/eMMC table writes the one gptFilename to LUN 0.
+	if table != nil && len(table.LUNGPT) > 0 {
+		luns := make([]int, 0, len(table.LUNGPT))
+		for lun := range table.LUNGPT {
+			luns = append(luns, lun)
+		}
+		sort.Ints(luns)
+		for _, lun := range luns {
+			img := table.LUNGPT[lun]
+			numSectors := uint64((len(img) + sectorSize - 1) / sectorSize)
+			entries = append(entries, ProgramEntry{
+				SectorSizeInBytes:       sectorSize,
+				FileSectorOffset:        0,
+				Filename:                fmt.Sprintf("gpt_main%d.bin", lun),
+				Label:                   "PrimaryGPT",
+				NumPartitionSectors:     numSectors,
+				PhysicalPartitionNumber: lun,
+				SizeInKB:                fmt.Sprintf("%.1f", float64(numSectors*uint64(sectorSize))/1024.0),
+				Sparse:                  "false",
+				StartByteHex:            "0x0",
+				StartSector:             0,
+			})
+		}
+	} else if gptFilename != "" {
 		numSectors := uint64(34) // Standard protective MBR (1) + GPT header (1) + 128 entries (32)
 		if table != nil && len(table.Raw) > 0 {
 			numSectors = uint64((len(table.Raw) + sectorSize - 1) / sectorSize)

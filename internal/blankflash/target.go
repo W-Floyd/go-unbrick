@@ -51,6 +51,14 @@ type Target struct {
 	GPT        []byte // gpt.bin (kept whole; qboot flashes it as-is)
 	Storage    string // emmc / ufs, if determinable
 	Source     string
+	// CID is the carrier/subsidy channel the package declares it targets, in the
+	// hex spelling both flashfile.xml and `fastboot getvar cid` use ("0x0032").
+	// The bootloader refuses a package whose CID does not match the device's, so
+	// this — not the filename's build id — says which units will accept it.
+	CID string
+	// SubsidyLock is the subsidy-lock config the package carries
+	// ("slcf_rev_d_ccaws_v5.0.nvm"); it names the channel the CID is a number for.
+	SubsidyLock string
 }
 
 var (

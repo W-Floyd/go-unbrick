@@ -83,6 +83,27 @@ func StockBuildID(d Driver, t *blankflash.Target) string {
 	return si.StockBuildID(t)
 }
 
+// EDLEntry is an optional Driver capability: the commands that put this OEM's
+// bootloader into the SoC's emergency download mode. There is no common one —
+// Motorola's ABL enters EDL through `oem blankflash`, other Qualcomm bootloaders
+// through `oem edl` or a reboot target — and issuing another vendor's command is
+// at best a wasted round trip against a bootloader that may log or refuse it.
+// A driver that knows no route omits the capability, which is itself the answer:
+// the device has no fastboot path into EDL.
+type EDLEntry interface {
+	EDLCommands() [][]string
+}
+
+// EDLCommands asks a driver how its devices reach EDL, returning nil when the
+// driver offers no route.
+func EDLCommands(d Driver) [][]string {
+	e, ok := d.(EDLEntry)
+	if !ok {
+		return nil
+	}
+	return e.EDLCommands()
+}
+
 // StockNamer is an optional Driver capability: reading the device codename the
 // OEM stamped into a harvested stock image, so an import can identify itself
 // rather than relying on a filename or the operator.
