@@ -357,6 +357,9 @@ func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catal
 	} else if slcf := lib.CarrierIDs()[library.NormalizeCID(r.CarrierID)]; slcf != "" {
 		// Uncatalogued CID, but a stored package declared it: name it from that.
 		cidDesc = fmt.Sprintf("%s — subsidy lock %s (from stored build)", cidDesc, slcf)
+	} else if ref := cat.CarrierIDReference(r.CarrierID); ref != "" {
+		// Nothing attested; fall back to the forum table, marked unverified.
+		cidDesc = fmt.Sprintf("%s — %s %s", cidDesc, ref, cWarn("(unverified)"))
 	}
 	printField("Carrier ID (CID)", cidDesc)
 	printField("Channel ID", r.ChannelID)

@@ -232,6 +232,27 @@ func TestCarrierIDName(t *testing.T) {
 	}
 }
 
+func TestCarrierIDReference(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+	// A forum-only CID (Verizon 0x0002) has no attested name but a reference one.
+	if got := c.CarrierIDName("0x0002"); got != "" {
+		t.Errorf("0x0002 is not package-attested, want empty CarrierIDName, got %q", got)
+	}
+	if got := c.CarrierIDReference("0x0002"); got != "Verizon" {
+		t.Errorf("CarrierIDReference(0x0002) = %q, want Verizon", got)
+	}
+	// Attested wins: 0x0032 keeps its package name, and a reference also exists.
+	if got := c.CarrierIDName("0x0032"); got != "CC channel (subsidy lock CCAWS)" {
+		t.Errorf("attested 0x0032 name changed: %q", got)
+	}
+	if got := c.CarrierIDReference("0x0032"); got != "retail / unlockable" {
+		t.Errorf("CarrierIDReference(0x0032) = %q, want retail / unlockable", got)
+	}
+}
+
 func TestUnlockEligible(t *testing.T) {
 	c, err := Default()
 	if err != nil {

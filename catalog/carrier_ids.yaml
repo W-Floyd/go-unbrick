@@ -46,3 +46,20 @@ carrier_ids:
   50: "CC channel (subsidy lock CCAWS)"
   # XT2413V_FOGONA_TRACFONE_14_U1TFS34.100-35-14-1-4_subsidy-TRAC_VISIBLE_RSU_regulatory-DEFAULT_cid51_CFC
   51: "TracFone / Visible (subsidy TRAC_VISIBLE_RSU)"
+
+# Vendor-claimed CID meanings from a Motorola community post (dated 2022-09-15),
+# NOT attested from any package in this corpus. Kept separate from carrier_ids so
+# it never masquerades as evidence: recon uses it only when carrier_ids and the
+# library have nothing, and marks it "(unverified)". Where the post and an
+# attested entry agree (0x0032 retail, 0x0033 TracFone) the attested one wins.
+# Keys decimal, matching the cidNN convention. Super-permission and 0xDEAD are
+# states the post documents, useful to name even though no retail unit carries them.
+cid_reference:
+  2: "Verizon"                              # 0x0002
+  18: "Amazon / AT&T / Cricket"             # 0x0012
+  21: "T-Mobile / Boost"                    # 0x0015
+  50: "retail / unlockable"                 # 0x0032
+  51: "TracFone"                            # 0x0033
+  0: "super-permission (any-region firmware, same model)"    # 0x0000
+  255: "factory super-permission (factory firmware only)"    # 0x00FF
+  57005: "corrupt / unreadable CID"         # 0xDEAD

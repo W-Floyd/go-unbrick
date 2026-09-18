@@ -25,12 +25,12 @@ import (
 type Device struct {
 	Codename string   `yaml:"codename"`
 	Name     string   `yaml:"name"`
-	Vendor   string   `yaml:"vendor"`   // OEM id, e.g. "motorola" — with cpu_name, the family key
-	CPUName  string   `yaml:"cpu_name"` // qboot loader-signing token, e.g. "SM_DIVAR"
+	Vendor   string   `yaml:"vendor"`            // OEM id, e.g. "motorola" — with cpu_name, the family key
+	CPUName  string   `yaml:"cpu_name"`          // qboot loader-signing token, e.g. "SM_DIVAR"
 	JTAGIDs  []string `yaml:"jtag_id,omitempty"` // known fused MSM ids; the authoritative loader key when present, since the PBL checks JTAG_ID, not cpu_name. Optional — derive falls back to the cpu_name bridge.
-	SoC      string   `yaml:"soc,omitempty"`      // marketing SoC name (cosmetic, resolved from variants if omitted)
-	Models   []string `yaml:"models"`   // model numbers (carrier/region variants)
-	Storage  []string `yaml:"storage"`  // advisory; real storage is inferred from firmware
+	SoC      string   `yaml:"soc,omitempty"`     // marketing SoC name (cosmetic, resolved from variants if omitted)
+	Models   []string `yaml:"models"`            // model numbers (carrier/region variants)
+	Storage  []string `yaml:"storage"`           // advisory; real storage is inferred from firmware
 }
 
 // Family keys the loader store on the silicon a signed loader authenticates
@@ -79,20 +79,25 @@ type catalogFile struct {
 	// UnlockEligibleCIDs is Motorola's published allow-list; absence from it means
 	// ineligible, so this is a closed world unlike carrier_ids.
 	UnlockEligibleCIDs []uint64 `yaml:"unlock_eligible_cids,omitempty"`
+	// CIDReference is a vendor-claimed CID→meaning map (a forum post), kept apart
+	// from the package-attested carrier_ids: it is a hint of last resort, not
+	// evidence, and callers must mark it as unverified.
+	CIDReference map[uint64]string `yaml:"cid_reference,omitempty"`
 }
 
 type Catalog struct {
-	devices    []*Device
-	byCode     map[string]*Device
-	variants   map[string]string
-	aliases    map[string]string
-	vendors    map[string]*VendorConfig
-	swIDs      map[uint64]string
-	efiGUIDs   map[string]string
-	partitions  map[string]PartitionRule
-	carrierIDs  map[uint64]string
-	unlockCIDs  map[uint64]bool
-	hasUnlockCn bool // an allow-list was loaded, so "absent" means ineligible
+	devices      []*Device
+	byCode       map[string]*Device
+	variants     map[string]string
+	aliases      map[string]string
+	vendors      map[string]*VendorConfig
+	swIDs        map[uint64]string
+	efiGUIDs     map[string]string
+	partitions   map[string]PartitionRule
+	carrierIDs   map[uint64]string
+	cidReference map[uint64]string // forum-sourced hints, unverified
+	unlockCIDs   map[uint64]bool
+	hasUnlockCn  bool // an allow-list was loaded, so "absent" means ineligible
 }
 
 // Load reads every *.yaml under dir as a device list and merges them.
@@ -103,15 +108,16 @@ func Load(dir string) (*Catalog, error) {
 	}
 	sort.Strings(files)
 	c := &Catalog{
-		byCode:     map[string]*Device{},
-		variants:   map[string]string{},
-		aliases:    map[string]string{},
-		vendors:    map[string]*VendorConfig{},
-		swIDs:      map[uint64]string{},
-		efiGUIDs:   map[string]string{},
-		partitions: map[string]PartitionRule{},
-		carrierIDs: map[uint64]string{},
-		unlockCIDs: map[uint64]bool{},
+		byCode:       map[string]*Device{},
+		variants:     map[string]string{},
+		aliases:      map[string]string{},
+		vendors:      map[string]*VendorConfig{},
+		swIDs:        map[uint64]string{},
+		efiGUIDs:     map[string]string{},
+		partitions:   map[string]PartitionRule{},
+		carrierIDs:   map[uint64]string{},
+		cidReference: map[uint64]string{},
+		unlockCIDs:   map[uint64]bool{},
 	}
 
 	type fileItem struct {
@@ -175,6 +181,11 @@ func Load(dir string) (*Catalog, error) {
 		for k, v := range cf.CarrierIDs {
 			if vClean := strings.TrimSpace(v); vClean != "" {
 				c.carrierIDs[k] = vClean
+			}
+		}
+		for k, v := range cf.CIDReference {
+			if vClean := strings.TrimSpace(v); vClean != "" {
+				c.cidReference[k] = vClean
 			}
 		}
 		if len(cf.UnlockEligibleCIDs) > 0 {
@@ -459,6 +470,20 @@ func (c *Catalog) CarrierIDName(cid string) string {
 	return c.carrierIDs[n]
 }
 
+// CarrierIDReference names a CID from the vendor-claimed forum table, used only
+// as a fallback when CarrierIDName (package-attested) has nothing. It is a hint,
+// not evidence — callers must present it as unverified.
+func (c *Catalog) CarrierIDReference(cid string) string {
+	if c == nil || len(c.cidReference) == 0 {
+		return ""
+	}
+	n, err := parseCID(cid)
+	if err != nil {
+		return ""
+	}
+	return c.cidReference[n]
+}
+
 // UnlockEligible reports whether Motorola's unlock portal serves this CID, and
 // whether an allow-list was loaded at all. The list is closed-world — Motorola
 // states that any CID not on it is ineligible — so a CID the list does not carry
@@ -522,8 +547,6 @@ func (c *Catalog) IsProtected(name string) bool {
 	}
 	return r.Action == "backup_and_preserve" || r.Criticality == "irreplaceable" || r.Criticality == "important"
 }
-
-
 
 // AllDevices returns every device in canonical order (see deviceLess).
 func (c *Catalog) AllDevices() []*Device {
