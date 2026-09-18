@@ -154,15 +154,30 @@ type SecurityVersions struct {
 }
 
 // CIDProvRequest holds the output of `fastboot oem cid_prov_req`, Motorola's
-// after-sales command that emits the hardware bindings (SoC/UFS/eMMC IDs, RPMB
-// state) its PKI server needs to mint a signed cid_prov_data payload. It is a
-// read-only diagnostic, and the reason it is worth capturing in recon: it is the
-// only way to read those identifiers off a device whose cid partition is corrupt,
-// which leaves CarrierID reading 0xDEAD (0xFFFF) and blocks AP fastboot flashing.
+// after-sales command that emits the hardware bindings its PKI server needs to
+// mint a signed cid_prov_data payload. It is a read-only diagnostic, worth
+// capturing in recon because it exposes the SoC id even on a device whose cid
+// partition is corrupt (CarrierID 0xDEAD), which blocks AP fastboot flashing.
+//
+// The real output is hex blocks, not key/value. Field offsets below are
+// reverse-engineered from a fogona (SM_DIVAR) unit and gated on the 0x00F0
+// structure marker, so an ABL with a different layout parses as raw only:
+//
+//	0x00  u16 BE format version (0x0003 = secure production)
+//	0x42  16-byte device/key digest
+//	0x54  0x00F0 structure marker (the spec's Motorola CID magic)
+//	0x60  4-byte SoC / JTAG id, in the clear (e.g. 001B80E1)
+//	tail  0xFF fill — the empty signature region (this is the request, unsigned)
 type CIDProvRequest struct {
-	Supported bool              // the bootloader accepted the command (vs "unknown command")
-	Fields    map[string]string // parsed "(bootloader) key: value" lines (CPU/UFS/RPMB ids)
-	RawLines  []string
+	Supported     bool   // the bootloader accepted the command (vs "unknown command")
+	Raw           []byte // the concatenated hex-block payload, when the output is hex
+	FormatVersion int    // u16 BE at 0x00; 0 if the structure was not recognized
+	SoCID         string // JTAG/SoC id at 0x60 (uppercase hex), when recognized
+	Digest        string // device/key digest at 0x42 (hex), when recognized
+	// Fields holds "(bootloader) key: value" lines for an ABL that answers that
+	// way instead of hex; RawLines is every device line, for --raw.
+	Fields   map[string]string
+	RawLines []string
 }
 
 // PartitionDetail describes a partition entry from 'oem partition'.

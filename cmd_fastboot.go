@@ -30,7 +30,7 @@ and transitioning from ABL bootloader mode into Qualcomm EDL (9008) mode.
 Resolves 'fastboot' binary directly from system PATH.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default to running reconnaissance
-			return runFastbootRecon(fastbootBin, serial)
+			return runFastbootRecon(fastbootBin, serial, false)
 		},
 	}
 
@@ -51,16 +51,19 @@ Resolves 'fastboot' binary directly from system PATH.`,
 }
 
 func newFastbootReconCmd(fastbootBin, serial *string) *cobra.Command {
-	return &cobra.Command{
+	var raw bool
+	c := &cobra.Command{
 		Use:   "recon",
 		Short: "query device variables, audit dual-slot health, and cross-reference catalog & library",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFastbootRecon(*fastbootBin, *serial)
+			return runFastbootRecon(*fastbootBin, *serial, raw)
 		},
 	}
+	c.Flags().BoolVar(&raw, "raw", false, "also dump the device's raw output (every getvar var and oem probe line)")
+	return c
 }
 
-func runFastbootRecon(fastbootBin, serial string) error {
+func runFastbootRecon(fastbootBin, serial string, raw bool) error {
 	client, err := fastboot.NewClient(fastbootBin)
 	if err != nil {
 		return err
@@ -98,13 +101,13 @@ func runFastbootRecon(fastbootBin, serial string) error {
 			continue
 		}
 
-		printReconReport(d.Serial, recon, cat, lib)
+		printReconReport(d.Serial, recon, cat, lib, raw)
 	}
 
 	return nil
 }
 
-func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library) {
+func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw bool) {
 	fmt.Printf("Fastboot Device: %s\n", serial)
 
 	// 1. Hardware
@@ -200,17 +203,31 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		cidDesc = fmt.Sprintf("%s — subsidy lock %s (from stored build)", cidDesc, slcf)
 	}
 	printField("Carrier ID (CID)", cidDesc)
-	if r.CIDProvReq != nil {
-		if len(r.CIDProvReq.Fields) > 0 {
-			kv := make([]string, 0, len(r.CIDProvReq.Fields))
-			for k, v := range r.CIDProvReq.Fields {
-				kv = append(kv, k+"="+v)
+	if cp := r.CIDProvReq; cp != nil {
+		var parts []string
+		if cp.SoCID != "" {
+			soc := cp.SoCID
+			if r.JTAGID != "" && strings.EqualFold(cp.SoCID, r.JTAGID) {
+				soc += " (= JTAG_ID)"
 			}
-			sort.Strings(kv)
-			printField("CID Prov Req (moto)", strings.Join(kv, ", "))
-		} else {
-			printField("CID Prov Req (moto)", fmt.Sprintf("available (%d line(s))", len(r.CIDProvReq.RawLines)))
+			parts = append(parts, "SoC "+soc)
 		}
+		if cp.FormatVersion != 0 {
+			parts = append(parts, fmt.Sprintf("fmt v%d", cp.FormatVersion))
+		}
+		if cp.Digest != "" {
+			parts = append(parts, "digest "+cp.Digest)
+		}
+		kv := make([]string, 0, len(cp.Fields))
+		for k, v := range cp.Fields {
+			kv = append(kv, k+"="+v)
+		}
+		sort.Strings(kv)
+		parts = append(parts, kv...)
+		if len(parts) == 0 {
+			parts = append(parts, fmt.Sprintf("available (%d line(s), pass --raw for the dump)", len(cp.RawLines)))
+		}
+		printField("CID Prov Req (moto)", strings.Join(parts, ", "))
 	}
 	printField("Channel ID", r.ChannelID)
 	printField("FRP State", r.FRPState)
@@ -415,6 +432,64 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 			}
 		}
 	}
+	if raw {
+		printRawDump(r)
+	}
+}
+
+// printRawDump shows everything the device reported that the curated report leaves out:
+// every getvar variable, and the oem-probe lines (cid_prov_req as a hex dump).
+func printRawDump(r *fastboot.DeviceRecon) {
+	fmt.Println("\n  Raw Device Output:")
+	if len(r.RawVars) > 0 {
+		fmt.Println("    getvar all:")
+		keys := make([]string, 0, len(r.RawVars))
+		for k := range r.RawVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("      %s: %s\n", k, r.RawVars[k])
+		}
+	}
+	if cp := r.CIDProvReq; cp != nil {
+		fmt.Printf("    oem cid_prov_req (%d bytes):\n", len(cp.Raw))
+		if len(cp.Raw) > 0 {
+			for off := 0; off < len(cp.Raw); off += 16 {
+				row := cp.Raw[off:min(off+16, len(cp.Raw))]
+				var asc strings.Builder
+				for _, b := range row {
+					if b >= 32 && b < 127 {
+						asc.WriteByte(b)
+					} else {
+						asc.WriteByte('.')
+					}
+				}
+				fmt.Printf("      %04x: %-47s  %s\n", off, hexSpaced(row), asc.String())
+			}
+		} else {
+			for _, l := range cp.RawLines {
+				fmt.Printf("      %s\n", l)
+			}
+		}
+	}
+	if r.SecurityVersions != nil && len(r.SecurityVersions.RawLines) > 0 {
+		fmt.Println("    oem read_sv:")
+		for _, l := range r.SecurityVersions.RawLines {
+			fmt.Printf("      %s\n", l)
+		}
+	}
+}
+
+func hexSpaced(b []byte) string {
+	var sb strings.Builder
+	for i, x := range b {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		fmt.Fprintf(&sb, "%02x", x)
+	}
+	return sb.String()
 }
 
 // stockBuildForInspect names the stored build worth pointing the operator at:

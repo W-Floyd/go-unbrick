@@ -3,9 +3,11 @@ package fastboot
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -371,11 +373,16 @@ func (c *Client) OEMCIDProvReq(serial string) (*CIDProvRequest, error) {
 	return ParseOEMCIDProvReqOutput(out), nil
 }
 
-// ParseOEMCIDProvReqOutput parses the bootloader lines of an `oem cid_prov_req` dump into
-// key/value fields (plus the raw lines). Supported is false when the bootloader rejects the
-// command, so recon can tell "not a Motorola after-sales ABL" from an empty response.
+// reHexLine matches a bootloader line that is nothing but hex (the real cid_prov_req dump).
+var reHexLine = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+
+// ParseOEMCIDProvReqOutput parses an `oem cid_prov_req` dump. The real output is a run of
+// hex blocks (concatenated into a binary payload and decoded per CIDProvRequest's offset
+// map); an ABL that answers with "key: value" lines instead is parsed into Fields. Supported
+// is false when the bootloader rejects the command.
 func ParseOEMCIDProvReqOutput(text string) *CIDProvRequest {
 	r := &CIDProvRequest{Fields: map[string]string{}}
+	var hexParts []string
 	for _, line := range strings.Split(text, "\n") {
 		hadPrefix := strings.Contains(line, "(bootloader)")
 		l := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "(bootloader)"))
@@ -394,13 +401,37 @@ func ParseOEMCIDProvReqOutput(text string) *CIDProvRequest {
 		}
 		r.Supported = true
 		r.RawLines = append(r.RawLines, l)
-		if k, v, ok := strings.Cut(l, ":"); ok {
+		if reHexLine.MatchString(l) && len(l)%2 == 0 {
+			hexParts = append(hexParts, l)
+		} else if k, v, ok := strings.Cut(l, ":"); ok {
 			if k, v = strings.TrimSpace(k), strings.TrimSpace(v); k != "" && v != "" {
 				r.Fields[k] = v
 			}
 		}
 	}
+	if b, err := hex.DecodeString(strings.Join(hexParts, "")); err == nil && len(b) > 0 {
+		r.Raw = b
+		decodeCIDProvStruct(r)
+	}
 	return r
+}
+
+// decodeCIDProvStruct extracts the labelled fields from the payload, gated on the 0x00F0
+// structure marker so a differently-shaped dump stays raw-only. Offsets are documented on
+// CIDProvRequest and reverse-engineered from one device.
+func decodeCIDProvStruct(r *CIDProvRequest) {
+	b := r.Raw
+	if len(b) >= 0x02 {
+		r.FormatVersion = int(b[0])<<8 | int(b[1])
+	}
+	if len(b) >= 0x56 && b[0x54] == 0x00 && b[0x55] == 0xf0 {
+		if len(b) >= 0x64 {
+			r.SoCID = strings.ToUpper(hex.EncodeToString(b[0x60:0x64]))
+		}
+		if len(b) >= 0x52 {
+			r.Digest = hex.EncodeToString(b[0x42:0x52])
+		}
+	}
 }
 
 // OEMPartitions queries live partition geometry from UFS/eMMC ('fastboot oem partition').

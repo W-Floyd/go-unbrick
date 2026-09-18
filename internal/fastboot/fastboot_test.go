@@ -527,21 +527,47 @@ OKAY [  0.007s]
 }
 
 func TestParseOEMCIDProvReq(t *testing.T) {
+	// Real fogona (SM_DIVAR, JTAG 001B80E1) dump: hex blocks, not key/value.
 	raw := `
-(bootloader) cid_prov_req: CPU_ID: 000460E100C0000A
-(bootloader) UFS_ID: 4D543132384742
-(bootloader) RPMB: provisioned
-OKAY [  0.011s]
+(bootloader) 0003dddddddddddddddd000000000000
+(bootloader) 00000000000000000000000000000000
+(bootloader) 00000000000000000000000000000000
+(bootloader) 00000000000000000000000000000000
+(bootloader) 0000b5135a51398bd9aaedf208e70b92
+(bootloader) 3f72000100f00002000000705c8e3f58
+(bootloader) 001b80e1000000000000000000000000
+(bootloader) 00000000000000000000000002000000
+(bootloader) 00000000dddddddddddddddd00063131
+(bootloader) 31313131313131313131313131313131
+(bootloader) 31310000ffffffffffffffffffffffff
+(bootloader) ffffffffffffffffffffffffffffffff
+(bootloader) ffffffff
+OKAY [  0.002s]
+Finished. Total time: 0.002s
 `
 	cp := ParseOEMCIDProvReqOutput(raw)
 	if !cp.Supported {
 		t.Fatal("expected Supported for a bootloader that answered")
 	}
-	if cp.Fields["UFS_ID"] != "4D543132384742" || cp.Fields["RPMB"] != "provisioned" {
-		t.Errorf("fields mismatch: %+v", cp.Fields)
+	if len(cp.Raw) != 196 {
+		t.Fatalf("expected 196 raw bytes, got %d", len(cp.Raw))
 	}
-	if len(cp.RawLines) != 3 {
-		t.Errorf("expected 3 raw lines, got %d", len(cp.RawLines))
+	if cp.SoCID != "001B80E1" {
+		t.Errorf("SoCID: got %q, want 001B80E1", cp.SoCID)
+	}
+	if cp.FormatVersion != 3 {
+		t.Errorf("FormatVersion: got %d, want 3", cp.FormatVersion)
+	}
+	if cp.Digest != "b5135a51398bd9aaedf208e70b923f72" {
+		t.Errorf("Digest: got %q", cp.Digest)
+	}
+}
+
+func TestParseOEMCIDProvReqKeyValue(t *testing.T) {
+	// An ABL that answers key/value instead of hex still parses into Fields.
+	cp := ParseOEMCIDProvReqOutput("(bootloader) UFS_ID: 4D543132384742\nOKAY [  0.0s]\n")
+	if !cp.Supported || cp.Fields["UFS_ID"] != "4D543132384742" {
+		t.Errorf("key/value fallback failed: %+v", cp)
 	}
 }
 
