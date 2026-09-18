@@ -247,12 +247,19 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
     if dry_run:
         return target
 
-    target.mkdir(parents=True, exist_ok=True)
-    if not extract_any(local, target, password):
+    # Extract into a staging dir and promote it to the final .d only on success,
+    # so a .d's existence guarantees a complete extraction. A crashed or partial
+    # run leaves .d.partial (ignored by the cache check above), never a
+    # half-populated .d that the next run would silently reuse.
+    staging = archives / (local.stem + ".d.partial")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    if not extract_any(local, staging, password):
+        shutil.rmtree(staging, ignore_errors=True)
         return None
     # These dumps nest: gadgetsdr.com.rar is 237 files, 100 of which are themselves zips.
     for depth in range(MAX_NEST_DEPTH):
-        nested = [q for q in target.rglob("*")
+        nested = [q for q in staging.rglob("*")
                   if q.is_file() and q.suffix.lower() in ARCHIVE_EXTS]
         if not nested:
             break
@@ -260,15 +267,41 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
         for q in nested:
             sub = q.with_suffix(q.suffix + ".d")
             sub.mkdir(parents=True, exist_ok=True)
-            extract_any(q, sub, password)
-            q.unlink(missing_ok=True)
+            if extract_any(q, sub, password):
+                q.unlink(missing_ok=True)  # drop the inner archive only once its contents are out
+            else:
+                # Keep the archive rather than losing it; a later run or manual
+                # step can recover it. The loader scan ignores .zip/.rar anyway.
+                print(f"  [warning] kept {q.name}: nested extraction failed", file=sys.stderr)
+                shutil.rmtree(sub, ignore_errors=True)
+    if refresh:
+        shutil.rmtree(target, ignore_errors=True)
+    os.replace(staging, target)
     return target
 
 
 def extract_any(local, target, password=None):
-    """Extract one archive into target. zip/tar natively, everything else via unar."""
+    """Extract one archive into target. zip/tar natively, everything else via unar.
+
+    Dispatch on the leading magic bytes, not zipfile.is_zipfile / tarfile.is_tarfile:
+    those scan the whole file and false-positive on a container that embeds a zip or tar
+    (e.g. a RAR full of .zip loaders reads as a zip and extracts one stray entry).
+    """
     try:
-        if zipfile.is_zipfile(local):
+        with open(local, "rb") as f:
+            head = f.read(8)
+    except OSError as e:
+        print(f"  [error] reading {local.name}: {e}", file=sys.stderr)
+        return False
+
+    zip_magic = head[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+    # unar owns the container formats libarchive/zipfile mishandle; check these before tar
+    # so a rar/7z is never mistaken for a tar by content scanning.
+    unar_magic = head[:6] in (b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01") or head[:6] == b"7z\xbc\xaf\x27\x1c"
+    tar_magic = head[:2] == b"\x1f\x8b" or head[:3] == b"BZh" or head[:6] == b"\xfd7zXZ\x00"
+
+    try:
+        if zip_magic:
             with zipfile.ZipFile(local) as z:
                 for member in z.infolist():
                     # Reject absolute paths and traversal before extracting.
@@ -278,7 +311,7 @@ def extract_any(local, target, password=None):
                         continue
                     z.extract(member, target, pwd=password.encode() if password else None)
             return True
-        if tarfile.is_tarfile(local):
+        if not unar_magic and (tar_magic or tarfile.is_tarfile(local)):
             with tarfile.open(local) as t:
                 t.extractall(target, filter="data")
             return True
