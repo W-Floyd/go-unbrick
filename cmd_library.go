@@ -480,8 +480,6 @@ func normalizeSignerVendor(signer, oemID string) string {
 	}, s)
 	s = strings.Trim(s, "_")
 	switch s {
-	case "qc_test", "qualcomm_reference", "reference":
-		return "qualcomm"
 	case "motorola_lenovo":
 		return "motorola"
 	case "lenovo_motorola":
@@ -490,22 +488,61 @@ func normalizeSignerVendor(signer, oemID string) string {
 		return "xiaomi"
 	case "hihonor":
 		return "honor"
-	case "":
-		switch strings.ToUpper(oemID) {
-		case "02E8":
-			return "motorola"
-		case "0020":
-			return "samsung"
-		case "0072":
-			return "xiaomi"
-		case "0000":
-			return "qualcomm"
-		default:
-			return "qualcomm"
+	case "qc_test", "qualcomm_reference", "reference", "qualcomm", "qc", "":
+		// Generic or absent signer: the cert's OEM_ID names the actual OEM the
+		// loader is provisioned for, so it outranks the generic label. Only
+		// OEM_ID 0000 (and unmapped ids) stay in the generic bucket.
+		if v, ok := oemVendor[strings.ToUpper(oemID)]; ok {
+			return v
 		}
+		return "qualcomm"
 	default:
 		return s
 	}
+}
+
+// oemVendor maps a Qualcomm attestation OEM_ID to the vendor it identifies,
+// derived from the corpus: how loaders carrying each OEM_ID and a Temblast
+// signer are attributed. It is consulted only when the signer itself is generic
+// (QC test/reference) or absent, so an explicit signer always wins. Shared IDs
+// take the dominant brand, since the OEM_ID alone cannot split a conglomerate:
+// 0051 is BBK (oneplus > oppo), 02E8 is Lenovo/Motorola (motorola > lenovo),
+// 0042 is TCL and its Nokia/Alcatel lines.
+var oemVendor = map[string]string{
+	"0001": "wingtech",
+	"0004": "zte",
+	"0016": "nokia",
+	"0020": "samsung",
+	"0028": "motorola",
+	"0029": "asus",
+	"0031": "lg",
+	"0035": "nokia",
+	"0038": "sharp",
+	"0040": "lenovo",
+	"0042": "tcl",
+	"0043": "hisense",
+	"0048": "yulong",
+	"0051": "oneplus",
+	"0072": "xiaomi",
+	"0073": "vivo",
+	"0090": "borqs",
+	"0138": "meizu",
+	"0144": "blackshark",
+	"0149": "hydrogen",
+	"0168": "motorola",
+	"02E8": "motorola",
+	"0328": "motorola",
+	"0368": "motorola",
+	"0636": "ontim",
+	"1043": "asus",
+	"1111": "asus",
+	"143A": "asus",
+	"1520": "huaqin",
+	"1590": "huaqin",
+	"1978": "blackphone",
+	"2016": "wingtech",
+	"2A96": "micromax",
+	"6000": "lenovo",
 }
 
 func fallbackJTAGFromFilename(filename, currentJTAG string) string {
@@ -655,4 +692,3 @@ func newLibraryImportLoadersCmd() *cobra.Command {
 	c.Flags().IntVar(&limit, "limit", 0, "max loaders to import (0 = all)")
 	return c
 }
-
