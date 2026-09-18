@@ -431,6 +431,10 @@ def resolve_archive_url(spec):
     if m:
         # MediaFire hides the direct URL behind the /file/ page; resolve it at fetch time.
         return spec, f"mediafire_{m.group(1)}"
+    m = re.search(r"mega\.nz/(?:file/|#!)([A-Za-z0-9_-]+)", spec)
+    if m:
+        # Mega is end-to-end encrypted; only mega-get (MEGAcmd) can fetch it.
+        return spec, f"mega_{m.group(1)}"
     seg = [s for s in spec.rstrip("/").split("/") if s]
     stem = seg[-1] if seg else "download"
     return spec, re.sub(r"[^A-Za-z0-9._-]", "_", stem)
@@ -446,6 +450,26 @@ def mediafire_direct(page_url):
     return m.group(0).decode() if m else None
 
 
+def mega_download(url, local):
+    """Fetch a Mega link to `local` via mega-get (MEGAcmd), which downloads by its own
+    name into a directory, so pull into a temp dir and move the one file out."""
+    if shutil.which("mega-get") is None:
+        print("  [error] mega link needs 'mega-get' (brew install --cask megacmd)", file=sys.stderr)
+        return False
+    tmp = local.parent / (local.stem + ".megatmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    res = subprocess.run(["mega-get", url, str(tmp)], capture_output=True, text=True)
+    got = [p for p in tmp.rglob("*") if p.is_file()]
+    if res.returncode != 0 or not got:
+        print(f"  [error] mega-get failed: {(res.stdout + res.stderr).strip()[:100]}", file=sys.stderr)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return False
+    os.replace(got[0], local)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return True
+
+
 def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
     """Download (if a URL) and extract a loader archive; returns its extraction root."""
     archives = cache_dir / "archives"
@@ -456,16 +480,20 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
             print(f"  [curl] {spec}")
             if not dry_run:
                 archives.mkdir(parents=True, exist_ok=True)
-                if stem.startswith("mediafire_"):
-                    url = mediafire_direct(url)
-                    if not url:
-                        print(f"  [error] could not resolve MediaFire link {spec}", file=sys.stderr)
+                if stem.startswith("mega_"):
+                    if not mega_download(url, local):
                         return None
-                # Follow redirects (disroot 303s to DAV, Drive to usercontent); keep our own
-                # stable cache name rather than the server's.
-                if subprocess.run(["curl", "-fsSL", "-g",url, "-o", str(local)]).returncode != 0:
-                    print(f"  [error] failed to download {spec}", file=sys.stderr)
-                    return None
+                else:
+                    if stem.startswith("mediafire_"):
+                        url = mediafire_direct(url)
+                        if not url:
+                            print(f"  [error] could not resolve MediaFire link {spec}", file=sys.stderr)
+                            return None
+                    # Follow redirects (disroot 303s to DAV, Drive to usercontent); keep our
+                    # own stable cache name rather than the server's.
+                    if subprocess.run(["curl", "-fsSL", "-g", url, "-o", str(local)]).returncode != 0:
+                        print(f"  [error] failed to download {spec}", file=sys.stderr)
+                        return None
         else:
             print(f"  [cache] {spec}")
     else:
