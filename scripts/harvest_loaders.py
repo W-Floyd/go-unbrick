@@ -69,6 +69,21 @@ DEFAULT_PAGES = [
 MAX_INDEX_DIRS = 64
 INDEX_DELAY = 0.3
 
+# Two-level "site" scrapers: an index page links per-device pages, each linking one
+# off-site archive. page_pattern selects which index links are device pages.
+DEFAULT_SITES = [
+    {
+        "index": "https://therxtx.com/motorola-repair-center/motorola-blankflash/",
+        "page_pattern": r"therxtx\.com/motorola-[^\"']*blankflash",
+    },
+]
+
+# Cool-off so repeated harvests don't hammer a scraped site: reuse the cached link
+# list for a day, and space the per-device-page requests during a fresh scrape.
+SCRAPE_TTL = 24 * 3600
+SCRAPE_DELAY = 1.0
+SCRAPE_UA = "Mozilla/5.0"
+
 TEMBLAST_URL = "https://www.temblast.com/ref/loaders.htm"
 
 # Expanded at runtime so new vendor repos are picked up without editing this list.
@@ -218,18 +233,34 @@ def classify_image(path):
     return "OPAQUE" if shannon_entropy(body) > OPAQUE_ENTROPY else "UNKNOWN"
 
 
+def resolve_archive_url(spec):
+    """(download_url, cache_stem) for a source URL. Google Drive share links become
+    their direct-download endpoint keyed by file id, so many Drive links no longer
+    collapse onto one cache name (every /file/d/<id> path segment is just 'd')."""
+    m = re.search(r"drive\.google\.com/(?:file/d/|[^ ]*[?&]id=)([A-Za-z0-9_-]+)", spec)
+    if m:
+        gid = m.group(1)
+        # confirm=t skips the large-file virus-scan interstitial; harmless for small ones.
+        return (f"https://drive.usercontent.google.com/download?id={gid}&export=download&confirm=t",
+                f"gdrive_{gid}")
+    seg = [s for s in spec.rstrip("/").split("/") if s]
+    stem = seg[-1] if seg else "download"
+    return spec, re.sub(r"[^A-Za-z0-9._-]", "_", stem)
+
+
 def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
     """Download (if a URL) and extract a loader archive; returns its extraction root."""
     archives = cache_dir / "archives"
     if spec.startswith("http://") or spec.startswith("https://"):
-        local = archives / (re.sub(r"[^A-Za-z0-9._-]", "_", spec.rsplit("/", 2)[-2]) + ".archive")
+        url, stem = resolve_archive_url(spec)
+        local = archives / (stem + ".archive")
         if not local.exists() or refresh:
             print(f"  [curl] {spec}")
             if not dry_run:
                 archives.mkdir(parents=True, exist_ok=True)
-                # -J alone would let the server name the file; keep our own stable cache name
-                # but follow redirects, since these shares 303 to a DAV endpoint.
-                if subprocess.run(["curl", "-fsSL", spec, "-o", str(local)]).returncode != 0:
+                # Follow redirects (disroot 303s to DAV, Drive to usercontent); keep our own
+                # stable cache name rather than the server's.
+                if subprocess.run(["curl", "-fsSL", url, "-o", str(local)]).returncode != 0:
                     print(f"  [error] failed to download {spec}", file=sys.stderr)
                     return None
         else:
@@ -387,6 +418,61 @@ def fetch_page(url, cache_dir, dry_run=False, refresh=False):
         time.sleep(INDEX_DELAY)
     print(f"  [page] {url}: walked {len(seen)} dir(s), fetched {found} loader(s)")
     return root
+
+
+# Off-site file hosts a device page links its download to.
+_HOST_LINK = re.compile(
+    r"https://drive\.google\.com/file/d/[A-Za-z0-9_-]+"
+    r"|https://mega\.nz/[^\s\"'<>]+"
+    r"|https://www\.mediafire\.com/[^\s\"'<>]+")
+
+
+def scrape_site(site, cache_dir, dry_run=False, refresh=False):
+    """Two-level scrape: an index page links per-device pages, each of which links an
+    off-site archive (Drive/Mega/Mediafire). Returns those archive URLs.
+
+    The link list is cached per index with a timestamp and only re-scraped once past
+    SCRAPE_TTL, so repeated harvests don't hammer the site -- the slow, rude part is
+    the fan-out over device pages, not the (separately cached) downloads.
+    """
+    index = site["index"]
+    pattern = re.compile(site["page_pattern"])
+    cache = cache_dir / "scrape_cache"
+    cachefile = cache / (re.sub(r"[^A-Za-z0-9._-]", "_", index) + ".json")
+
+    if cachefile.exists() and not refresh:
+        age = time.time() - cachefile.stat().st_mtime
+        if age < SCRAPE_TTL:
+            try:
+                links = json.loads(cachefile.read_text())["links"]
+                print(f"  [cache] {index}: {len(links)} link(s), scraped {int(age // 3600)}h ago")
+                return links
+            except Exception:
+                pass
+    if dry_run:
+        return []
+
+    print(f"  [scrape] {index}")
+    res = subprocess.run(["curl", "-fsSL", "--max-time", "60", "-A", SCRAPE_UA, index],
+                         capture_output=True)
+    if res.returncode != 0:
+        print(f"  [warning] failed to fetch index {index}", file=sys.stderr)
+        return []
+    html = res.stdout.decode("utf-8", "ignore")
+    pages = sorted({urllib.parse.urljoin(index, h)
+                    for h in re.findall(r'href="([^"]+)"', html) if pattern.search(h)})
+    links = []
+    for p in pages:
+        r = subprocess.run(["curl", "-fsSL", "--max-time", "45", "-A", SCRAPE_UA, p],
+                           capture_output=True)
+        if r.returncode == 0:
+            links.extend(_HOST_LINK.findall(r.stdout.decode("utf-8", "ignore")))
+        time.sleep(SCRAPE_DELAY)
+    links = sorted(set(links))
+    cache.mkdir(parents=True, exist_ok=True)
+    cachefile.write_text(json.dumps({"fetched_at": time.time(), "index": index, "links": links}, indent=2))
+    print(f"  [scrape] {index}: {len(pages)} page(s) -> {len(links)} link(s)")
+    return links
 
 
 class TemblastHTMLParser(HTMLParser):
@@ -580,6 +666,12 @@ def main():
                    help=f"harvest every repo in a GitHub org; repeatable (default: {', '.join(DEFAULT_ORGS)})")
     p.add_argument("--page", action="append", default=None,
                    help=f"HTML index linking loader files; repeatable (default: {', '.join(DEFAULT_PAGES)})")
+    p.add_argument("--site", action="append", default=None,
+                   help="index URL whose per-device pages each link an off-site archive "
+                        "(Drive/Mega/Mediafire); repeatable. Scraped link lists are cached "
+                        f"for {SCRAPE_TTL // 3600}h")
+    p.add_argument("--rescrape", action="store_true",
+                   help="force re-scraping sites even if their cached link list is fresh")
     p.add_argument("--archive", action="append", default=None,
                    help="zip/tar of loaders (URL or local path); repeatable. Defaults to the "
                         "known community dumps; pass --no-default-archives to harvest only repos")
@@ -611,8 +703,13 @@ def main():
     args = p.parse_args()
 
     repos = list(args.repo or DEFAULT_REPOS)
-    archives = args.archive or ([] if args.no_default_archives else DEFAULT_ARCHIVES)
+    archives = list(args.archive or ([] if args.no_default_archives else DEFAULT_ARCHIVES))
     pages = args.page if args.page is not None else ([] if args.repo else DEFAULT_PAGES)
+    # A bare --site URL follows same-host links that look like device/loader pages.
+    if args.site is not None:
+        sites = [{"index": u, "page_pattern": r"(blankflash|firehose|loader|programmer)"} for u in args.site]
+    else:
+        sites = [] if args.repo else DEFAULT_SITES
 
     # Anything dropped in found/ is harvested with no flag: archives (at any depth) get
     # extracted, and loose loaders (e.g. found/misc/prog_firehose_spacewar_sm7325.elf) are
@@ -653,6 +750,16 @@ def main():
         repos.extend(r for r in sorted(temblast_repos) if r not in repos)
 
     cache_dir = Path(args.cache_dir).resolve()
+
+    # Scrape configured sites into archive URLs (cached per SCRAPE_TTL); each resolves
+    # and downloads through the same archive path below.
+    if sites:
+        print(f"\nScraping {len(sites)} site(s)...")
+        for site in sites:
+            for url in scrape_site(site, cache_dir, dry_run=args.dry_run, refresh=args.rescrape):
+                if url not in archives:
+                    archives.append(url)
+
     # (label, root, site, url_for) per source; site 'G' = git repo, 'Z' = archive.
     sources = []
 
