@@ -38,3 +38,26 @@ func TestParseRejectsWrongSize(t *testing.T) {
 		t.Error("expected error for short image")
 	}
 }
+
+func TestVersionAndIsSigned(t *testing.T) {
+	// version-0 image this package builds
+	v0 := Build(0x0032)
+	if v, ok := Version(v0); !ok || v != 0 {
+		t.Errorf("Build() version: got %d ok=%v, want 0", v, ok)
+	}
+	if IsSigned(v0) {
+		t.Error("version-0 image must not be reported as signed")
+	}
+	// version-2 header from a live secure-production fogona cid partition
+	v2 := []byte{0x00, 0xf0, 0x00, 0x02, 0x00, 0x00, 0x00, 0x70, 0x16, 0x6e, 0xbd, 0x05}
+	if v, ok := Version(v2); !ok || v != 2 {
+		t.Errorf("v2 version: got %d ok=%v, want 2", v, ok)
+	}
+	if !IsSigned(v2) {
+		t.Error("version-2 image must be reported as signed")
+	}
+	// non-CID data
+	if _, ok := Version([]byte{0xde, 0xad}); ok {
+		t.Error("non-0x00F0 data must not parse as a CID version")
+	}
+}
