@@ -24,6 +24,13 @@ target/
 
 # Downloaded loaders and clone cache
 /temblast_loaders/
+/harvested_loaders/
 /.gh_loader_repos/
+/found/
+/scratch/
+
+# Reverse-engineered keys/passwords: research notes, kept local only.
+/KEYS.md
 
 unbrick
+samples/
