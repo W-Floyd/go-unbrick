@@ -133,6 +133,92 @@ def expand_org(org):
     return [line.strip() for line in res.stdout.splitlines() if line.strip()]
 
 
+# Indexed text that reliably sits next to Qualcomm loaders. GitHub does not index the
+# loader binaries themselves, so these are how a repo carrying them becomes findable:
+# committed recipes, the vendor source, and paths of text sidecars. (filename, is_filename)
+DISCOVER_FINGERPRINTS = [
+    ("rawprogram0.xml", True),
+    ("patch0.xml", True),
+    ("deviceprogrammer_firehose.c", True),
+    ("prog_emmc_firehose", False),
+    ("prog_ufs_firehose", False),
+]
+CODE_SEARCH_DELAY = 8.0  # code search is ~10/min; space queries to stay under it
+
+
+def code_search_repos(term, is_filename):
+    """Repos (non-fork) surfaced by one code search over indexed text."""
+    cmd = ["gh", "search", "code", "--limit", "50", "--json", "repository"]
+    cmd += ["--filename", term] if is_filename else [term, "--match", "path"]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"  [warning] code search {term!r} failed (rate limit?): {res.stderr.strip()[:80]}",
+              file=sys.stderr)
+        return set()
+    try:
+        rows = json.loads(res.stdout or "[]")
+    except json.JSONDecodeError:
+        return set()
+    return {r["repository"]["nameWithOwner"] for r in rows
+            if not r["repository"].get("isFork")}
+
+
+# A loader's filename, unlike a boot-chain image's, names the programmer. Counting these
+# rather than every .elf/.mbn keeps a full-firmware tree (hundreds of boot images, zero
+# loaders) from looking like a rich source.
+LOADER_NAME = re.compile(
+    r"(firehose|programmer|prog_emmc|prog_ufs|[mn]prg|enprg|fhprg|fhloader|blankflash|singleimage)",
+    re.IGNORECASE)
+
+
+def repo_loader_count(repo):
+    """How many loader-*named* binaries a repo's tree carries, via the git/trees API
+    (which lists binaries code search cannot). 0 on any failure."""
+    cmd = ["gh", "api", f"repos/{repo}/git/trees/HEAD?recursive=1",
+           "--jq", '.tree[] | select(.type=="blob") | .path']
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        return 0
+    exts = (".mbn", ".elf", ".bin", ".melf", ".hex")
+    return sum(1 for p in res.stdout.splitlines()
+               if p.lower().endswith(exts) and LOADER_NAME.search(p.rsplit("/", 1)[-1]))
+
+
+def discover_repos(cache_dir, known, dry_run=False, refresh=False):
+    """Find loader repos on GitHub: sweep text fingerprints for candidate repos, then
+    keep the ones whose tree actually holds loader binaries. Cached for SCRAPE_TTL, since
+    the code-search sweep is the slow, rate-limited part."""
+    cachefile = cache_dir / "discover_cache.json"
+    if cachefile.exists() and not refresh:
+        age = time.time() - cachefile.stat().st_mtime
+        if age < SCRAPE_TTL:
+            try:
+                found = json.loads(cachefile.read_text())["repos"]
+                print(f"  [cache] discovery: {len(found)} repo(s), swept {int(age // 3600)}h ago")
+                return found
+            except Exception:
+                pass
+    if dry_run:
+        return []
+    candidates = set()
+    for term, is_fn in DISCOVER_FINGERPRINTS:
+        hits = code_search_repos(term, is_fn)
+        print(f"  [discover] {term}: {len(hits)} repo(s)")
+        candidates |= hits
+        time.sleep(CODE_SEARCH_DELAY)
+    candidates -= set(known)
+    print(f"  [discover] {len(candidates)} new candidate repo(s); checking trees for loaders...")
+    found = []
+    for repo in sorted(candidates):
+        n = repo_loader_count(repo)
+        if n:
+            found.append(repo)
+            print(f"  [discover] + {repo} ({n} loader file(s))")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cachefile.write_text(json.dumps({"fetched_at": time.time(), "repos": found}, indent=2))
+    return found
+
+
 def clone_repo(repo, cache_dir, dry_run=False, refresh=False):
     target = cache_dir / repo.replace("/", "__")
     if target.exists() and (target / ".git").exists():
@@ -732,6 +818,9 @@ def main():
                         f"for {SCRAPE_TTL // 3600}h")
     p.add_argument("--rescrape", action="store_true",
                    help="force re-scraping sites even if their cached link list is fresh")
+    p.add_argument("--discover", action="store_true",
+                   help="find new loader repos on GitHub by sweeping indexed text fingerprints, "
+                        f"then harvest any whose tree holds loaders (cached {SCRAPE_TTL // 3600}h)")
     p.add_argument("--archive", action="append", default=None,
                    help="zip/tar of loaders (URL or local path); repeatable. Defaults to the "
                         "known community dumps; pass --no-default-archives to harvest only repos")
@@ -810,6 +899,13 @@ def main():
         repos.extend(r for r in sorted(temblast_repos) if r not in repos)
 
     cache_dir = Path(args.cache_dir).resolve()
+
+    # Discover new loader repos on GitHub (indexed text -> candidate repos -> tree check).
+    if args.discover and not args.repo:
+        print("\nDiscovering loader repos on GitHub...")
+        for repo in discover_repos(cache_dir, set(repos), dry_run=args.dry_run, refresh=args.rescrape):
+            if repo not in repos:
+                repos.append(repo)
 
     # Scrape configured sites into archive URLs (cached per SCRAPE_TTL); each resolves
     # and downloads through the same archive path below.
