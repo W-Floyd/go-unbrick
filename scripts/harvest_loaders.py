@@ -92,6 +92,8 @@ DEFAULT_SITES = [
     # WordPress sites: enumerate a category via the REST API and pull each post's link.
     {"wp": "https://www.gadgetsdr.com", "category": "emmc-files"},
     {"wp": "https://bypassfrpfiles.com", "category": "qcom-firehose"},
+    # WordPress search: the on-site equivalent of `site:host firehose`.
+    {"wp": "https://romprovider.com", "search": "firehose"},
 ]
 
 # Cool-off so repeated harvests don't hammer a scraped site: reuse the cached link
@@ -684,14 +686,54 @@ def _scrape_wp_category(site):
     return links
 
 
+def _scrape_wp_search(site):
+    """WordPress REST search API: the on-site equivalent of `site:host <query>`. Collects
+    matching post ids, then batch-fetches their content and pulls the archive links."""
+    base = site["wp"].rstrip("/")
+    query = site["search"]
+    ids, page = [], 1
+    while True:
+        body = _curl_text(f"{base}/wp-json/wp/v2/search?search={urllib.parse.quote(query)}"
+                          f"&per_page=100&page={page}&_fields=id")
+        try:
+            rows = json.loads(body)
+        except Exception:
+            break
+        if not isinstance(rows, list) or not rows:
+            break
+        ids.extend(str(r["id"]) for r in rows if r.get("id"))
+        if len(rows) < 100:
+            break
+        page += 1
+        time.sleep(SCRAPE_DELAY)
+    links = []
+    for i in range(0, len(ids), 100):
+        batch = ",".join(ids[i:i + 100])
+        body = _curl_text(f"{base}/wp-json/wp/v2/posts?include={batch}&per_page=100&_fields=content")
+        try:
+            for post in json.loads(body):
+                links.extend(_HOST_LINK.findall(post.get("content", {}).get("rendered", "")))
+        except Exception:
+            pass
+        time.sleep(SCRAPE_DELAY)
+    print(f"  [scrape] {base} [?{query}]: {len(ids)} post(s) -> {len(set(links))} link(s)")
+    return links
+
+
 def scrape_site(site, cache_dir, dry_run=False, refresh=False):
-    """Collect off-site archive URLs from a site (HTML index or WordPress category).
+    """Collect off-site archive URLs from a site: an HTML index, a WordPress category, or a
+    WordPress search (the on-site `site:host <query>`).
 
     The link list is cached per site for SCRAPE_TTL so repeated harvests don't hammer it:
     the slow, rude part is the per-post/per-page fan-out, not the separately cached
     downloads.
     """
-    key = site.get("index") or f"{site['wp']}#cat={site['category']}"
+    if "search" in site:
+        key = f"{site['wp']}#search={site['search']}"
+    elif "wp" in site:
+        key = f"{site['wp']}#cat={site['category']}"
+    else:
+        key = site["index"]
     cache = cache_dir / "scrape_cache"
     cachefile = cache / (re.sub(r"[^A-Za-z0-9._-]", "_", key) + ".json")
 
@@ -707,7 +749,13 @@ def scrape_site(site, cache_dir, dry_run=False, refresh=False):
     if dry_run:
         return []
 
-    links = sorted(set(_scrape_wp_category(site) if "wp" in site else _scrape_html_index(site)))
+    if "search" in site:
+        collector = _scrape_wp_search
+    elif "wp" in site:
+        collector = _scrape_wp_category
+    else:
+        collector = _scrape_html_index
+    links = sorted(set(collector(site)))
     cache.mkdir(parents=True, exist_ok=True)
     cachefile.write_text(json.dumps({"fetched_at": time.time(), "key": key, "links": links}, indent=2))
     return links
