@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -426,35 +428,199 @@ func newLibraryHarvestDonorsCmd() *cobra.Command {
 }
 
 func newLibraryListCmd() *cobra.Command {
-	return &cobra.Command{
+	var format, what string
+	c := &cobra.Command{
 		Use:   "list",
 		Short: "loaders (by family) and stock (by device) on hand",
-		Args:  cobra.NoArgs,
+		Long: "Lists the library. With no flags, prints the grouped text view.\n" +
+			"--format csv|tsv|md|json emits a flat table for scripting or a report,\n" +
+			"and --what selects loaders (default), stock, or a per-vendor summary.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			lib, err := stockLibrary()
 			if err != nil {
 				return err
 			}
-			fmt.Println("loaders (by family; builds low SW_ID first = derive default):")
-			for _, f := range lib.Loaders() {
-				fmt.Printf("  %s\n", f)
-				for _, b := range lib.Builds(f) {
-					fmt.Printf("    SW_ID=%-4d %-26s OEM=%s HW=%s root=CA %s sha=%s\n",
-						b.Meta.SWID, b.Build, b.Meta.OEMID, b.Meta.HWID, b.Meta.Root, b.Meta.SHA256[:12])
+			if format == "text" {
+				if what == "loaders" || what == "all" {
+					printLoadersText(lib)
 				}
-			}
-			fmt.Println("stock (by device; builds oldest first, newest = derive default):")
-			lastDev := ""
-			for _, s := range lib.Stock() {
-				if dev := s.Vendor + "/" + s.Codename; dev != lastDev {
-					fmt.Printf("  %s\n", dev)
-					lastDev = dev
+				if what == "stock" || what == "all" {
+					printStockText(lib)
 				}
-				fmt.Printf("    %-22s %s\n", s.Build, s.Meta.Source)
+				return nil
 			}
-			return nil
+			// "all" is a multi-section document, not a single table, so it is only
+			// meaningful for the document formats. csv/tsv/json need one section.
+			if what == "all" {
+				if format != "md" {
+					return fmt.Errorf("--what all needs --format text or md; pick loaders/stock/summary for %s", format)
+				}
+				return renderAllMarkdown(os.Stdout, lib)
+			}
+			header, rows := libraryRows(lib, what)
+			if header == nil {
+				return fmt.Errorf("unknown --what %q (loaders, stock, summary, all)", what)
+			}
+			return renderTable(os.Stdout, format, header, rows)
 		},
 	}
+	c.Flags().StringVarP(&format, "format", "f", "text", "output format: text, csv, tsv, md, json")
+	c.Flags().StringVar(&what, "what", "all", "which rows: loaders, stock, summary, all")
+	return c
+}
+
+func printLoadersText(lib *library.Library) {
+	fmt.Println("loaders (by family; builds low SW_ID first = derive default):")
+	for _, f := range lib.Loaders() {
+		fmt.Printf("  %s\n", f)
+		for _, b := range lib.Builds(f) {
+			fmt.Printf("    SW_ID=%-4d %-26s OEM=%s HW=%s root=CA %s sha=%s\n",
+				b.Meta.SWID, b.Build, b.Meta.OEMID, b.Meta.HWID, b.Meta.Root, b.Meta.SHA256[:12])
+		}
+	}
+}
+
+func printStockText(lib *library.Library) {
+	fmt.Println("stock (by device; builds oldest first, newest = derive default):")
+	lastDev := ""
+	for _, s := range lib.Stock() {
+		if dev := s.Vendor + "/" + s.Codename; dev != lastDev {
+			fmt.Printf("  %s\n", dev)
+			lastDev = dev
+		}
+		fmt.Printf("    %-22s %s\n", s.Build, s.Meta.Source)
+	}
+}
+
+// libraryRows flattens the library into a header + string rows for tabular export.
+// "all" defaults to loaders, the primary artifact; stock and summary are explicit.
+func libraryRows(lib *library.Library, what string) ([]string, [][]string) {
+	switch what {
+	case "loaders":
+		header := []string{"vendor", "jtag_id", "build", "sw_id", "oem_id", "hw_id", "root", "cpu_name", "storage", "sha256", "source"}
+		var rows [][]string
+		for _, f := range lib.Loaders() {
+			for _, b := range lib.Builds(f) {
+				rows = append(rows, []string{
+					f.Vendor, f.JTAGID, b.Build, fmt.Sprintf("%d", b.Meta.SWID),
+					b.Meta.OEMID, b.Meta.HWID, b.Meta.Root, b.Meta.CPUName,
+					b.Meta.Storage, b.Meta.SHA256, filepath.Base(b.Meta.Source),
+				})
+			}
+		}
+		return header, rows
+	case "stock":
+		header := []string{"vendor", "codename", "build", "cid", "storage", "source"}
+		var rows [][]string
+		for _, s := range lib.Stock() {
+			rows = append(rows, []string{
+				s.Vendor, s.Codename, s.Build, s.Meta.CID, s.Meta.Storage, filepath.Base(s.Meta.Source),
+			})
+		}
+		return header, rows
+	case "summary":
+		// families and builds per vendor — the "what do we have" overview.
+		type agg struct{ families, builds int }
+		byVendor := map[string]*agg{}
+		var order []string
+		for _, f := range lib.Loaders() {
+			a := byVendor[f.Vendor]
+			if a == nil {
+				a = &agg{}
+				byVendor[f.Vendor] = a
+				order = append(order, f.Vendor)
+			}
+			a.families++
+			a.builds += len(lib.Builds(f))
+		}
+		sort.Slice(order, func(i, j int) bool {
+			return byVendor[order[i]].builds > byVendor[order[j]].builds
+		})
+		header := []string{"vendor", "families", "builds"}
+		var rows [][]string
+		var tf, tb int
+		for _, v := range order {
+			a := byVendor[v]
+			tf += a.families
+			tb += a.builds
+			rows = append(rows, []string{v, fmt.Sprintf("%d", a.families), fmt.Sprintf("%d", a.builds)})
+		}
+		rows = append(rows, []string{"TOTAL", fmt.Sprintf("%d", tf), fmt.Sprintf("%d", tb)})
+		return header, rows
+	}
+	return nil, nil
+}
+
+// renderTable writes rows in the requested format. csv/tsv are machine-readable;
+// md is a GitHub table for pasting into a report; json is an array of objects
+// keyed by header.
+func renderTable(w io.Writer, format string, header []string, rows [][]string) error {
+	switch format {
+	case "csv", "tsv":
+		cw := csv.NewWriter(w)
+		if format == "tsv" {
+			cw.Comma = '\t'
+		}
+		_ = cw.Write(header)
+		if err := cw.WriteAll(rows); err != nil {
+			return err
+		}
+		cw.Flush()
+		return cw.Error()
+	case "md":
+		fmt.Fprintf(w, "| %s |\n", strings.Join(header, " | "))
+		sep := make([]string, len(header))
+		for i := range sep {
+			sep[i] = "---"
+		}
+		fmt.Fprintf(w, "| %s |\n", strings.Join(sep, " | "))
+		for _, r := range rows {
+			fmt.Fprintf(w, "| %s |\n", strings.Join(r, " | "))
+		}
+		return nil
+	case "json":
+		objs := make([]map[string]string, 0, len(rows))
+		for _, r := range rows {
+			m := make(map[string]string, len(header))
+			for i, h := range header {
+				if i < len(r) {
+					m[h] = r[i]
+				}
+			}
+			objs = append(objs, m)
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(objs)
+	}
+	return fmt.Errorf("unknown --format %q (text, csv, tsv, md, json)", format)
+}
+
+// renderAllMarkdown writes the whole library as one checkable markdown document:
+// a per-vendor summary, then the full loader and stock tables. This is the form
+// committed as the inventory; regenerate with `library list --what all -f md`.
+func renderAllMarkdown(w io.Writer, lib *library.Library) error {
+	fmt.Fprintln(w, "# Loader library inventory")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Generated by `go-unbrick library list --what all --format md`. Do not edit by hand.")
+	fmt.Fprintln(w)
+	sections := []struct {
+		title, what string
+	}{
+		{"Summary (by vendor)", "summary"},
+		{"Loaders", "loaders"},
+		{"Stock", "stock"},
+	}
+	for _, s := range sections {
+		header, rows := libraryRows(lib, s.what)
+		fmt.Fprintf(w, "## %s — %d row(s)\n\n", s.title, len(rows))
+		if err := renderTable(w, "md", header, rows); err != nil {
+			return err
+		}
+		fmt.Fprintln(w)
+	}
+	return nil
 }
 
 type manifestLoaderRecord struct {
