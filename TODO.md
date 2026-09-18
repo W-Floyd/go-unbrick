@@ -50,3 +50,31 @@ playday3008 gist `c26833299fe8373a4190ec9360687a77`:
   confirmation of the codec in `internal/blankflash/singleimage.go`
 
 <https://gist.github.com/playday3008/c26833299fe8373a4190ec9360687a77>
+
+## CID provisioning — RE'd from two live fogona units (partly open)
+
+Reverse-engineered against two secure-production fogona (XT2413/XT2413V) via
+`fastboot oem cid_prov_req` and, on an unlocked unit, reading the `cid` partition
+under postmarketOS. Findings are in the README (*CID provisioning*) and
+`internal/cid` (`Version`/`IsSigned`). Established:
+
+- The live `cid` is a **version-2 signed** structure (`00f0 0002 …0070`: chip
+  serial, SoC id, CID, serial, product, then a ~176-byte opaque signature/cert
+  block that is **not** a recomputable hash), not the 44-byte v0 template
+  `cid.Build` writes. `cid_prov_req` is a masked copy of it + a 16-byte digest.
+- The **digest** is device-unique, stable, high-entropy, and not derivable from
+  any visible id or the `cid` content (brute-forced MD5/SHA over chip/UFS/SoC/
+  serial, singles→triples, salts) → hardware-key-derived (RPMB key or HUK).
+- Raw firehose writes to `cid` **don't persist** (the lite loader ACKs and
+  discards); `edl setcid` now read-back-verifies.
+
+Open:
+- **RPMB vs HUK** for the digest — needs the ABL/TZ disassembly of what fills
+  offset `0x42`, or an RPMB-key read (unreadable by design). NOT a live-device
+  question; do **not** read QFPROM raw (`/sys/bus/nvmem/.../qfprom0/nvmem`) — it
+  faults the SoC and reboots the phone.
+- The v2 signature algorithm (RSA vs ECDSA) and the encrypted-cert layout.
+- Possible **`setcid` guard**: read the current `cid` and refuse/warn on
+  `cid.IsSigned` before writing v0. Deferred — the read-back verify already makes
+  a non-persisting write fail loudly, and on tested units the write simply bounces
+  (no brick), so a hard guard may be unnecessary.

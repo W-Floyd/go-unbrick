@@ -68,6 +68,10 @@ go test ./...                   # unit + parity tests
 | `unbrick library add-stock <codename> --target-…` | harvest a catalog device's stock and store it |
 | `unbrick library list` | loaders (by family) and stock (by device) on hand |
 | `unbrick derive <codename> -o dir` | extrapolate a blankflash from a stored family loader + stock |
+| `unbrick fastboot recon [--raw] [--redact]` | device recon: getvar, slot health, `oem` probes (incl. `cid_prov_req` decode), catalog/library match |
+| `unbrick fastboot edl` | drop a fastboot device into EDL (9008) |
+| `unbrick edl setcid <bundle> <value>` | write a software channel to the `cid` partition (verified by read-back; see *CID provisioning*) |
+| `unbrick edl readcid <bundle>` | read the `cid` partition and print its channel |
 
 ## What the forge writes
 
@@ -183,6 +187,44 @@ unbrick derive fogona --loader rhode_… -o out  # escalate if that stalled at S
 The target's own boot chain and the Firehose programmer are *separate* fuse rows,
 so the target's stock `SW_ID` does not reveal the programmer floor — the ladder is
 how you discover it safely.
+
+You also cannot **patch** a signed loader to lift a restriction: the BootROM
+re-hashes and re-verifies the programmer over Sahara *before running it*, against
+the OEM root-key hash fused in QFPROM. Any edit breaks the signature and the mask
+ROM refuses to execute it. Getting past that needs un-fused (engineering) silicon,
+a per-SoC Sahara/Firehose exploit, or the OEM key — not a loader edit.
+
+## CID provisioning & the `cid` partition (Motorola)
+
+The `cid` (Customer ID) partition sets the carrier/software channel and gates AP
+fastboot flashing; a corrupt/tampered `cid` makes ABL report CarrierID
+`0xDEAD`/`0xFFFF` and blocks flashing. `unbrick fastboot recon` reads and
+cross-references it — `--raw` prints the full device dumps, `--redact` masks
+per-device identifiers for sharing.
+
+**Two on-device formats** (`cid.Version`): version **0** is the 44-byte *unsigned*
+template (`00f0 0000 …002c`, a u16 channel at `0x2a`) — the stock/flashfile form
+`edl setcid` writes. Version **2** is a *signed* structure seen on
+secure-production units (a live fogona): `00f0 0002 …0070` carrying the chip
+serial, SoC id, CID, device serial and product name, then a ~176-byte opaque
+signature/cert block (**not** a recomputable hash — it needs Motorola's PKI).
+
+**`oem cid_prov_req`** is the after-sales provisioning *request* recon decodes:
+the SoC id (in the clear, cross-checked to `JTAG_ID`), the format version, and a
+16-byte device digest. The dump is a masked copy of the live `cid` partition
+(serial and one field blanked) plus the digest. The digest is device-unique,
+stable, and **not derivable** from any visible id (chip/UFS/SoC/serial) — it is
+hardware-key-derived (RPMB/HUK) and treated as a per-device secret.
+
+**You cannot raw-write the `cid`** — three independent walls, all rooted in the
+QFPROM fuses:
+1. the Firehose loader is BootROM-signature-verified before it runs (above);
+2. the production `prog_firehose_lite.elf` restricts partition access: it *ACKs* a
+   `cid` write and silently discards it — so `edl setcid` reads the partition back
+   and fails loudly if the write did not land, rather than trusting the ACK;
+3. a valid version-2 `cid` is PKI-signed and bound to the device digest, so only
+   Motorola's server (`cid_prov_req` → `cid_prov_data` → `ssm_flash_cid`) can mint
+   one; a payload from one device cannot be replayed to another.
 
 ## Vendors
 
