@@ -3,11 +3,8 @@ package fastboot
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -18,9 +15,48 @@ type Device struct {
 	State  string // e.g. "fastboot"
 }
 
-// Client executes fastboot commands via host binary found in PATH.
+// Client executes fastboot commands via host binary found in PATH. An optional
+// vendor Profile (see profile.go) stacks middleware, probes, and capability
+// qualifiers on top; it is nil-safe and defaults to Generic.
 type Client struct {
 	binPath string
+	profile Profile
+	prog    ProgressSink
+}
+
+// ProgressSink receives paced-recon progress so the command layer can draw a
+// bar without this package importing a UI library. Begin sets the (fixed) step
+// total; Describe labels the step now running; Advance marks it complete. The
+// label is set before the work and the count advances after it, so the bar
+// tracks finished steps rather than jumping ahead. The total never grows once
+// set — sub-steps (per-partition probes) relabel via Describe without advancing,
+// so the bar only ever moves forward. See cmd_fastboot.
+type ProgressSink interface {
+	Begin(total int)
+	Describe(label string)
+	Advance()
+}
+
+// SetProgress installs a progress sink; nil disables progress reporting.
+func (c *Client) SetProgress(s ProgressSink) { c.prog = s }
+
+func (c *Client) beginProgress(total int) {
+	if c.prog != nil {
+		c.prog.Begin(total)
+	}
+}
+
+// describeStep names the step about to run; advanceStep counts it once done.
+func (c *Client) describeStep(label string) {
+	if c.prog != nil {
+		c.prog.Describe(label)
+	}
+}
+
+func (c *Client) advanceStep() {
+	if c.prog != nil {
+		c.prog.Advance()
+	}
 }
 
 // NewClient returns a Client using the host fastboot binary.
@@ -41,7 +77,8 @@ func (c *Client) BinaryPath() string {
 	return c.binPath
 }
 
-// run runs a fastboot command with a timeout.
+// run runs a fastboot command with a timeout. It is the base runner Middleware
+// wraps; vendor code reaches it through Exec, not directly.
 func (c *Client) run(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -93,15 +130,9 @@ func (c *Client) Devices() ([]Device, error) {
 	return devices, nil
 }
 
-// GetVar queries a single bootloader variable.
+// GetVar queries a single bootloader variable (through profile middleware).
 func (c *Client) GetVar(serial, varName string) (string, error) {
-	args := []string{}
-	if serial != "" {
-		args = append(args, "-s", serial)
-	}
-	args = append(args, "getvar", varName)
-
-	out, err := c.run(5*time.Second, args...)
+	out, err := c.Exec(serial, 5*time.Second, "getvar", varName)
 	if err != nil {
 		return "", err
 	}
@@ -119,69 +150,27 @@ func (c *Client) GetVar(serial, varName string) (string, error) {
 	return "", nil
 }
 
-// GetVarAll queries all device properties and returns a parsed DeviceRecon struct.
+// GetVarAll queries all device properties and returns a parsed DeviceRecon. It
+// runs only the neutral `getvar all`; vendor probes are applied separately by
+// RunProbes once a Profile is installed.
 func (c *Client) GetVarAll(serial string) (*DeviceRecon, error) {
-	args := []string{}
-	if serial != "" {
-		args = append(args, "-s", serial)
-	}
-	args = append(args, "getvar", "all")
-
-	out, err := c.run(10*time.Second, args...)
+	out, err := c.Exec(serial, 10*time.Second, "getvar", "all")
 	if err != nil && !strings.Contains(out, "(bootloader)") && !strings.Contains(out, "product:") {
 		return nil, err
 	}
 
 	recon := ParseGetVarOutput(out)
-	targetSerial := serial
-	if targetSerial != "" {
-		recon.Serial = targetSerial
+	if serial != "" {
+		recon.Serial = serial
 	} else if len(recon.Serial) == 0 {
 		if devs, err := c.Devices(); err == nil && len(devs) > 0 {
 			recon.Serial = devs[0].Serial
-			targetSerial = devs[0].Serial
 		}
 	}
 
-	// Safely probe OEM hardware sensor capabilities if supported
-	if hwOut, err := c.run(2*time.Second, appendSerial(targetSerial, "oem", "hw")...); err == nil {
-		recon.HardwareFeatures = ParseOEMHwOutput(hwOut)
-	}
-
-	// Safely probe OEM security version registers / anti-rollback indices if supported
-	if svOut, err := c.run(2*time.Second, appendSerial(targetSerial, "oem", "read_sv")...); err == nil {
-		recon.SecurityVersions = ParseOEMReadSVOutput(svOut)
-	}
-
-	// Motorola CID provisioning request: emits the SoC/UFS/RPMB bindings, and is the only
-	// way to read them off a device whose corrupt cid partition reads CarrierID 0xDEAD.
-	if cpOut, err := c.run(3*time.Second, appendSerial(targetSerial, "oem", "cid_prov_req")...); err == nil {
-		if cp := ParseOEMCIDProvReqOutput(cpOut); cp.Supported {
-			recon.CIDProvReq = cp
-		}
-	}
-
-	// Safely probe OEM partition layout and detect dynamic slot allocation if supported
-	if partOut, err := c.run(3*time.Second, appendSerial(targetSerial, "oem", "partition")...); err == nil {
-		parts, unpop, unpopList := ParseOEMPartitionOutput(partOut)
-		recon.LivePartitions = parts
-		recon.UnpopulatedSlotB = unpop
-		recon.UnpopulatedParts = unpopList
-
-		// The dynamic/empty verdicts above are read off offsets and sizes in one
-		// text dump. Confirm exactly those against the bootloader's own answers —
-		// a few dozen round trips, not the whole table, so recon stays quick.
-		var suspect []string
-		for _, p := range parts {
-			if p.IsSuper || p.SizeKB == 0 {
-				suspect = append(suspect, p.Name)
-			}
-		}
-		if len(suspect) > 0 {
-			recon.PartitionFacts = c.ProbePartitions(targetSerial, suspect)
-		}
-	}
-
+	// Vendor-specific probes (OEM commands, partition geometry, CID provisioning)
+	// are not run here — they live in the installed Profile's recon probes and are
+	// applied by RunProbes, so this stays a neutral `getvar all`.
 	return recon, nil
 }
 
@@ -219,229 +208,49 @@ type PartitionFacts struct {
 }
 
 // ProbePartitions asks the bootloader about each named partition. `getvar all`
-// omits these variables, but they are served by name, so the only cost is one
-// round trip each (~13ms). Anything the device declines is left zero rather than
-// guessed at.
+// omits these variables, but they are served by name. Each is a separate round
+// trip, and a pacing profile may space them (≥500ms on Motorola), so it costs
+// 4 paced calls per name — prefer ProbePartitionState, or a tight name list,
+// when the size/logical facts suffice. Declined vars are left zero, not guessed.
 func (c *Client) ProbePartitions(serial string, names []string) map[string]PartitionFacts {
+	return c.probePartitions(serial, names, false)
+}
+
+// ProbePartitionState is the cheap variant: it fetches only is-logical and
+// partition-size — the two facts the empty-slot cross-check needs — halving the
+// paced round trips per partition versus ProbePartitions.
+func (c *Client) ProbePartitionState(serial string, names []string) map[string]PartitionFacts {
+	return c.probePartitions(serial, names, true)
+}
+
+func (c *Client) probePartitions(serial string, names []string, lean bool) map[string]PartitionFacts {
 	out := make(map[string]PartitionFacts, len(names))
-	for _, name := range names {
+	// These per-partition round trips are counted into the bar total up front by
+	// the profile's ReconPlanner, so each one both relabels and advances the bar
+	// (steady forward motion, no mid-run denominator growth).
+	for i, name := range names {
+		c.describeStep(fmt.Sprintf("checking partition %d/%d: %s", i+1, len(names), name))
 		f := PartitionFacts{}
-		if v, err := c.GetVar(serial, "partition-type:"+name); err == nil {
-			f.Type = strings.TrimSpace(v)
+		if !lean {
+			if v, err := c.GetVar(serial, "partition-type:"+name); err == nil {
+				f.Type = strings.TrimSpace(v)
+			}
 		}
 		if v, err := c.GetVar(serial, "is-logical:"+name); err == nil {
 			f.IsLogical = strings.EqualFold(strings.TrimSpace(v), "yes")
 		}
-		if v, err := c.GetVar(serial, "has-slot:"+strings.TrimSuffix(strings.TrimSuffix(name, "_a"), "_b")); err == nil {
-			f.HasSlot = strings.EqualFold(strings.TrimSpace(v), "yes")
+		if !lean {
+			if v, err := c.GetVar(serial, "has-slot:"+strings.TrimSuffix(strings.TrimSuffix(name, "_a"), "_b")); err == nil {
+				f.HasSlot = strings.EqualFold(strings.TrimSpace(v), "yes")
+			}
 		}
 		if v, err := c.GetVar(serial, "partition-size:"+name); err == nil {
 			f.SizeBytes = parseSize(strings.TrimSpace(v))
 		}
 		out[name] = f
+		c.advanceStep()
 	}
 	return out
-}
-
-// Motorola's ABL carries `oem partition` subcommands its own `help` does not
-// list: dump, erase, md5, sha256, moto-dump and moto-pull (plus ramdump-pull).
-// They are all `oem partition <sub> ...`, not top-level `oem <sub>` — that
-// namespace matters, since `oem moto-dump` is rejected as "not a supported oem
-// command" while `oem partition moto-dump <part>` reaches the handler. Across a
-// locked (oem_locked) and an unlocked (flashing_unlocked) fogona (U1TF34.100-35-14)
-// they fall into three distinct gates:
-//
-//	md5 / sha256 / moto-dump <part> -> "Command restricted!" (factory/eng gate)
-//	dump <part> <off> <sz>          -> "Latest Motorola fastboot required, ..."
-//	moto-pull <x> / ramdump-pull <x> -> "Invalid partition!" (ungated; arg check)
-//
-// The factory gate is NOT the OEM bootloader lock: both units refuse identically,
-// and ABL reads an internal factory/engineering-mode flag the lock state never
-// touches (MotoBootModule.efi .data+0xeb10c, read by the permission predicate;
-// `factory-modes` is "disabled" on both). Unlocking does not lift it — the
-// remaining routes are a factory/BP-tools cable or the hardware test point.
-//
-// The dump message is a client gate: dump moves bulk data over a pull channel
-// AOSP fastboot does not speak, so it fails even unlocked. Reported apart from the
-// factory gate so an operator is not sent chasing the wrong obstacle.
-//
-// moto-pull / ramdump-pull are past both gates but reject every GPT label with
-// "Invalid partition!", so their target namespace is not GPT partitions — most
-// likely ramdump region ids valid only after a crash (their strings sit in the
-// module's ramdump cluster, beside get_ramoops_mem and "disable full ramdump").
-// Even given a valid target the pull would hit the same client gate as dump.
-// None of the six is wired as a callable command here; documented, not exposed.
-var (
-	ErrOEMRestricted         = errors.New("bootloader refused the command as restricted (factory/engineering-mode gate, not the OEM lock)")
-	ErrNeedsMotorolaFastboot = errors.New("command requires Motorola's own fastboot client")
-)
-
-// PartitionDigest is one partition hash as the bootloader computed it.
-type PartitionDigest struct {
-	Partition string
-	Algorithm string // md5 or sha256
-	Digest    string // lowercase hex
-	Range     string // the offset/size arguments sent, empty for a whole-partition hash
-}
-
-// OEMPartitionHash asks the bootloader to hash a partition in place. offset and
-// size are passed through verbatim when non-empty; their units are whatever the
-// bootloader means by them, which the partition listing gives in KB.
-func (c *Client) OEMPartitionHash(serial, algo, partition, offset, size string) (*PartitionDigest, error) {
-	args := []string{"oem", "partition", algo, partition}
-	if offset != "" {
-		args = append(args, offset)
-		if size != "" {
-			args = append(args, size)
-		}
-	}
-	out, runErr := c.run(30*time.Second, appendSerial(serial, args...)...)
-	digest, err := ParseOEMPartitionHashOutput(out, algo)
-	if err != nil {
-		return nil, err
-	}
-	if digest == "" {
-		if runErr != nil {
-			return nil, runErr
-		}
-		return nil, fmt.Errorf("no %s digest in bootloader output: %s", algo, strings.TrimSpace(out))
-	}
-	d := &PartitionDigest{Partition: partition, Algorithm: algo, Digest: digest}
-	if offset != "" {
-		d.Range = offset
-		if size != "" {
-			d.Range += "+" + size
-		}
-	}
-	return d, nil
-}
-
-// ParseOEMPartitionHashOutput pulls the digest out of an `oem partition
-// md5|sha256` reply, or reports which gate refused it. The digest is matched by
-// shape rather than by label, since the reply's wording is not documented and
-// differs between bootloader generations.
-func ParseOEMPartitionHashOutput(text, algo string) (string, error) {
-	want := 64
-	if strings.EqualFold(algo, "md5") {
-		want = 32
-	}
-	for _, line := range strings.Split(text, "\n") {
-		l := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "(bootloader)"))
-		switch {
-		case strings.Contains(l, "Command restricted"):
-			return "", ErrOEMRestricted
-		case strings.Contains(l, "Latest Motorola fastboot required"):
-			return "", ErrNeedsMotorolaFastboot
-		}
-		for _, tok := range strings.FieldsFunc(l, func(r rune) bool { return r == ' ' || r == ':' || r == '\t' || r == '=' }) {
-			tok = strings.ToLower(strings.TrimSpace(tok))
-			if len(tok) == want && strings.Trim(tok, "0123456789abcdef") == "" {
-				return tok, nil
-			}
-		}
-	}
-	return "", nil
-}
-
-// OEMHw queries hardware sensor and module capabilities ('fastboot oem hw').
-func (c *Client) OEMHw(serial string) (*OEMHardwareInfo, error) {
-	out, err := c.run(5*time.Second, appendSerial(serial, "oem", "hw")...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseOEMHwOutput(out), nil
-}
-
-// OEMReadSV queries security version registers / anti-rollback indices ('fastboot oem read_sv').
-func (c *Client) OEMReadSV(serial string) (*SecurityVersions, error) {
-	out, err := c.run(5*time.Second, appendSerial(serial, "oem", "read_sv")...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseOEMReadSVOutput(out), nil
-}
-
-// OEMCIDProvReq issues Motorola's CID provisioning request ('fastboot oem cid_prov_req'),
-// which emits the hardware bindings (SoC/UFS/eMMC ids, RPMB state) needed to mint a signed
-// cid_prov_data payload. Read-only; used in recon to read those ids off a device whose cid
-// partition is corrupt (CarrierID 0xDEAD).
-func (c *Client) OEMCIDProvReq(serial string) (*CIDProvRequest, error) {
-	out, err := c.run(5*time.Second, appendSerial(serial, "oem", "cid_prov_req")...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseOEMCIDProvReqOutput(out), nil
-}
-
-// reHexLine matches a bootloader line that is nothing but hex (the real cid_prov_req dump).
-var reHexLine = regexp.MustCompile(`^[0-9a-fA-F]+$`)
-
-// ParseOEMCIDProvReqOutput parses an `oem cid_prov_req` dump. The real output is a run of
-// hex blocks (concatenated into a binary payload and decoded per CIDProvRequest's offset
-// map); an ABL that answers with "key: value" lines instead is parsed into Fields. Supported
-// is false when the bootloader rejects the command.
-func ParseOEMCIDProvReqOutput(text string) *CIDProvRequest {
-	r := &CIDProvRequest{Fields: map[string]string{}}
-	var hexParts []string
-	for _, line := range strings.Split(text, "\n") {
-		hadPrefix := strings.Contains(line, "(bootloader)")
-		l := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "(bootloader)"))
-		if l == "" {
-			continue
-		}
-		low := strings.ToLower(l)
-		// fastboot's own status lines aren't device output.
-		if !hadPrefix && (strings.HasPrefix(low, "okay") || strings.HasPrefix(low, "finished") ||
-			strings.HasPrefix(low, "failed")) {
-			continue
-		}
-		if strings.Contains(low, "unknown command") || strings.Contains(low, "not a supported") ||
-			strings.Contains(low, "not supported") {
-			continue
-		}
-		r.Supported = true
-		r.RawLines = append(r.RawLines, l)
-		if reHexLine.MatchString(l) && len(l)%2 == 0 {
-			hexParts = append(hexParts, l)
-		} else if k, v, ok := strings.Cut(l, ":"); ok {
-			if k, v = strings.TrimSpace(k), strings.TrimSpace(v); k != "" && v != "" {
-				r.Fields[k] = v
-			}
-		}
-	}
-	if b, err := hex.DecodeString(strings.Join(hexParts, "")); err == nil && len(b) > 0 {
-		r.Raw = b
-		decodeCIDProvStruct(r)
-	}
-	return r
-}
-
-// decodeCIDProvStruct extracts the labelled fields from the payload, gated on the 0x00F0
-// structure marker so a differently-shaped dump stays raw-only. Offsets are documented on
-// CIDProvRequest and reverse-engineered from one device.
-func decodeCIDProvStruct(r *CIDProvRequest) {
-	b := r.Raw
-	if len(b) >= 0x02 {
-		r.FormatVersion = int(b[0])<<8 | int(b[1])
-	}
-	if len(b) >= 0x56 && b[0x54] == 0x00 && b[0x55] == 0xf0 {
-		if len(b) >= 0x64 {
-			r.SoCID = strings.ToUpper(hex.EncodeToString(b[0x60:0x64]))
-		}
-		if len(b) >= 0x52 {
-			r.Digest = hex.EncodeToString(b[0x42:0x52])
-		}
-	}
-}
-
-// OEMPartitions queries live partition geometry from UFS/eMMC ('fastboot oem partition').
-func (c *Client) OEMPartitions(serial string) ([]PartitionDetail, bool, []string, error) {
-	out, err := c.run(5*time.Second, appendSerial(serial, "oem", "partition")...)
-	if err != nil {
-		return nil, false, nil, err
-	}
-	parts, unpop, unpopList := ParseOEMPartitionOutput(out)
-	return parts, unpop, unpopList, nil
 }
 
 // SetActiveSlot switches the active A/B slot ('a' or 'b').
@@ -450,22 +259,14 @@ func (c *Client) SetActiveSlot(serial, slot string) error {
 	if slotClean != "a" && slotClean != "b" {
 		return fmt.Errorf("invalid slot %q (must be 'a' or 'b')", slot)
 	}
-
-	args := []string{}
-	if serial != "" {
-		args = append(args, "-s", serial)
-	}
-	args = append(args, fmt.Sprintf("--set-active=%s", slotClean))
-
-	_, err := c.run(10*time.Second, args...)
+	_, err := c.Exec(serial, 10*time.Second, fmt.Sprintf("--set-active=%s", slotClean))
 	return err
 }
 
 // Flash writes file to the named partition. A locked bootloader rejects this
 // for non-standard partitions; the caller is expected to gate on unlock state.
 func (c *Client) Flash(serial, partition, file string) error {
-	args := appendSerial(serial, "flash", partition, file)
-	_, err := c.run(120*time.Second, args...)
+	_, err := c.Exec(serial, 120*time.Second, "flash", partition, file)
 	return err
 }
 
@@ -481,13 +282,7 @@ func (c *Client) RebootEDL(serial string, commands [][]string) error {
 
 	var attempts []string
 	for _, cmdArgs := range commands {
-		args := []string{}
-		if serial != "" {
-			args = append(args, "-s", serial)
-		}
-		args = append(args, cmdArgs...)
-
-		out, err := c.run(5*time.Second, args...)
+		out, err := c.Exec(serial, 5*time.Second, cmdArgs...)
 		if err == nil {
 			return nil
 		}
@@ -520,33 +315,4 @@ func firstDeviceMessage(out string) string {
 		}
 	}
 	return hostSays
-}
-
-// GetUnlockData queries the Motorola OEM unlock data token string.
-func (c *Client) GetUnlockData(serial string) (string, error) {
-	args := []string{}
-	if serial != "" {
-		args = append(args, "-s", serial)
-	}
-	args = append(args, "oem", "get_unlock_data")
-
-	out, err := c.run(5*time.Second, args...)
-	if err != nil && !strings.Contains(out, "(bootloader)") {
-		return "", err
-	}
-
-	var tokenParts []string
-	for _, line := range strings.Split(out, "\n") {
-		trimmed := strings.TrimSpace(line)
-		trimmed = strings.TrimPrefix(trimmed, "(bootloader)")
-		trimmed = strings.TrimSpace(trimmed)
-		if len(trimmed) > 16 && !strings.Contains(trimmed, " ") {
-			tokenParts = append(tokenParts, trimmed)
-		}
-	}
-
-	if len(tokenParts) == 0 {
-		return strings.TrimSpace(out), nil
-	}
-	return strings.Join(tokenParts, ""), nil
 }

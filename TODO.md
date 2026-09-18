@@ -1,29 +1,13 @@
 # TODO
 
-## QCDT model-field stripping (cross-model derivation) — DONE
+## QCDT model-field stripping — validation pending
 
-Implemented in `internal/qcdt` (`StripModel`) and wired into `forge`/`derive` as the
-opt-in `--strip-model` flag; the helper `stripModels` patches any QCDT part in the
-harvested target. LZ4-framed input is decompressed first; an extended-v3 QCDT has
-the 32-byte `model` stripped from every entry (72→40 B, zero-filled so DTB offsets
-stay valid) and `extended` cleared; non-QCDT / non-extended parts pass through.
-Unit-tested (raw + LZ4 + no-op) and smoke-tested end-to-end through `forge`.
-
-Not yet exercised against a **real** sibling `dt.img`/`bootloader.img` — the parts
-harvested from current Motorola blankflashes don't carry a separate QCDT, so this
-awaits an older-generation donor (e.g. ginna/MSM8953-class) to validate on real
+`internal/qcdt` (`StripModel`, wired as `--strip-model`) is implemented and
+unit/smoke tested, but not yet exercised against a **real** sibling
+`dt.img`/`bootloader.img` — current Motorola blankflashes carry no separate QCDT,
+so this awaits an older-generation donor (e.g. ginna/MSM8953-class) to validate on
 hardware. Also unresolved: whether a target expecting an LZ4-*compressed* dt
 partition needs the output re-compressed (the reference tool emits decompressed).
-
-## Container codec: padding assumption
-
-`singleimage.go` hardcodes inter-record padding as round-up to `0x1000`. Two
-lineages of prior art corroborate the format, though only one asserts the 4096
-padding: HemanthJabalpuri's `star.sh` (and adithya2306's line-for-line Python
-port `unpack-moto-img.py`) pad to 4096; playday3008's ImHex template is
-alignment-agnostic (skip zeros until the next non-zero byte — compatible but not
-independent confirmation of 4096). Round-trip tests prove 0x1000 for the current
-corpus. No change needed; revisit only if a non-conforming donor surfaces.
 
 ## Document how to obtain `--target-parts`
 
@@ -51,30 +35,45 @@ playday3008 gist `c26833299fe8373a4190ec9360687a77`:
 
 <https://gist.github.com/playday3008/c26833299fe8373a4190ec9360687a77>
 
-## CID provisioning — RE'd from two live fogona units (partly open)
+## CID provisioning — open items
 
-Reverse-engineered against two secure-production fogona (XT2413/XT2413V) via
-`fastboot oem cid_prov_req` and, on an unlocked unit, reading the `cid` partition
-under postmarketOS. Findings are in the README (*CID provisioning*) and
-`internal/cid` (`Version`/`IsSigned`). Established:
+RE'd from two fogona units plus a real `cid` dump; the settled findings live in the
+README (*CID provisioning*) and `internal/cid`. Still open:
 
-- The live `cid` is a **version-2 signed** structure (`00f0 0002 …0070`: chip
-  serial, SoC id, CID, serial, product, then a ~176-byte opaque signature/cert
-  block that is **not** a recomputable hash), not the 44-byte v0 template
-  `cid.Build` writes. `cid_prov_req` is a masked copy of it + a 16-byte digest.
-- The **digest** is device-unique, stable, high-entropy, and not derivable from
-  any visible id or the `cid` content (brute-forced MD5/SHA over chip/UFS/SoC/
-  serial, singles→triples, salts) → hardware-key-derived (RPMB key or HUK).
-- Raw firehose writes to `cid` **don't persist** (the lite loader ACKs and
-  discards); `edl setcid` now read-back-verifies.
-
-Open:
-- **RPMB vs HUK** for the digest — needs the ABL/TZ disassembly of what fills
-  offset `0x42`, or an RPMB-key read (unreadable by design). NOT a live-device
-  question; do **not** read QFPROM raw (`/sys/bus/nvmem/.../qfprom0/nvmem`) — it
-  faults the SoC and reboots the phone.
-- The v2 signature algorithm (RSA vs ECDSA) and the encrypted-cert layout.
+- Replace `fogona-abl-notes/out/extracted/abl/MotoBootModule.efi` (a bad
+  `0x1000`-short extraction) with the device's real 1040384 B build, saved at
+  `samples/MotoBootModule_ZLTEST0001_abl_a.efi`.
 - Possible **`setcid` guard**: read the current `cid` and refuse/warn on
   `cid.IsSigned` before writing v0. Deferred — the read-back verify already makes
   a non-persisting write fail loudly, and on tested units the write simply bounces
   (no brick), so a hard guard may be unnecessary.
+
+## recon/ Tiny-Fastboot-Script — folded opportunities
+
+Assessed from `recon/ANALYSIS.md` against the current fastboot architecture
+(neutral `internal/fastboot` + vendor profile/command seams). Priority order:
+
+**Worth doing (small, neutral, low-risk):**
+- **Partition-name platform heuristic.** Classify SoC from partition names when
+  `getvar` cpu/product is ambiguous (`fsg`/`xbl`/`tz`→Qualcomm,
+  `preloader`/`lk`/`md_udc`→MediaTek, `sboot`/`tzsw`/`ldfw`→Exynos). Names are
+  already in `DeviceRecon.PartitionSizes`; a neutral helper in `internal/fastboot`.
+  Value: tell a user early when a device is *not* an EDL-blankflash target.
+- **GPT / slot-metadata corruption warning.** `slot-count ≥ 2` but empty
+  `current-slot` → flag corrupt slot metadata in the recon report. Two lines off
+  existing `SlotCount`/`CurrentSlot`.
+
+**Fits the vendor-command seam, but needs a confirm gate (write commands):**
+- **Factory-state sanitizer** as a Motorola `FastbootCommander` (`fastboot
+  sanitize`): `oem config cmdl ""`, `oem off-mode-charge enable`,
+  `oem ramdump disable`, `oem fb_mode_clear`. Real value for a device stuck in
+  ramdump/fb_mode, but these mutate state (`cmdl ""` wipes the kernel cmdline), so
+  gate per-flag with an explicit confirm, not fire-all.
+
+**Deferred (bigger scope / off the EDL-blankflash mission):**
+- **Smart fastboot flash** (`flash --smart`): intersect a stock package's parts
+  with the live table to skip missing partitions. The `safeguard` + `PartitionFacts`
+  pieces exist, but a stock fastboot flasher is a sizable feature orthogonal to EDL
+  recovery.
+- **`flashfile.xml` / `servicefile.xml` parser**: Motorola stock manifest → ordered
+  flash steps. Useful for ingest, but the stock harvester already handles packages.

@@ -10,7 +10,8 @@
 //   - Version 2 — a signed structure seen on secure-production devices (e.g. a
 //     live fogona). Header "00 f0 00 02 00 00 00 70" (length 0x70), carrying the
 //     chip serial, SoC id, CID value, device serial and product name, followed
-//     by a ~176-byte opaque signature/cert block that is NOT a recomputable hash
+//     by an RSA signature and an embedded X.509 chain (leaf + SubCA, ~2.4KB on a
+//     real dump) that is NOT a recomputable hash
 //     (it needs Motorola's PKI key — this is the cid_prov_data the after-sales
 //     server mints, see cmd_fastboot's cid_prov_req decoding).
 //

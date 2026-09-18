@@ -17,6 +17,7 @@ import (
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/catalog"
 	"go-unbrick/internal/library"
+	"go-unbrick/internal/rsakey"
 	"go-unbrick/internal/secboot"
 	"go-unbrick/internal/upstream"
 	"go-unbrick/internal/vendor"
@@ -27,8 +28,138 @@ import (
 func newLibraryCmd() *cobra.Command {
 	c := &cobra.Command{Use: "library", Short: "manage the local loader + stock store"}
 	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryAddStockZipCmd(),
-		newLibraryHarvestDonorsCmd(), newLibraryListCmd(), newLibrarySyncCmd(), newLibraryImportLoadersCmd())
+		newLibraryHarvestDonorsCmd(), newLibraryListCmd(), newLibrarySyncCmd(), newLibraryImportLoadersCmd(),
+		newLibraryKeysCmd())
 	return c
+}
+
+// maxKeyScanBytes caps a single part scanned for embedded keys; the boot-chain
+// images that carry ABL keys are a few MB, so anything larger (a stray super
+// image) is skipped rather than scanned in full.
+const maxKeyScanBytes = 64 << 20
+
+// newLibraryKeysCmd extracts every embedded RSA public key from the ABL images
+// in stored stock — both raw-format keys (the factory root) and X.509 certs (the
+// org roots and DBVAL/unlock verify keys) — and reports which recur across
+// models. A shared root/OEM key is a strong signal that two models share a
+// signing domain (and, often, that a loader or unlock path proven on one may
+// carry to the other).
+func newLibraryKeysCmd() *cobra.Command {
+	var pemOut bool
+	c := &cobra.Command{
+		Use:   "keys",
+		Short: "extract embedded ABL RSA keys/certs from stored stock and match them across models",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			lib, err := stockLibrary()
+			if err != nil {
+				return err
+			}
+
+			// fingerprint -> the models/parts that carry it, and one representative.
+			models := map[string]map[string]bool{} // fp -> set of "vendor/codename"
+			places := map[string][]string{}        // fp -> ["vendor/codename@build (part)"]
+			rep := map[string]rsakey.Identity{}
+
+			for _, s := range lib.Stock() {
+				t, _, err := lib.FindStock(s.Vendor, s.Codename, s.Build)
+				if err != nil {
+					continue
+				}
+				for _, name := range sortedPartNames(t.Parts) {
+					data := t.Parts[name]
+					if !strings.Contains(strings.ToLower(name), "abl") || len(data) > maxKeyScanBytes {
+						continue
+					}
+					for _, id := range rsakey.Scan(data).Identities() {
+						fp := id.Fingerprint
+						if fp == "" {
+							continue
+						}
+						if models[fp] == nil {
+							models[fp] = map[string]bool{}
+						}
+						models[fp][s.Vendor+"/"+s.Codename] = true
+						places[fp] = append(places[fp], fmt.Sprintf("%s/%s@%s (%s)", s.Vendor, s.Codename, s.Build, name))
+						if _, ok := rep[fp]; !ok {
+							rep[fp] = id
+						}
+					}
+				}
+			}
+
+			if len(rep) == 0 {
+				fmt.Println("No embedded ABL RSA keys found in stored stock.")
+				return nil
+			}
+
+			// Shared-across-models keys first (most models), then by fingerprint.
+			fps := make([]string, 0, len(rep))
+			for fp := range rep {
+				fps = append(fps, fp)
+			}
+			sort.Slice(fps, func(i, j int) bool {
+				if a, b := len(models[fps[i]]), len(models[fps[j]]); a != b {
+					return a > b
+				}
+				return fps[i] < fps[j]
+			})
+
+			shared := 0
+			for _, fp := range fps {
+				id := rep[fp]
+				modelList := sortedKeysOf(models[fp])
+				tag := ""
+				if len(modelList) > 1 {
+					shared++
+					tag = fmt.Sprintf("  ← shared across %d models", len(modelList))
+				}
+				fmt.Printf("%s  (%s, RSA-%d)%s\n", fp, id.Kind, id.Bits, tag)
+				fmt.Printf("    %s\n", id.Label)
+				fmt.Printf("    models:  %s\n", strings.Join(modelList, ", "))
+				for _, p := range places[fp] {
+					fmt.Printf("      • %s\n", p)
+				}
+				if pemOut {
+					fmt.Print(indent(id.PEM(), "    "))
+				}
+			}
+			fmt.Printf("\n%d distinct key(s)/cert(s); %d shared across more than one model.\n", len(rep), shared)
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&pemOut, "pem", false, "also print each key as PEM")
+	return c
+}
+
+// sortedPartNames returns the part names of a target, sorted, for stable output.
+func sortedPartNames(parts map[string][]byte) []string {
+	out := make([]string, 0, len(parts))
+	for n := range parts {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedKeysOf(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// indent prefixes every non-empty line of s with prefix.
+func indent(s, prefix string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		b.WriteString(prefix)
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // newLibrarySyncCmd pulls signed loaders from the upstream bkerler/Loaders DB

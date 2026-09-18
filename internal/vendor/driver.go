@@ -11,8 +11,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/fastboot"
+	"go-unbrick/internal/library"
 	"go-unbrick/internal/unlock"
 )
 
@@ -125,6 +129,94 @@ func ParseUnlock(src UnlockSource) (*unlock.Record, error) {
 	return nil, ErrUnsupported
 }
 
+// FastbootProfiler is an optional Driver capability: this OEM's fastboot
+// personality (middleware, recon probes, capability qualifiers) stacked onto the
+// neutral fastboot.Client. Drivers that add nothing omit it and get Generic.
+type FastbootProfiler interface {
+	FastbootProfile() fastboot.Profile
+}
+
+// FastbootProfile returns d's fastboot Profile, or fastboot.Generic if the
+// driver declares none.
+func FastbootProfile(d Driver) fastboot.Profile {
+	if fp, ok := d.(FastbootProfiler); ok {
+		return fp.FastbootProfile()
+	}
+	return fastboot.Generic
+}
+
+// UnlockDataProvider is a fastboot Profile capability (asserted from a resolved
+// profile): querying the OEM's get_unlock_data token over fastboot, plus the
+// vendor's unlock portal and an eligibility outlook for a device's CID.
+type UnlockDataProvider interface {
+	GetUnlockData(c *fastboot.Client, serial string) (string, error)
+	// UnlockPortal is the URL where the token is redeemed.
+	UnlockPortal() string
+	// UnlockOutlook predicts whether the portal will honour this device's CID,
+	// from the catalog allow-list and any harvested subsidy lock. "" if unknown.
+	UnlockOutlook(r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library) string
+}
+
+// FastbootEnv is the bundle of command-layer services a vendor's contributed
+// fastboot command needs. The command layer implements it; a vendor command uses
+// it instead of importing the main package (which would be a cycle). It is passed
+// explicitly rather than smuggled through a context so each command's needs stay
+// visible and type-checked.
+type FastbootEnv interface {
+	Client() (*fastboot.Client, error)
+	// ResolveSerial picks the device to act on (the one asked for, or the only one).
+	ResolveSerial(c *fastboot.Client) (string, error)
+	// RequireBootloader errors if the command's OEM verbs aren't served here
+	// (e.g. the device is in userspace fastbootd).
+	RequireBootloader(c *fastboot.Client, serial, what string) error
+	// InstallProfile resolves and installs the device's vendor profile, returning
+	// it for capability assertions.
+	InstallProfile(c *fastboot.Client, serial string) fastboot.Profile
+	Catalog() *catalog.Catalog
+	Library() *library.Library
+}
+
+// FastbootCommander is an optional Driver capability: extra fastboot subcommands
+// this vendor contributes, stacked onto the neutral fastboot command tree. This
+// is the command-level analogue of FastbootProfiler — a vendor adds its own
+// commands the same way it adds probes and middleware.
+type FastbootCommander interface {
+	FastbootCommands(env FastbootEnv) []*cobra.Command
+}
+
+// FastbootCommands gathers the contributed commands from every registered driver,
+// skipping any whose name is already taken (neutral commands win). taken is
+// updated with the names that were added.
+func FastbootCommands(env FastbootEnv, taken map[string]bool) []*cobra.Command {
+	var out []*cobra.Command
+	for _, d := range Drivers() {
+		fc, ok := d.(FastbootCommander)
+		if !ok {
+			continue
+		}
+		for _, c := range fc.FastbootCommands(env) {
+			if taken[c.Name()] {
+				continue
+			}
+			taken[c.Name()] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// PartitionHasher is a fastboot Profile capability: hashing a partition in place
+// via the OEM's bootloader command.
+type PartitionHasher interface {
+	OEMPartitionHash(c *fastboot.Client, serial, algo, partition, offset, size string) (*PartitionDigest, error)
+}
+
+// PartitionLister is a fastboot Profile capability: reading live partition
+// geometry via the OEM's bootloader command.
+type PartitionLister interface {
+	OEMPartitions(c *fastboot.Client, serial string) ([]PartitionDetail, bool, []string, error)
+}
+
 // EDLEntry is an optional Driver capability: the commands that put this OEM's
 // bootloader into the SoC's emergency download mode. There is no common one —
 // Motorola's ABL enters EDL through `oem blankflash`, other Qualcomm bootloaders
@@ -204,6 +296,20 @@ var registry = map[string]Driver{}
 // Register adds a driver; called from driver init functions.
 func Register(d Driver) { registry[d.ID()] = d }
 
+// Drivers returns every registered driver, ordered by id for determinism.
+func Drivers() []Driver {
+	ids := make([]string, 0, len(registry))
+	for id := range registry {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]Driver, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, registry[id])
+	}
+	return out
+}
+
 // For returns the driver for a catalog vendor id.
 func For(id string) (Driver, bool) {
 	d, ok := registry[id]
@@ -251,4 +357,3 @@ func MatchesVendorCatalog(vendorID, path string) bool {
 	}
 	return cat.MatchesVendor(vendorID, path)
 }
-

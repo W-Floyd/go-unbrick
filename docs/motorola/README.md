@@ -129,6 +129,81 @@ OEM_ID, HW_ID, SW_ID, certificate subject — is *exactly* the set of signed
 attributes the BootROM checks in step 3. Matching them is how you know, before
 you even plug in, that a given loader will run on a given device.
 
+### The whole boot process, power-on to Android (Motorola)
+
+Every solid arrow means the previous stage **checks the next one's Motorola
+signature before running it** — that's the chain of trust. The Motorola bootloader
+stage is where recovery happens and is what the rest of this document takes apart.
+
+```mermaid
+flowchart TD
+    pwr([Power on]) --> pbl["Boot ROM (baked into the chip)<br/>the root of trust — refuses to run<br/>anything that isn't validly signed"]
+    pbl --> gate{"Download mode requested,<br/>or the test point shorted?"}
+    gate -->|no| xbl["Early firmware<br/>starts the secure world"]
+    gate -->|yes| edl["Emergency Download mode over USB<br/>waits for a signed recovery loader"]
+    edl -->|loader not signed| brick(["Refuse — nothing runs"])
+    tp(["Hardware test point<br/>shorted on power-up"]) -.->|forces it| gate
+
+    xbl -->|signature bad| brick
+    xbl -->|verifies, then runs| tz["Secure world (TrustZone)<br/>isolated vault for keys, crypto,<br/>and provisioned device data"]
+    xbl -->|verifies, then runs| abl["Motorola bootloader<br/>the fastboot / recovery environment"]
+
+    subgraph moto["Inside the Motorola bootloader — the checks it runs"]
+      direction TB
+      cid["Read carrier &amp; config<br/>(carrier ID + unlock record) from storage"]
+      prov["Ask the secure world for the<br/>device's provisioned serial"]
+      diag{"Motorola-signed<br/>factory record present?"}
+      factory["Factory/diagnostic mode:<br/>write-protection &amp; unlock guard relaxed<br/>(unlocking the phone does NOT do this)"]
+      lock{"Locked, or carrier<br/>config tampered?"}
+      guarded(["Flashing &amp; risky commands<br/>blocked"])
+      roll{"Firmware older than<br/>the recorded version?"}
+      km["Tell the secure keystore whether the phone is<br/>locked and the OS verified (drives app attestation)"]
+      fbt{"Waiting in fastboot?"}
+      fbcmds["Run bootloader commands: read hardware config ·<br/>get unlock token · verify an unlock code ·<br/>provisioning request · clear stuck engineering flags"]
+      restricted(["'Command restricted!'<br/>— factory-gated commands refused"])
+      avb{"Android images<br/>verify?"}
+    end
+    abl --> cid
+    cid -.->|secure request| prov
+    prov -.-> tz
+    cid --> diag
+    diag -->|no| lock
+    diag -->|yes| factory --> lock
+    lock -->|"ok"| roll
+    lock -->|tampered / locked| guarded --> roll
+    roll -->|yes| halt(["Refuse to boot"])
+    roll -->|no| km --> fbt
+    fbt -->|yes| fbcmds
+    fbcmds -->|factory-gated cmd| restricted
+    fbcmds -.->|"reboot edl / oem blankflash:<br/>set download flag, restart<br/>(itself factory-gated here)"| pbl
+    fbt -->|no| avb
+    avb -->|yes| kern["Load the Android kernel &amp; startup files"]
+    avb -->|"no, and locked"| halt
+    avb -->|no, but unlocked| warn["Show a warning, boot anyway"]
+    warn --> kern
+    kern --> init([Android starts])
+
+    classDef rot fill:#f8d7da,stroke:#dc3545,color:#000
+    classDef sec fill:#fff3cd,stroke:#ffc107,color:#000
+    classDef os fill:#d4edda,stroke:#28a745,color:#000
+    classDef stop fill:#e2e3e5,stroke:#6c757d,color:#000
+    class pbl,gate,xbl,edl,tz,tp rot
+    class cid,prov,diag,factory,lock,roll,km,fbt,fbcmds,avb sec
+    class kern,init,warn os
+    class brick,guarded,restricted,halt stop
+```
+
+Red = the chip's boot ROM and the secure world; yellow = the Motorola bootloader,
+where recovery lives; green = Android; grey = a check that **refuses** and stops
+that path. **Getting into Emergency Download mode:** the boot ROM decides at
+power-on based on a *download-mode flag* — which `reboot edl` / `oem blankflash`
+set just before restarting the phone (usually **refused** on this model, behind a
+factory gate) — or a *hardware test point* shorted on the pads, which forces it
+with no software involved. Even there the chip won't run an unsigned loader. Notice
+the refusals: a bad signature or a stale image dead-ends, a tampered carrier config
+blocks flashing, and only a Motorola-signed record — never an unlock — opens
+factory mode (§1–§3).
+
 ---
 
 ## 3. The CID partition and carrier provisioning
@@ -172,14 +247,16 @@ Layout:
 
 **Version 2 — the signed structure (what retail devices actually have).**
 Header `00 f0 00 02 00 00 00 70` — same magic, version `0x0002`, length `0x70`.
-It carries the chip serial, SoC id, the CID value, the device serial, and the
-product name — followed by a **~176-byte opaque signature/certificate block.**
-That block is **not** something you can recompute (it isn't a plain hash of the
-contents): it's minted by Motorola's after-sales **PKI** (Public Key
-Infrastructure — their signing servers) and is cryptographically bound to *this
-specific device.* This is what actually lives on a retail fogona. `cid.IsSigned`
-returns true for it (version ≥ 2), and that's your signal to *not* clobber it
-with a v0 template.
+It carries the salt/chip-serial, SoC id, the CID value, the device id and serial,
+and the product name, plus the DBVAL unlock `target` (a `0x70`-byte body) —
+followed by an **RSA signature and an embedded X.509 certificate chain**, ~2.4 KB
+in all (see the layout in §3.5). (This is the *same* record as the DBVAL unlock
+record, §3.5 — carrier data and unlock data share one signed blob, confirmed on a
+real dump.) That block is **not** something you can recompute (it isn't a plain hash of
+the contents): it's minted by Motorola's after-sales **PKI** (their signing
+servers) and is cryptographically bound to *this specific device.* This is what
+actually lives on a retail fogona. `cid.IsSigned` returns true for it
+(version ≥ 2), and that's your signal to *not* clobber it with a v0 template.
 
 Use `cid.Version(img)` to read the version, and `cid.IsSigned(img)` to check for
 v2. **Detect the version before you overwrite anything.** Writing a v0 image over
@@ -226,48 +303,41 @@ truncated reply degrades gracefully instead of panicking.
 In effect, `cid_prov_req` is a masked copy of the live v2 `cid` plus that digest —
 it's the request the device *would* send to obtain a fresh signed CID.
 
-### 3.3 The digest is device-bound secret key material
+### 3.3 The digest is a per-boot session value
 
-The 16-byte digest at offset `0x42` turned out to be the interesting part. Our
-two test units gave:
+The 16-byte digest at offset `0x42` is a **per-boot session value**: regenerated
+each boot, constant within a boot. On one unit (`ZLTEST0001`), three back-to-back
+`cid_prov_req` calls return an identical value, but that value differs after a
+reboot — while the device UID at `0x5c` stays the same across boots.
 
-- device 1: `b5135a51398bd9aaedf208e70b923f72`
-- device 2: `15e4840d8f932eab0a9aa03aaa2619d1`
+So `cid_prov_req` is `[stable device UID @0x5c/0x60] + [per-boot session value
+@0x42]`, where the session value binds the request to *this boot* — a nonce for
+anti-replay in the after-sales provisioning handshake. It is **not** a device
+identifier or a hardware secret: no hash of any visible field (chip serial, UID,
+SoC id, serial, IMEI, CID, record slices — keyed or unkeyed) reproduces it,
+because there is no stable input, and there is nothing to reproduce offline.
 
-— two different digests despite both being fogona / SM6225 with the same SoC id
-`001B80E1`. We established that the digest is:
-
-- **Device-unique** — the two otherwise-identical units differ, so it can't be a
-  function of the model or SoC id alone.
-- **Stable** — the same value across reboots, and whether the bootloader is
-  locked or unlocked (device 1 was read locked *and* later unlocked; unchanged).
-- **High-entropy and not derivable from anything visible.** We brute-forced MD5
-  and SHA-1/SHA-256 over every identifier the device exposes — chip serial, UFS
-  storage id, SoC id, device serial, the CID value — individually and in
-  combinations of two and three, in both byte orders, with and without common
-  salts and separators. None reproduced the 16 bytes. (16 bytes is the length of
-  an MD5 digest or a truncated SHA, which is why hashing was the natural guess —
-  but no visible input produces it.)
-
-The only explanation left is that it's **hardware-key-derived**: computed from a
-secret that never leaves the chip. The two candidates are the **RPMB key**
-(Replay Protected Memory Block — a secure area of the flash storage with its own
-authentication key) and the **HUK** (Hardware Unique Key — a per-chip secret
-fused/derived in silicon). Either way, **treat the digest as a per-device secret**,
-like a private key.
+In the ABL, `cid_prov_req[0x42]` is written by a SHA-1 KDF
+(`cmd_cid_prov_req → FUN_0004c200 → FUN_0005bab0 → FUN_0004ca70 → FUN_0004d6c0`).
+Its seed is **uninitialized stack**: `FUN_0004d760` is supposed to initialize the
+20-byte KDF state via `FUN_0004e240`, but that function is an inert stub (empty
+`ret`), so the key ends up as `SHA1(leftover stack)`. Leftover stack is
+deterministic within a boot (same value every call) but differs across boots —
+which is exactly the observed per-boot behaviour. It's effectively an accidental
+nonce from uninitialized memory, not a derived secret. (`DAT_000d8144` in the
+transform is the SHA-1 IV, not a key.) The RSA/secure-boot walls (§3.5, §2) — not
+this digest — are what protect provisioning and unlock.
 
 For sharing a report safely, `recon --redact` masks the digest along with other
 per-device identifiers (serial, UID, chip id, IMEI, part numbers). Redaction is
 **opt-in**, not the default, because `recon` is a local diagnostic tool and you
 usually *want* the real values in front of you.
 
-> **What's still unknown (and how *not* to find out):** whether the digest comes
-> from the RPMB key or the HUK is open. Answering it needs a *static* disassembly
-> of the ABL/TZ code that fills offset `0x42` — reading the binaries, not poking
-> the phone. In particular, **never try to read the QFPROM fuses raw on a live
-> device** (e.g. via `/sys/bus/nvmem/.../qfprom0/nvmem`): doing so faults the SoC
-> and instantly reboots the phone. We did this once by accident and it crashed a
-> unit. Don't repeat it. More generally, avoid raw fuse/RPMB reads while probing.
+> **Safety note:** **never read the QFPROM fuses raw on a live device** (e.g. via
+> `/sys/bus/nvmem/.../qfprom0/nvmem`) — it faults the SoC and instantly reboots the
+> phone. Avoid raw fuse/RPMB/bsg reads while probing generally. (For the HUK/RPMB
+> access model — why only TrustZone can reach them — see [OP-TEE secure storage](https://optee.readthedocs.io/en/latest/architecture/secure_storage.html)
+> and [Exploiting RPMB authentication in a closed-source TEE](https://eprint.iacr.org/2024/180.pdf).)
 
 ### 3.4 Why you cannot raw-write a signed CID
 
@@ -292,10 +362,57 @@ the write silently bounced.
 
 ### 3.5 The `cid` partition also holds the bootloader-unlock record (DBVAL/DBVC)
 
-The `cid` partition isn't only carrier data. It also stores the **DBVAL / DBVC
-unlock record** — the blob that authorizes `fastboot oem unlock`. This was
-reverse-engineered from `MotoBootModule.efi` (the fogona ABL), and it's why a
-corrupt `cid` can affect more than carrier branding.
+The `cid` partition isn't only carrier data. Reverse-engineering
+`MotoBootModule.efi` (the fogona ABL) — and confirmed by dumping a real `cid`
+partition — shows it holds **two** records, which is why a corrupt or rewritten
+`cid` (the `0xDEAD` state, §5) can break far more than carrier branding:
+
+1. the **signed carrier + unlock record** at offset 0 — one v2 signed structure
+   that is *both* the carrier/channel value (§3.1) *and* the DBVAL/DBVC unlock
+   record (below). These are not two separate records: the same blob binds
+   `{serial, salt, target, CID, product}` under one Motorola RSA signature;
+2. a **factory-diagnostic authorization record** at offset `0xfa00` — gates
+   Motorola's engineering/factory mode (§3.6).
+
+This was verified against a real dump (device 1, `ZLTEST0001`): the record at
+offset 0 is `00f0 0002` (v2), with the salt at `0x08`, id at `0x30`, serial at
+`0x38`, and target at `0x50` — byte-for-byte the same `{salt, target, id, serial}`
+that the device's `get_unlock_data` challenge reports, and the device's real
+unlock code verifies against it. This section covers the unlock aspect of that
+record; §3.6 covers the separate factory record.
+
+**The record's real layout** (from device 1's dump — the `cid` partition is
+131072 bytes / 128 KiB, almost entirely zero):
+
+| Offset | Size | Contents |
+|-------:|-----:|----------|
+| `0x00000` | 8 | header — magic `00f0`, version `0002`, body length `0x70` |
+| `0x00008` | 16 | salt (serial-derived nonce, `00c0ffee 001b80e1 …`) |
+| `0x0002a` | ~38 | body — CID value, id `0123456789abcdef`, serial `ZLTEST0001`, product `moto g` |
+| `0x00050` | 32 | `target` — the DBVAL unlock check compares `H(salt‖H(code))` to this |
+| `0x00070` | ~258 | RSA signature over the body (by the leaf key) |
+| `0x00172` | 931 | **leaf cert** `CN=LEN01MPKI01` (issued by `PKIS SubCA`) |
+| `0x00517` | 1200 | **CA cert** `CN=PKIS SubCA` (issued by `PKIS Root`) |
+| `0x009c7` | ~125 KiB | zero — unused, including the `0x0fa00` factory-record slot (empty → factory mode off, §3.6) |
+
+So the record **carries its own certificate chain**, which is how the device
+verifies it without a network: the embedded leaf + SubCA chain up to the
+`CN=PKIS Root` that's baked into the ABL (§3.7). The signature over the body is by
+the leaf; the leaf is vouched for by the SubCA; the SubCA by the fused-in Root.
+
+```mermaid
+flowchart LR
+    root["PKIS Root<br/>(in ABL, trusted anchor)"]:::known
+    subca["PKIS SubCA<br/>(in cid record @0x517)"]:::rec
+    leaf["LEN01MPKI01 leaf<br/>(in cid record @0x172)"]:::rec
+    body["record body @0<br/>{salt, target, CID, serial…}"]:::rec
+    root -->|issued| subca -->|issued| leaf -->|signs| body
+    classDef known fill:#d4edda,stroke:#28a745,color:#000
+    classDef rec fill:#fff3cd,stroke:#ffc107,color:#000
+```
+
+Only Motorola's PKI can produce a leaf that chains to `PKIS Root`, so the whole
+record is unforgeable even though it (and its verifying chain) is fully readable.
 
 Two *independent* trust chains run on the device, and it's important not to
 conflate them:
@@ -366,6 +483,119 @@ real backstop. Documented for completeness; not actionable without the glitch.)
 RSA you can't forge, so there is no code, file, or flash operation that unlocks
 it — see the FAQ (§7).
 
+### 3.6 The `cid` partition also gates factory/diagnostic mode
+
+The ABL's factory/engineering "diagnostic mode" (`_gDiagnosticMagic = 0x3579`) —
+which bypasses the OEM-unlock guard, partition write protections, and identifier
+redaction — is authorized by a **second record in the `cid` partition**, at offset
+`0xfa00`. The ABL (`FUN_0001b940`) reads a 400-byte record there and gates on it:
+a big-endian u16 content-length field (`buf[2..3]`, `< 400`, with the remainder to
+400 zero-padded), a magic field `0xEE11FF22`, and then an RSA signature check.
+
+That signature is verified with a **separate embedded root key** from the unlock
+chain: a raw RSA-2048 key at offset `0xE7AD0` in `MotoBootModule.efi` (exponent
+65537 at `0xE7BD0`), PKCS#1 v1.5 / SHA-256. Only a record signed by Motorola's
+private key flips the mode; a device without secure boot fused, or a signed OEM
+boot parameter, are the only other routes. This is the mechanism behind the
+"factory gate" that refuses `oem partition md5`/`moto-dump` etc. (§5, §2) — it is
+**not** the OEM lock, and unlocking the bootloader does not lift it.
+
+You can't forge this record for the same reason you can't forge a signed CID or a
+DBVAL unlock: the device holds only the public key. go-unbrick's `internal/rsakey`
+extracts this root key (and the embedded cert roots) from an ABL image; the
+`library keys` review matches such keys across models.
+
+### 3.7 The whole key/cert chain: what we have and what we don't
+
+Every trust boundary on the device is the same shape: **Motorola holds a private
+key, the device ships only the matching public key**, and each check verifies a
+signature the device can validate but never mint. We have extracted every *public*
+half; we have none of the *private* halves, and none of the per-device hardware
+secrets. That asymmetry is the whole security model — and the reason nothing here
+is a bypass.
+
+```mermaid
+flowchart LR
+    priv["Motorola private keys<br/>(server-side — we don't have)"]:::unknown
+
+    subgraph rec["Records (cid partition & signed images)"]
+        cidrec["cid @0: v2 signed record<br/>carrier value + DBVAL unlock<br/>{serial,salt,target,CID,product}+sig"]
+        fac["factory record @0xfa00"]
+        bootimgs["signed loaders + boot images"]
+    end
+
+    subgraph abl["ABL embedded PUBLIC keys (we have)"]
+        unlockKey["PKIS Root 4096 /<br/>Sec-Eng CA 2048"]:::known
+        facKey["raw RSA-2048 @0xE7AD0"]:::known
+        bootRoot["fused root +<br/>OEM/HW/SW cert chain"]:::known
+    end
+
+    priv -->|signs| cidrec
+    priv -->|signs| fac
+    priv -->|signs| bootimgs
+
+    cidrec -->|verified by| unlockKey
+    fac -->|verified by| facKey
+    bootimgs -->|verified by| bootRoot
+
+    unlockKey -->|+ code check| grantU["oem unlock allowed"]:::grant
+    facKey --> grantF["diagnostic mode 0x3579"]:::grant
+    bootRoot --> grantB["stage boots"]:::grant
+
+    classDef known fill:#d4edda,stroke:#28a745,color:#000
+    classDef unknown fill:#f8d7da,stroke:#dc3545,color:#000
+    classDef grant fill:#e2e3ff,stroke:#6610f2,color:#000
+```
+
+Green = public value we hold; red = the Motorola private keys we don't. Every
+arrow from red to green is a signature the device can *verify* but never *mint*.
+
+| Public key / cert | Where it lives | Type | Verifies | Have the public value? | Private key |
+|-------------------|----------------|------|----------|------------------------|-------------|
+| Qualcomm/OEM boot root | QFPROM fuses (hash) | fused hash | the whole boot chain (PBL → xbl → abl…) | no — a fused hash, not extracted | Qualcomm/Motorola |
+| Boot-chain cert chain (OEM_ID/HW_ID/SW_ID) | signed loaders & boot images | X.509 RSA | the firehose loader and each boot stage | **yes** — `internal/secboot` parses it | Motorola/Qualcomm |
+| Factory-diagnostic root | ABL raw key @`0xE7AD0` | RSA-2048 | the `cid`@`0xfa00` factory record (§3.6) | **yes** — modulus SHA-256 `199d452f…` | Motorola |
+| `CN=PKIS Root` | ABL cert @`0xd78f8` | RSA-4096 | DBVAL unlock record | **yes** | Motorola |
+| `CN=Motorola Security Engineering Root CA` | ABL cert @`0xd7e36` | RSA-2048 | DBVAL unlock record | **yes** | Motorola |
+| `CN=Server Root, OU=Factory` | ABL cert @`0xd8218` | RSA-4096 | *role unconfirmed* (a factory-server CA?) | **yes** | Motorola |
+| CID provisioning / unlock signer | Motorola after-sales PKI | RSA | the unified `cid`@0 record — the `cid_prov_data` **is** the DBVAL record, verified by the unlock roots above | signature block opaque; on a real dump the record is signed once, so likely the same key as the DBVAL roots | Motorola |
+| `cid_prov_req` digest @0x42 | — (per-boot session value) | SHA-1 KDF over a per-boot seed | binds a provisioning request to *this boot* (anti-replay); not a key (§3.3) | yes — it's in the `cid_prov_req` output | n/a — ephemeral, not a secret |
+
+(The two ABL certs that verify DBVAL match, by exact byte length, CRYPTO.md's
+"primary" RSA-4096 and "fallback" RSA-2048 unlock-verify keys — so `PKIS Root` and
+the `Security Engineering Root CA` are the unlock roots; which is primary vs
+fallback is inferred from length, not pinned.)
+
+**The data flows, all the same pattern:**
+
+- **Bootloader unlock:** device emits `get_unlock_data` (`id # serial # target #
+  salt`) → Motorola's server signs a DBVAL record with its private key → device
+  verifies with the embedded unlock root → your code passes only if
+  `H(salt‖H(code)) == target` (§3.5).
+- **CID provisioning:** device emits `cid_prov_req` (SoC id + device digest +
+  masked `cid`) → after-sales server mints `cid_prov_data` — which *is* the v2
+  signed `cid`@0 record (carrier value + the DBVAL unlock fields, one signature) →
+  device writes and verifies it (§3.2, §3.5).
+- **Factory/diagnostic mode:** a 400-byte record signed by Motorola is placed in
+  `cid`@`0xfa00` → ABL verifies it against the `0xE7AD0` root → sets `0x3579`
+  (§3.6).
+- **Boot:** Qualcomm PBL verifies each stage against the fused root and the signed
+  cert chain's OEM/HW/SW ids (§2).
+
+**What we do not have (and cannot get offline):**
+
+- Every **Motorola private key** above — the boot-chain signer, the factory-
+  diagnostic root, the unlock roots (`PKIS Root`, `Security Engineering Root CA`),
+  the factory-server root, and the CID-provisioning signer. All are server-side.
+
+(The `cid_prov_req` digest is *not* in this list — it's a per-boot session value,
+not a key; §3.3.)
+
+With only the public halves, you can *verify* a Motorola-issued signature and
+*read* every record, but you cannot forge one, derive a code, or lift the factory
+gate. The `cid`@0 record is one signed blob the DBVAL unlock path verifies, so the
+carrier value and unlock record share a signature.
+
 ---
 
 ## 4. `recon`: what it tells you and how to read it
@@ -411,6 +641,8 @@ you thinking you'd fixed a `0xDEAD` brick when you hadn't.
 
 ## 6. Command map
 
+### 6.1 go-unbrick commands
+
 | You want to… | Command |
 |--------------|---------|
 | Read full device identity + CID state (fastboot) | `fastboot recon` |
@@ -421,6 +653,60 @@ you thinking you'd fixed a `0xDEAD` brick when you hadn't.
 | Verify a bootloader-unlock code offline | `unlock verify <wire> <code>` / `--file cid.bin` |
 | Show a parsed unlock record | `unlock show <wire>` / `--file cid.bin` |
 | Blankflash a dead device (EDL) | `edl` blankflash flow (see README) |
+
+### 6.2 Device fastboot & OEM commands
+
+What the *bootloader itself* answers, and what it takes to run each one. Three
+access tiers, from the ABL gate logic (§2, §5):
+
+- **any** — works even locked (reads only).
+- **unlocked** — needs the bootloader unlocked (`flashing unlock`, state `0x7070`).
+- **factory** — needs a Motorola-signed factory/diagnostic record or a production
+  cable; an *unlock does not grant it* (§3.6). Refused otherwise.
+
+**Standard fastboot**
+
+| Command | Does | Tier |
+|---|---|---|
+| `getvar <var>` / `getvar all` | Read a bootloader variable (product, slot, lock state, partition sizes) | any |
+| `flash <part> <img>` | Write an image to a partition | unlocked |
+| `erase <part>` / `format <part>` | Wipe / re-format a partition | unlocked |
+| `boot <img>` | Download and boot a kernel without flashing | unlocked |
+| `flashing unlock` / `lock` | Toggle the OEM-unlock state (consumes the unlock allowance) | user-consent |
+| `reboot` / `reboot-bootloader` | Normal reboot / back into fastboot | any |
+| `reboot edl` | Set the download-mode flag and restart into 9008 — **factory-gated here** (§1, diagram §2) | factory |
+
+**Motorola `oem` commands**
+
+| Command | Does | Tier |
+|---|---|---|
+| `oem get_unlock_data` | Export the unlock challenge (`id # serial+model # target # salt`) from the `cid` record (§3.5) | any |
+| `oem unlock <code>` | Validate a 20-char code against the RSA-signed `cid` record, then unlock | any (record-gated) |
+| `oem cid_prov_req` | Emit the provisioning request — per-boot nonce + persistent UID (§3.2) | any |
+| `oem read_sv` | Read anti-rollback / security-version counters | any |
+| `oem hw` | Dump hardware config / UTAG variant info | any |
+| `oem device-info` | Report lock, secure-boot, and tamper flags | any |
+| `oem config <name>` | Read a UTAG | any |
+| `oem config <name> <value>` | Write a UTAG — locked devices allow only a whitelist (`bootmode`, `carrier`, `cmdl`, `fsg-id`, `battery`, …); others → `Not allowed command` | unlocked / whitelist |
+| `oem partition` | List the partition table | any |
+| `oem partition moto-dump <name>` | Read a partition off the device | factory |
+| `oem partition md5/sha256 <name>` | Hash a partition | factory |
+| `oem partition erase <name> [off size]` | Block-aligned raw erase within GPT bounds | factory |
+| `oem partition dump <name>` | Deprecated stub → `Latest Motorola fastboot required` | (retired) |
+| `oem ssm <flag>` | Set persistent SSM flags (`disable-verity`, `adb_early_on`, `enable-thinkshield`, …) | unlocked |
+| `oem ramdump` | Arm RAM-dump collection | factory / CID 0 / DTB flag |
+| `oem blankflash` | Request the EDL blankflash path — emits a hardcoded `Latest Motorola fastboot required` INFO and refuses here | factory |
+| `oem virtualab …` · `oem test_points` · `oem ssm_test wp` | Engineering-only | dispatcher-blocked → `command restricted` |
+
+Three distinct refusals tell you *where* the block happened: lowercase
+`command restricted` = the dispatcher rejected the whole command (engineering-only);
+`Command restricted!` (capital, `!`) = the handler ran but the subcommand self-gated
+(e.g. `oem partition md5`); `restricted` = the `ramdump` handler's own check.
+`Latest Motorola fastboot required` is **not** a gate verdict — it's a hardcoded
+string retired handlers emit unconditionally (`oem partition dump`'s stub, and the
+`oem blankflash` INFO packet), so it says nothing about lock or factory state. On
+fogona the factory tier is closed on both locked **and** unlocked units, so
+`blankflash`/`edl` over fastboot are dead ends — EDL entry is the test point (§1).
 
 ---
 
@@ -498,20 +784,28 @@ recovery, and neither is what this tool does.
   a fused root-key hash; it cannot be patched or substituted across SoCs.
 - The retail `cid` is a version-2 signed, device-bound structure, not the
   44-byte unsigned template.
-- The `cid_prov_req` digest is device-unique, stable, and hardware-key-derived —
-  secret material, not a hash of visible data.
+- The `cid_prov_req` digest (`0x42`) is a per-boot nonce, not a secret —
+  `SHA1(uninitialized stack)` (an inert initializer stub), boot-stable and
+  reboot-varying (§3.3). The persistent per-device id is the UID at `0x5c`.
 - Raw Firehose writes to `cid` don't persist on secure-production units;
   `setcid` verifies by reading back.
-- The `cid` partition also stores the RSA-signed **DBVAL** bootloader-unlock
-  record; `oem unlock` verifies your code as `H(salt‖H(code))` against a target
-  in that record (§3.5). No secret in the code check — security is the RSA
-  signature (can't forge) plus SHA-256 preimage resistance. Only pure break is a
-  fault-injection glitch on the single post-verify branch.
+- The `cid` partition holds two records (confirmed on a real dump): one v2 signed
+  blob at offset 0 that is *both* the carrier value and the RSA-signed **DBVAL**
+  bootloader-unlock record, and a **factory-diagnostic authorization record** at
+  `0xfa00` (§3.5, §3.6). `oem unlock` verifies your code as `H(salt‖H(code))`
+  against the `target` in that blob — no secret in the code check, security is the
+  RSA signature (can't forge) plus SHA-256 preimage resistance; the only pure break
+  is a fault-injection glitch on the single post-verify branch. The device's real
+  code was verified against the on-device record end to end.
+- The factory/diagnostic mode (`0x3579`) is gated by that `0xfa00` record, RSA-2048
+  PKCS#1 v1.5 / SHA-256 verified against a *separate* embedded root key at `0xE7AD0`
+  — distinct from the DBVAL/unlock keys, and not liftable by unlocking (§3.6).
 
-**Open (needs static reverse-engineering, not live probing):**
+**Open (minor):**
 
-- RPMB vs HUK as the source of the digest.
-- The v2 signature algorithm (RSA vs ECDSA) and the encrypted-cert layout.
+- The exact role of the `CN=Server Root, OU=Factory` cert embedded in the ABL, and
+  which of the two DBVAL certs is the primary vs fallback verifier (inferred by
+  length, §3.7).
 
 **Hard safety rule:** never read QFPROM raw on a live device (§3.3), and avoid
 fuse/RPMB/bsg raw reads while probing — they can fault or reboot the phone.
@@ -616,3 +910,23 @@ metal.
 - **TrustZone (TZ)** — the ARM secure world / its OS, running trusted apps like
   keymaster.
 - **XBL** — eXtensible BootLoader; an early Qualcomm boot-chain stage.
+
+---
+
+## 12. References
+
+Background on the Qualcomm/Android hardware-security primitives this document
+leans on (secure boot, HUK, RPMB, TrustZone):
+
+- [LineageOS — Qualcomm's Chain of Trust](https://lineageos.org/engineering/Qualcomm-Firmware/) — QFPROM fuses, root-of-trust, the boot-chain stages.
+- [Qualcomm — TrustZone & secure application](https://docs.qualcomm.com/doc/80-88500-4/topic/77_TrustZone_and_secure_application.html) — the TEE's QFPROM/HUK access.
+- [Qualcomm — Secure Boot and Image Authentication (PDF)](https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/secure-boot-and-image-authentication-version_final.pdf) — OEM_ID/HW_ID/SW_ID and the cert-chain verification the PBL enforces.
+- [Quarkslab — Analysis of Qualcomm Secure Boot Chains](https://blog.quarkslab.com/analysis-of-qualcomm-secure-boot-chains.html) — deep dive on the signed-image format.
+- [OP-TEE — Secure storage](https://optee.readthedocs.io/en/latest/architecture/secure_storage.html) — how the RPMB key is derived from the HUK (relevant to the §3.3 digest).
+- [Exploiting RPMB authentication in a closed-source TEE (IACR ePrint 2024/180)](https://eprint.iacr.org/2024/180.pdf) — RPMB attacks target TEE flaws, not key possession.
+- [NXP — Generating and fusing the eMMC RPMB key](https://docs.nxp.com/bundle/UG10158/page/topics/generating_and_fusing_the_emmc_rpmb_key.html) — RPMB provisioning mechanics.
+
+The device-specific reverse engineering (the ABL functions, the DBVAL unlock
+chain, the factory-mode gate) is recorded in the `fogona-abl-notes` repo:
+`FACTORY.md` (diagnostic mode + the `0xE7AD0` root key) and `CRYPTO.md` (the DBVAL
+unlock keys and code check).

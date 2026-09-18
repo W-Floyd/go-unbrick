@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 
 	"go-unbrick/internal/catalog"
@@ -43,12 +44,45 @@ Resolves 'fastboot' binary directly from system PATH.`,
 		newFastbootHashCmd(&fastbootBin, &serial),
 		newFastbootSlotCmd(&fastbootBin, &serial),
 		newFastbootEDLCmd(&fastbootBin, &serial),
-		newFastbootUnlockDataCmd(&fastbootBin, &serial),
 		newFastbootSetCIDCmd(&fastbootBin, &serial),
 	)
 
+	// Stack vendor-contributed subcommands onto the neutral tree; a neutral
+	// command of the same name wins.
+	taken := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		taken[sub.Name()] = true
+	}
+	cmd.AddCommand(vendor.FastbootCommands(&fastbootEnv{bin: &fastbootBin, serial: &serial}, taken)...)
+
 	return cmd
 }
+
+// fastbootEnv adapts the command layer's helpers to vendor.FastbootEnv, so a
+// vendor's contributed commands reach the client, serial resolution, and the
+// catalog/library without importing the main package.
+type fastbootEnv struct {
+	bin    *string
+	serial *string
+}
+
+func (e *fastbootEnv) Client() (*fastboot.Client, error) { return fastboot.NewClient(*e.bin) }
+
+func (e *fastbootEnv) ResolveSerial(c *fastboot.Client) (string, error) {
+	return resolveSerial(c, *e.serial)
+}
+
+func (e *fastbootEnv) RequireBootloader(c *fastboot.Client, serial, what string) error {
+	return requireBootloader(c, serial, what)
+}
+
+func (e *fastbootEnv) InstallProfile(c *fastboot.Client, serial string) fastboot.Profile {
+	return installProfile(c, serial)
+}
+
+func (e *fastbootEnv) Catalog() *catalog.Catalog { return activeCatalog() }
+
+func (e *fastbootEnv) Library() *library.Library { return library.Open(libraryDir()) }
 
 func newFastbootReconCmd(fastbootBin, serial *string) *cobra.Command {
 	var raw, redact bool
@@ -60,8 +94,125 @@ func newFastbootReconCmd(fastbootBin, serial *string) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&raw, "raw", false, "also dump the device's raw output (every getvar var and oem probe line)")
-	c.Flags().BoolVar(&redact, "redact", false, "mask per-device identifiers and secrets (serial, IMEI, UID, chip id, cid_prov_req digest) for sharing")
+	c.Flags().BoolVar(&redact, "redact", false, "mask per-device identifiers and secrets (serial, IMEI, UID, chip id, cid_prov_req digest, unlock challenge) for sharing")
 	return c
+}
+
+// barSink drives a schollz/progressbar from fastboot recon steps. The step total
+// is not fully known up front (the partition-probe count is discovered mid-run),
+// so Begin seeds it and AddTotal/ChangeMax extends it as ProbePartitionState is
+// entered. nil bar = progress disabled (stderr not a terminal).
+type barSink struct{ bar *progressbar.ProgressBar }
+
+func (b *barSink) Begin(total int) {
+	// Fixed total = probe count; it never grows, so the bar only moves forward
+	// (per-partition sub-steps relabel via Describe without advancing). The last
+	// Advance reaches max and ClearOnFinish wipes the line before the report.
+	b.bar = progressbar.NewOptions(total,
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionSetDescription("querying device"),
+		progressbar.OptionShowDescriptionAtLineEnd(), // bar first, label after it
+		progressbar.OptionSetWidth(24),
+		progressbar.OptionClearOnFinish(),
+	)
+}
+
+func (b *barSink) Describe(label string) {
+	if b.bar != nil {
+		b.bar.Describe(label)
+	}
+}
+
+func (b *barSink) Advance() {
+	if b.bar != nil {
+		_ = b.bar.Add(1)
+	}
+}
+
+// stderrProgress returns a progress sink, or nil when stderr is not a terminal
+// (keeps piped output clean). Callers clear the bar with clearProgress before
+// printing the report.
+func stderrProgress() fastboot.ProgressSink {
+	if fi, err := os.Stderr.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return nil
+	}
+	return &barSink{}
+}
+
+func clearProgress() { fmt.Fprint(os.Stderr, "\r\033[K") }
+
+// colorEnabled is true when stdout is a terminal and NO_COLOR is unset, so the
+// report stays plain text when piped or redirected.
+var colorEnabled = func() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}()
+
+func paint(code, s string) string {
+	if !colorEnabled || s == "" {
+		return s
+	}
+	return "\033[" + code + "m" + s + "\033[0m"
+}
+
+func cGood(s string) string { return paint("32", s) }   // green
+func cBad(s string) string  { return paint("31", s) }   // red
+func cWarn(s string) string { return paint("33", s) }   // yellow
+func cHdr(s string) string  { return paint("1", s) }    // bold — section headers
+func cTag(s string) string  { return paint("1;36", s) } // bold cyan — verdict tags
+
+// health paints a yes/no-style value by meaning, not literal truth: goodAffirm
+// says whether the affirmative answer (yes/true/enabled/…) is the healthy one,
+// so `Successful: yes` and `warranty void: no` both come out green. Unrecognized
+// values pass through uncolored.
+func health(val string, goodAffirm bool) string {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "yes", "true", "enabled", "ok", "1":
+		return paintPolar(val, goodAffirm)
+	case "no", "false", "disabled", "0":
+		return paintPolar(val, !goodAffirm)
+	default:
+		return val
+	}
+}
+
+func boolYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+func paintPolar(s string, good bool) string {
+	if good {
+		return cGood(s)
+	}
+	return cBad(s)
+}
+
+// hwRevPhase expands a hardware build-phase code into a short gloss. hwrev names
+// the unit's place on the prototype→production maturity ladder; Motorola stamps
+// it with an optional trailing number (e.g. PVT1). Unknown values return "".
+// Ladder: https://instrumental.com/build-better-handbook/evt-dvt-pvt
+func hwRevPhase(rev string) string {
+	r := strings.TrimRight(strings.ToUpper(strings.TrimSpace(rev)), "0123456789")
+	switch r {
+	case "EVT":
+		return "Engineering Validation Test — early prototype"
+	case "DVT":
+		return "Design Validation Test — near-final design"
+	case "PVT":
+		return "Production Validation Test — production build"
+	case "MP":
+		return "Mass Production"
+	case "PROTO", "P":
+		return "prototype"
+	default:
+		return ""
+	}
 }
 
 func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
@@ -69,6 +220,7 @@ func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
 	if err != nil {
 		return err
 	}
+	client.SetProgress(stderrProgress())
 
 	devs, err := client.Devices()
 	if err != nil {
@@ -96,25 +248,55 @@ func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
 			fmt.Println(strings.Repeat("=", 80))
 		}
 
-		recon, err := client.GetVarAll(d.Serial)
+		// Gather and print in two passes so output streams: the neutral getvar
+		// sections appear immediately, the progress bar covers the paced OEM
+		// probes, then the probe-fed and analysis sections follow.
+		recon, _, err := reconWithProfile(client, d.Serial)
 		if err != nil {
+			clearProgress()
 			fmt.Fprintf(os.Stderr, "Error querying device %s: %v\n", d.Serial, err)
 			continue
 		}
-
-		printReconReport(d.Serial, recon, cat, lib, raw, redact)
+		printReconDeviceSections(d.Serial, recon, cat, lib, redact)
+		client.RunProbes(recon.Serial, recon)
+		clearProgress()
+		printReconAnalysis(client, recon, cat, lib, raw, redact)
 	}
 
 	return nil
 }
 
-func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw, redact bool) {
+// printReportSections prints vendor report sections produced by a profile's
+// reporter, so the command layer stays vendor-agnostic.
+func printReportSections(secs []fastboot.ReportSection) {
+	for _, s := range secs {
+		if s.Title != "" {
+			fmt.Printf("\n%s\n", cHdr("  "+s.Title+":"))
+		}
+		for _, ln := range s.Lines {
+			printField(ln.Label, ln.Value)
+		}
+		for _, n := range s.Notes {
+			fmt.Printf("    %s\n", n)
+		}
+	}
+}
+
+// printReconDeviceSections prints everything derived from the single neutral
+// `getvar all` (hardware, security, slots, firmware, boot-chain stamps). It runs
+// before the paced OEM probes so this bulk streams out immediately; the probe-fed
+// vendor sections and the local analysis follow in printReconAnalysis.
+func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, redact bool) {
 	fmt.Printf("Fastboot Device: %s\n", mask(redact, serial))
 
 	// 1. Hardware
-	fmt.Println("  Hardware:")
+	fmt.Println(cHdr("  Hardware:"))
 	printField("Product / Board", r.Product)
-	printField("HW Revision", r.HWRev)
+	if p := hwRevPhase(r.HWRev); p != "" {
+		printField("HW Revision", r.HWRev+" — "+p)
+	} else {
+		printField("HW Revision", r.HWRev)
+	}
 	printField("SKU", r.SKU)
 	printField("Carrier", r.Carrier)
 	printField("CPU / SoC", r.CPU)
@@ -153,41 +335,13 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		printField("Part Numbers", strings.TrimSpace(fmt.Sprintf("PCB %s  Battery %s", mask(redact, r.PCBPartNo), mask(redact, r.BattID))))
 	}
 
-	if r.HardwareFeatures != nil {
-		hw := r.HardwareFeatures
-		var feats []string
-		if hw.FPS {
-			feats = append(feats, "Fingerprint (FPS)")
-		}
-		if hw.ECompass {
-			feats = append(feats, "E-Compass")
-		}
-		if hw.NFC {
-			feats = append(feats, "NFC")
-		}
-		if hw.ESIM {
-			feats = append(feats, "eSIM")
-		}
-		if hw.DualSIM {
-			feats = append(feats, "Dual-SIM")
-		}
-		featStr := strings.Join(feats, ", ")
-		if featStr == "" {
-			featStr = "None detected"
-		}
-		printField("Features / Sensors", featStr)
-	}
-
 	// 2. Security & Bootloader
-	fmt.Println("\n  Security & Bootloader:")
+	fmt.Println("\n" + cHdr("  Security & Bootloader:"))
 	printField("Bootloader Version", r.BootloaderVersion)
 	printField("XBL Build", r.XBLBuild)
-	if r.SecurityVersions != nil && (r.SecurityVersions.RIL0 > 0 || r.SecurityVersions.RIL2 > 0) {
-		printField("Anti-Rollback (RIL)", fmt.Sprintf("#0: %d, #2: %d (Active)", r.SecurityVersions.RIL0, r.SecurityVersions.RIL2))
-	}
-	lockStr := "LOCKED"
+	lockStr := cWarn("LOCKED")
 	if r.Unlocked {
-		lockStr = "UNLOCKED"
+		lockStr = cGood("UNLOCKED")
 	}
 	if r.SecureState != "" {
 		lockStr = fmt.Sprintf("%s (state: %s)", lockStr, r.SecureState)
@@ -197,7 +351,7 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 	if norm := library.NormalizeCID(r.CarrierID); norm == "0xDEAD" || norm == "0xFFFF" {
 		// A corrupt/tampered cid partition; ABL sets 0xDEAD and blocks AP fastboot.
 		// Recoverable via `fastboot oem cid_prov_req` -> signed cid_prov_data.
-		cidDesc = fmt.Sprintf("%s — CORRUPT (0xDEAD): cid partition tampered, AP flashing blocked", cidDesc)
+		cidDesc = fmt.Sprintf("%s — %s", cidDesc, cBad("CORRUPT (0xDEAD): cid partition tampered, AP flashing blocked"))
 	} else if name := cat.CarrierIDName(r.CarrierID); name != "" {
 		cidDesc = fmt.Sprintf("%s — %s", cidDesc, name)
 	} else if slcf := lib.CarrierIDs()[library.NormalizeCID(r.CarrierID)]; slcf != "" {
@@ -205,33 +359,6 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		cidDesc = fmt.Sprintf("%s — subsidy lock %s (from stored build)", cidDesc, slcf)
 	}
 	printField("Carrier ID (CID)", cidDesc)
-	if cp := r.CIDProvReq; cp != nil {
-		var parts []string
-		if cp.SoCID != "" {
-			soc := cp.SoCID
-			if r.JTAGID != "" && strings.EqualFold(cp.SoCID, r.JTAGID) {
-				soc += " (= JTAG_ID)"
-			}
-			parts = append(parts, "SoC "+soc)
-		}
-		if cp.FormatVersion != 0 {
-			parts = append(parts, fmt.Sprintf("fmt v%d", cp.FormatVersion))
-		}
-		if cp.Digest != "" {
-			// Per-device hardware-key-derived secret; masked under --redact.
-			parts = append(parts, "digest "+mask(redact, cp.Digest))
-		}
-		kv := make([]string, 0, len(cp.Fields))
-		for k, v := range cp.Fields {
-			kv = append(kv, k+"="+v)
-		}
-		sort.Strings(kv)
-		parts = append(parts, kv...)
-		if len(parts) == 0 {
-			parts = append(parts, fmt.Sprintf("available (%d line(s), pass --raw for the dump)", len(cp.RawLines)))
-		}
-		printField("CID Prov Req (moto)", strings.Join(parts, ", "))
-	}
 	printField("Channel ID", r.ChannelID)
 	printField("FRP State", r.FRPState)
 	printField("Verity State", r.VerityState)
@@ -239,7 +366,7 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 	printField("Unlock Token", r.TokenState)
 	if r.FactoryModes != "" || r.WarrantyVoid != "" || r.FDRAllowed != "" {
 		printField("Factory Flags", fmt.Sprintf("modes %s, warranty void %s, FDR allowed %s",
-			orUnknown(r.FactoryModes), orUnknown(r.WarrantyVoid), orUnknown(r.FDRAllowed)))
+			orUnknown(r.FactoryModes), health(orUnknown(r.WarrantyVoid), false), orUnknown(r.FDRAllowed)))
 	}
 	if r.MaxDownloadSize > 0 || r.LogicalBlockSize > 0 {
 		// What a flash must respect: the largest single transfer the bootloader
@@ -261,45 +388,37 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 	// 3. Dual-Slot Health
 	hasUnbootableSlot := false
 	if r.SlotCount > 0 || r.CurrentSlot != "" || len(r.SlotStatus) > 0 {
-		fmt.Println("\n  Dual-Slot Health:")
+		fmt.Println("\n" + cHdr("  Dual-Slot Health:"))
 		if r.CurrentSlot != "" {
 			printField("Active Slot", "_"+r.CurrentSlot)
 		}
 		for _, s := range []string{"a", "b"} {
 			if info, ok := r.SlotStatus[s]; ok {
-				status := "Bootable"
+				status := cGood("Bootable")
 				if !info.Bootable() {
-					status = "UNBOOTABLE"
+					unboot := "UNBOOTABLE"
 					hasUnbootableSlot = true
 					if !info.Unbootable {
 						// Derived, not flagged: say so, or the line reads as if
 						// the bootloader had marked the slot itself.
-						status += " — no retries left"
+						unboot += " — no retries left"
 					}
-				}
-				succStr := "no"
-				if info.Successful {
-					succStr = "yes"
+					status = cBad(unboot)
 				}
 				fmt.Printf("    %-20s Slot %s: %s (Successful: %s, Retries: %d)\n",
-					"", s, status, succStr, info.RetryCount)
+					"", s, status, health(boolYesNo(info.Successful), true), info.RetryCount)
 			}
 		}
-		if r.UnpopulatedSlotB {
-			fmt.Printf("    [!] Root Cause for Slot B: Dynamic partitions in 'super' are unpopulated (0 KB):\n")
-			fmt.Printf("        %s\n", strings.Join(r.UnpopulatedParts, ", "))
-			fmt.Println("        Slot B has no installed Android OS system image; it is expected to be unbootable.")
-			if note := confirmUnpopulated(r); note != "" {
-				fmt.Printf("        %s\n", note)
-			}
-		} else if hasUnbootableSlot {
-			fmt.Println("    [!] Warning: An inactive slot is flagged UNBOOTABLE (update failed or retry limit exceeded).")
+		if hasUnbootableSlot {
+			fmt.Println("    " + cWarn("[!] Warning: An inactive slot is flagged UNBOOTABLE (update failed or retry limit exceeded)."))
 		}
+		// The vendor-specific root cause (e.g. Motorola's unpopulated 'super'
+		// dynamic partitions) is rendered from the profile reporter, below.
 	}
 
 	// 4. Software Build
 	if r.DisplayID != "" || r.Fingerprint != "" || r.Baseband != "" {
-		fmt.Println("\n  Installed Firmware:")
+		fmt.Println("\n" + cHdr("  Installed Firmware:"))
 		printField("Display ID", r.DisplayID)
 		printField("Fingerprint", r.Fingerprint)
 		printField("Baseband", r.Baseband)
@@ -308,49 +427,31 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 
 	// 4b. Per-component boot chain stamps
 	if dates := r.BootChainDates(); len(dates) > 0 {
-		fmt.Println("\n  Boot Chain Stamps:")
+		fmt.Println("\n" + cHdr("  Boot Chain Stamps:"))
 		for _, d := range sortedDatesDesc(dates) {
 			printField("Built "+d, fmt.Sprintf("%d component(s): %s", len(dates[d]), strings.Join(dates[d], ", ")))
 		}
 		if len(dates) > 1 {
-			fmt.Println("    [!] Components come from more than one release — the boot chain was")
-			fmt.Println("        flashed in pieces, and the odd ones out are what a repair must replace.")
+			fmt.Println("    " + cWarn("[!] Components come from more than one release — the boot chain was"))
+			fmt.Println("        " + cWarn("flashed in pieces, and the odd ones out are what a repair must replace."))
 		}
 	}
+}
 
-	// 4c. Hardware variant space, from the device's own utags. Only utags with
-	// more than one option, or a fused hwid derivation, say anything about the
-	// family — a fixed single-value utag is just this SKU restating itself.
-	if r.HardwareFeatures != nil {
-		var rows []fastboot.UTag
-		for _, u := range r.HardwareFeatures.UTags {
-			if len(u.Range) > 1 || u.HWIDMap != "" {
-				rows = append(rows, u)
-			}
-		}
-		if len(rows) > 0 {
-			fmt.Println("\n  Hardware Variants (utags):")
-			for _, u := range rows {
-				val := u.Value
-				if val == "" {
-					val = "(unset)"
-				}
-				desc := val
-				if len(u.Range) > 1 {
-					desc = fmt.Sprintf("%s  of {%s}", val, strings.Join(u.Range, ", "))
-				}
-				if u.HWIDMap != "" {
-					desc += "  [" + u.HWIDMap + "]"
-				}
-				printField(u.Name, desc)
-			}
-		}
-	}
+// printReconAnalysis prints the sections that depend on the slow paced OEM probes
+// (vendor sections) plus the local catalog/library analysis. Split from the
+// getvar-derived device sections so the latter can stream out before the probes
+// run — see runFastbootRecon.
+func printReconAnalysis(client *fastboot.Client, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw, redact bool) {
+	// 4c. Vendor-specific sections (sensors, anti-rollback, CID provisioning,
+	// utag variant space) come from the installed profile's reporter — the
+	// command layer prints them without naming a vendor.
+	printReportSections(client.ReconSections(r, redact))
 
 	// 5. Knowledge Base Matching
 	var libMatch *fastboot.LibraryMatchResult
 	var matchedDev *catalog.Device
-	fmt.Println("\n  go-unbrick Knowledge Base:")
+	fmt.Println("\n" + cHdr("  go-unbrick Knowledge Base:"))
 	matchedDev, _ = fastboot.MatchCatalog(cat, r)
 	if matchedDev != nil {
 		socDesc := matchedDev.CPUName
@@ -366,19 +467,21 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 			stockDesc := fmt.Sprintf("%d build(s) stored (%s)", len(libMatch.StockBuilds), strings.Join(libMatch.StockBuilds, ", "))
 			switch {
 			case libMatch.ExactStockMatch != "":
-				stockDesc = fmt.Sprintf("%d build(s) stored [EXACT INSTALLED MATCH: %s]", len(libMatch.StockBuilds), libMatch.ExactStockMatch)
+				stockDesc = fmt.Sprintf("%d build(s) stored [%s]", len(libMatch.StockBuilds), cTag("EXACT INSTALLED MATCH: "+libMatch.ExactStockMatch))
 			case libMatch.BootChainMatch != "":
 				stockDesc = fmt.Sprintf("%d build(s) stored [SAME XBL HASH: %s — packaged on another date / AP build]", len(libMatch.StockBuilds), libMatch.BootChainMatch)
 			}
 			fmt.Printf("    Library Stock:       %s\n", stockDesc)
 			if len(libMatch.CIDCompatible) > 0 || len(libMatch.CIDForeign) > 0 {
-				cidDesc := fmt.Sprintf("%d of %d build(s) declare cid %s", len(libMatch.CIDCompatible), len(libMatch.StockBuilds), r.CarrierID)
-				if len(libMatch.CIDCompatible) > 0 {
-					cidDesc += ": " + strings.Join(libMatch.CIDCompatible, ", ")
+				fit := len(libMatch.CIDCompatible)
+				fmt.Printf("    CID Compatibility:   device CID %s — %d of %d stored build(s) will flash\n",
+					r.CarrierID, fit, len(libMatch.StockBuilds))
+				if fit > 0 {
+					fmt.Printf("        %s\n", cGood("✓ flashable (CID matches):    "+strings.Join(libMatch.CIDCompatible, ", ")))
 				}
-				fmt.Printf("    CID Compatibility:   %s\n", cidDesc)
 				if len(libMatch.CIDForeign) > 0 {
-					fmt.Printf("        [!] Foreign CID, bootloader will refuse: %s\n", strings.Join(libMatch.CIDForeign, ", "))
+					// CIDForeign entries already carry their own "(0x…)" CID suffix.
+					fmt.Printf("        %s\n", cBad("✗ refused (foreign CID):      "+strings.Join(libMatch.CIDForeign, ", ")))
 				}
 			}
 		} else {
@@ -388,7 +491,7 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		if libMatch.LoaderCount > 0 {
 			loaderDesc := fmt.Sprintf("%d available (e.g. %s)", libMatch.LoaderCount, libMatch.CandidateLoader)
 			if libMatch.JTAGMatch {
-				loaderDesc = fmt.Sprintf("%d available [EXACT JTAG SILICON MATCH: %s]", libMatch.LoaderCount, libMatch.CandidateLoader)
+				loaderDesc = fmt.Sprintf("%d available [%s]", libMatch.LoaderCount, cTag("EXACT JTAG SILICON MATCH: "+libMatch.CandidateLoader))
 			}
 			fmt.Printf("    Candidate Loaders:   %s\n", loaderDesc)
 		} else {
@@ -399,7 +502,7 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 	}
 
 	// 6. Action Recommendations
-	fmt.Println("\n  Actionable Options:")
+	fmt.Println("\n" + cHdr("  Actionable Options:"))
 	if r.CurrentSlot == "a" {
 		fmt.Println("    • Switch to slot B:          unbrick fastboot slot b")
 	} else if r.CurrentSlot == "b" {
@@ -411,7 +514,7 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 			fmt.Printf("    • Inspect Stock GPT:         unbrick safeguard inspect %s/gpt.bin\n", stockPath)
 		}
 	}
-	if len(r.LivePartitions) > 0 {
+	if _, ok := client.Profile().(vendor.PartitionLister); ok {
 		fmt.Println("    • View Live Partitions:      unbrick fastboot partitions")
 	}
 	if edlRouteKnown(matchedDev) {
@@ -421,22 +524,22 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		// same factory/engineering-mode gate as the other restricted oem
 		// commands, which the lock state does not touch. Flag it regardless of
 		// lock so the operator is not sent to unlock in vain.
-		if matchedDev != nil && matchedDev.Vendor == "motorola" {
-			edlLine += "   [oem blankflash is factory-gated; unlocking will not lift it]"
+		if note := client.EDLNote(); note != "" {
+			edlLine += "   [" + note + "]"
 		}
 		fmt.Println(edlLine)
 	}
-	if strings.Contains(strings.ToLower(r.Fingerprint), "motorola") || strings.HasPrefix(r.CarrierID, "0x") {
+	if udp, ok := client.Profile().(vendor.UnlockDataProvider); ok {
 		fmt.Println("    • Fetch OEM unlock data:     unbrick fastboot oem-unlock-data")
 		if !r.Unlocked {
-			fmt.Printf("      redeem the token at:       %s\n", motorolaUnlockPortal)
-			if outlook := unlockOutlook(r, cat, lib); outlook != "" {
+			fmt.Printf("      redeem the token at:       %s\n", udp.UnlockPortal())
+			if outlook := udp.UnlockOutlook(r, cat, lib); outlook != "" {
 				fmt.Printf("      %s\n", outlook)
 			}
 		}
 	}
 	if raw {
-		printRawDump(r, redact)
+		printRawDump(client, r, redact)
 	}
 }
 
@@ -449,8 +552,8 @@ var sensitiveVar = map[string]bool{
 
 // printRawDump shows everything the device reported that the curated report leaves out:
 // every getvar variable, and the oem-probe lines (cid_prov_req as a hex dump).
-func printRawDump(r *fastboot.DeviceRecon, redact bool) {
-	fmt.Println("\n  Raw Device Output:")
+func printRawDump(client *fastboot.Client, r *fastboot.DeviceRecon, redact bool) {
+	fmt.Println("\n" + cHdr("  Raw Device Output:"))
 	if len(r.RawVars) > 0 {
 		fmt.Println("    getvar all:")
 		keys := make([]string, 0, len(r.RawVars))
@@ -466,55 +569,8 @@ func printRawDump(r *fastboot.DeviceRecon, redact bool) {
 			fmt.Printf("      %s: %s\n", k, v)
 		}
 	}
-	if cp := r.CIDProvReq; cp != nil {
-		fmt.Printf("    oem cid_prov_req (%d bytes):\n", len(cp.Raw))
-		if len(cp.Raw) > 0 {
-			dump := cp.Raw
-			if redact {
-				// Blank the two per-device regions: the digest (0x42) and the chip
-				// serial (0x5C). Offsets are the reverse-engineered structure.
-				dump = append([]byte(nil), cp.Raw...)
-				for _, rg := range [][2]int{{0x42, 0x52}, {0x5c, 0x60}} {
-					for i := rg[0]; i < rg[1] && i < len(dump); i++ {
-						dump[i] = 0
-					}
-				}
-			}
-			for off := 0; off < len(dump); off += 16 {
-				row := dump[off:min(off+16, len(dump))]
-				var asc strings.Builder
-				for _, b := range row {
-					if b >= 32 && b < 127 {
-						asc.WriteByte(b)
-					} else {
-						asc.WriteByte('.')
-					}
-				}
-				fmt.Printf("      %04x: %-47s  %s\n", off, hexSpaced(row), asc.String())
-			}
-		} else {
-			for _, l := range cp.RawLines {
-				fmt.Printf("      %s\n", l)
-			}
-		}
-	}
-	if r.SecurityVersions != nil && len(r.SecurityVersions.RawLines) > 0 {
-		fmt.Println("    oem read_sv:")
-		for _, l := range r.SecurityVersions.RawLines {
-			fmt.Printf("      %s\n", l)
-		}
-	}
-}
-
-func hexSpaced(b []byte) string {
-	var sb strings.Builder
-	for i, x := range b {
-		if i > 0 {
-			sb.WriteByte(' ')
-		}
-		fmt.Fprintf(&sb, "%02x", x)
-	}
-	return sb.String()
+	// Vendor raw output (OEM command bytes) from the installed profile's reporter.
+	printReportSections(client.RawSections(r, redact))
 }
 
 // stockBuildForInspect names the stored build worth pointing the operator at:
@@ -613,53 +669,6 @@ func newFastbootEDLCmd(fastbootBin, serial *string) *cobra.Command {
 				return err
 			}
 			fmt.Println("Device transitioned to EDL. Screen should be off and enumerating as 05c6:9008.")
-			return nil
-		},
-	}
-}
-
-// motorolaUnlockPortal is where the token from `oem get_unlock_data` is
-// redeemed. The portal decides eligibility from the device's own CID, so a
-// carrier-subsidised unit can produce a valid token and still be refused.
-const motorolaUnlockPortal = "https://motorola-global-portal.custhelp.com/app/standalone/bootloader/unlock-your-device-a"
-
-func newFastbootUnlockDataCmd(fastbootBin, serial *string) *cobra.Command {
-	return &cobra.Command{
-		Use:   "oem-unlock-data",
-		Short: "retrieve Motorola OEM unlock token string for bootloader unlocking",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := fastboot.NewClient(*fastbootBin)
-			if err != nil {
-				return err
-			}
-
-			targetSerial, err := resolveSerial(client, *serial)
-			if err != nil {
-				return err
-			}
-
-			if err := requireBootloader(client, targetSerial, "'oem get_unlock_data'"); err != nil {
-				return err
-			}
-
-			data, err := client.GetUnlockData(targetSerial)
-			if err != nil {
-				return err
-			}
-
-			fmt.Println("Motorola OEM Unlock Data:")
-			fmt.Println(data)
-			fmt.Printf("\nPaste this token string into Motorola's Unlock Your Bootloader portal:\n  %s\n", motorolaUnlockPortal)
-
-			// Say up front whether the portal is likely to honour it, so a
-			// refusal reads as the expected outcome rather than a failed step.
-			if recon, err := client.GetVarAll(targetSerial); err == nil {
-				if recon.Unlocked {
-					fmt.Println("\nNote: this device already reports an unlocked bootloader.")
-				} else if outlook := unlockOutlook(recon, activeCatalog(), library.Open(libraryDir())); outlook != "" {
-					fmt.Printf("\nOutlook: %s\n", outlook)
-				}
-			}
 			return nil
 		},
 	}
@@ -766,9 +775,14 @@ KB, and this command does not reinterpret the values.`,
 			if err := requireBootloader(client, targetSerial, "'oem partition "+strings.ToLower(algo)+"'"); err != nil {
 				return err
 			}
-			d, err := client.OEMPartitionHash(targetSerial, strings.ToLower(algo), args[0], offset, size)
+			prof := installProfile(client, targetSerial)
+			ph, ok := prof.(vendor.PartitionHasher)
+			if !ok {
+				return fmt.Errorf("this device's fastboot profile (%s) has no partition-hash command", prof.Name())
+			}
+			d, err := ph.OEMPartitionHash(client, targetSerial, strings.ToLower(algo), args[0], offset, size)
 			switch {
-			case errors.Is(err, fastboot.ErrOEMRestricted):
+			case errors.Is(err, vendor.ErrOEMRestricted):
 				// Observed identical on locked and unlocked fogona units, so do
 				// not send the operator to unlock — it will not help.
 				return err
@@ -787,36 +801,6 @@ KB, and this command does not reinterpret the values.`,
 	c.Flags().StringVar(&offset, "offset", "", "start offset, as the bootloader reads it (see 'fastboot partitions')")
 	c.Flags().StringVar(&size, "size", "", "length to hash, requires --offset")
 	return c
-}
-
-// confirmUnpopulated checks the empty-slot-B diagnosis, which is otherwise read
-// off one text dump, against what the bootloader answers per partition. A
-// disagreement matters more than the confirmation: it would mean the partitions
-// are populated and something else is keeping slot B down.
-func confirmUnpopulated(r *fastboot.DeviceRecon) string {
-	if len(r.PartitionFacts) == 0 || len(r.UnpopulatedParts) == 0 {
-		return ""
-	}
-	var disagree []string
-	checked := 0
-	for _, name := range r.UnpopulatedParts {
-		f, ok := r.PartitionFacts[name]
-		if !ok {
-			continue
-		}
-		checked++
-		if f.SizeBytes > 0 || !f.IsLogical {
-			disagree = append(disagree, name)
-		}
-	}
-	switch {
-	case checked == 0:
-		return ""
-	case len(disagree) > 0:
-		return fmt.Sprintf("[!] but the device reports these as present: %s — the emptiness is not confirmed", strings.Join(disagree, ", "))
-	default:
-		return fmt.Sprintf("Confirmed against the device: all %d report is-logical=yes, partition-size=0.", checked)
-	}
 }
 
 func orUnknown(s string) string {
@@ -842,6 +826,52 @@ func sortedDatesDesc(dates map[string][]string) []string {
 // A device the catalog does not carry falls back to the generic Qualcomm driver
 // only when it looks like a Qualcomm target at all; nothing is assumed about a
 // device that reports neither.
+// driverForRecon picks the vendor driver for a recon: catalog match first, else
+// the generic Qualcomm driver when the device shows a Qualcomm identity, else nil.
+func driverForRecon(recon *fastboot.DeviceRecon) vendor.Driver {
+	if dev, _ := fastboot.MatchCatalog(activeCatalog(), recon); dev != nil {
+		if drv, ok := vendor.For(dev.Vendor); ok {
+			return drv
+		}
+	}
+	if recon.ChipID != "" || recon.UID != "" {
+		if drv, ok := vendor.For("qualcomm"); ok {
+			return drv
+		}
+	}
+	return nil
+}
+
+// reconWithProfile runs the neutral getvar all, resolves the device's vendor
+// driver, and installs its fastboot profile. The vendor recon probes are left
+// for the caller to run (RunProbes) so device sections can print in between.
+func reconWithProfile(client *fastboot.Client, serial string) (*fastboot.DeviceRecon, vendor.Driver, error) {
+	recon, err := client.GetVarAll(serial)
+	if err != nil {
+		return nil, nil, err
+	}
+	drv := driverForRecon(recon)
+	client.UseProfile(vendor.FastbootProfile(drv))
+	// Probes are run by the caller (RunProbes) after the neutral getvar sections
+	// have been printed, so recon output streams rather than blocking on the
+	// paced OEM probes. See runFastbootRecon.
+	return recon, drv, nil
+}
+
+// installProfile resolves and installs the vendor fastboot profile for a live
+// device, returning it so a caller can assert a capability (unlock-data,
+// partition hash/list). It is the seam that keeps vendor commands out of the
+// command layer's own logic.
+func installProfile(client *fastboot.Client, serial string) fastboot.Profile {
+	var drv vendor.Driver
+	if recon, err := client.GetVarAll(serial); err == nil {
+		drv = driverForRecon(recon)
+	}
+	p := vendor.FastbootProfile(drv)
+	client.UseProfile(p)
+	return p
+}
+
 func identifyVendor(client *fastboot.Client, serial string) (vendor.Driver, string, error) {
 	recon, err := client.GetVarAll(serial)
 	if err != nil {
@@ -862,48 +892,6 @@ func identifyVendor(client *fastboot.Client, serial string) (vendor.Driver, stri
 		return nil, "", fmt.Errorf("no generic Qualcomm driver registered")
 	}
 	return drv, fmt.Sprintf("uncatalogued %q, JTAG %s", recon.Product, recon.JTAGID), nil
-}
-
-// unlockOutlook says whether the portal is likely to honour this device's token,
-// from the one signal the device and library actually carry: the subsidy lock its
-// CID ships. A channel that installs a subsidy-lock config is a carrier unit, and
-// Motorola's portal declines those. This is an expectation drawn from the CID, not
-// a recorded refusal, and it says so — the token costs nothing to try.
-func unlockOutlook(r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library) string {
-	if r.CarrierID == "" {
-		return ""
-	}
-	slcf := lib.CarrierIDs()[library.NormalizeCID(r.CarrierID)]
-	name := cat.CarrierIDName(r.CarrierID)
-
-	// Motorola's published allow-list decides it; the subsidy lock harvested from
-	// firmware is independent corroboration, worth printing when it agrees and
-	// worth knowing about when it is all we have.
-	because := ""
-	switch {
-	case slcf != "":
-		because = fmt.Sprintf(", and it ships subsidy lock %s (carrier unit)", slcf)
-	case name != "":
-		because = fmt.Sprintf(" (%s)", name)
-	}
-
-	if eligible, known := cat.UnlockEligible(r.CarrierID); known {
-		if eligible {
-			return fmt.Sprintf("eligible: cid %s is on Motorola's unlock allow-list%s", r.CarrierID, because)
-		}
-		return fmt.Sprintf("expect refusal: cid %s is absent from Motorola's unlock allow-list%s", r.CarrierID, because)
-	}
-
-	switch {
-	case slcf != "":
-		return fmt.Sprintf("expect refusal: cid %s ships subsidy lock %s (carrier unit) — untested, try anyway", r.CarrierID, slcf)
-	case strings.Contains(strings.ToLower(name), "subsidy"):
-		return fmt.Sprintf("expect refusal: cid %s is a subsidy channel (%s) — untested, try anyway", r.CarrierID, name)
-	case name != "":
-		return fmt.Sprintf("no subsidy lock recorded for cid %s (%s); eligibility unknown until tried", r.CarrierID, name)
-	default:
-		return fmt.Sprintf("cid %s is uncatalogued; nothing here predicts eligibility", r.CarrierID)
-	}
 }
 
 // edlRouteKnown reports whether this device's vendor driver knows a fastboot
@@ -973,7 +961,12 @@ func newFastbootPartitionsCmd(fastbootBin, serial *string) *cobra.Command {
 				return err
 			}
 
-			parts, unpop, unpopList, err := client.OEMPartitions(targetSerial)
+			prof := installProfile(client, targetSerial)
+			pl, ok := prof.(vendor.PartitionLister)
+			if !ok {
+				return fmt.Errorf("this device's fastboot profile (%s) has no partition listing", prof.Name())
+			}
+			parts, unpop, unpopList, err := pl.OEMPartitions(client, targetSerial)
 			if err != nil {
 				return fmt.Errorf("querying partitions from fastboot: %w\n(Note: requires device supporting 'fastboot oem partition')", err)
 			}

@@ -59,13 +59,13 @@ type DeviceRecon struct {
 	Baseband          string
 	BootloaderVersion string
 	XBLBuild          string
-	HardwareFeatures  *OEMHardwareInfo
-	SecurityVersions  *SecurityVersions
-	CIDProvReq        *CIDProvRequest
-	LivePartitions    []PartitionDetail
-	UnpopulatedSlotB  bool
-	UnpopulatedParts  []string
 	PartitionSizes    map[string]uint64
+	// Extras holds vendor-probe results, keyed by probe name. Values are opaque to
+	// the neutral core; a vendor's own code (recon probe, report renderer) stores
+	// and type-asserts them. This is how vendor-specific recon data (Motorola's
+	// utags, CID provisioning request, security versions, live partition table)
+	// rides on the neutral DeviceRecon without the core depending on vendor types.
+	Extras map[string]any
 	// PartitionFacts holds what the bootloader itself says about the partitions
 	// whose classification was inferred rather than read — the dynamic ones and
 	// the empty ones. Absent for partitions that were never in doubt.
@@ -115,79 +115,6 @@ func parseSize(val string) uint64 {
 	return n
 }
 
-// OEMHardwareInfo is the parsed output of `oem hw`. Despite the name, `oem hw`
-// is Motorola's utags editor (the utags/utagsBackup partition), not a hardware
-// query: bare or `oem hw <name>` it reads, but `oem hw <name> <value>`, `+`, `-`,
-// `clear` and `lock` all WRITE. Only ever call it with no arguments — the sensor
-// bits and UTags below are read from that listing.
-type OEMHardwareInfo struct {
-	DualSIM   bool
-	ECompass  bool
-	ESIM      bool
-	FPS       bool // Fingerprint sensor
-	NFC       bool
-	RadioType string
-	// UTags is every utag the SKU declares (from `.features`), each with the value
-	// this unit carries and the range of values the family ships. This is the
-	// configuration matrix reported by the device itself — the same variant space
-	// the catalog otherwise infers from firmware filenames.
-	UTags []UTag
-}
-
-// UTag is one Motorola utag from `oem hw`: its value on this unit, the options the
-// family offers (`.range`), and, when the value is autodetected from the fused
-// HW_ID rather than chosen, the rule that derives it (`.auto`, e.g.
-// "key=hwid;index=2;map=1:ATT,2:RET").
-type UTag struct {
-	Name    string
-	Value   string
-	Range   []string // sibling configurations, e.g. ["4GB","6GB"]
-	HWIDMap string   // the `.auto` derivation rule, when it keys off hwid
-}
-
-// SecurityVersions contains anti-rollback and security version indices from 'oem read_sv'.
-type SecurityVersions struct {
-	VbmetaRIL int
-	RIL0      int
-	RIL2      int
-	RawLines  []string
-}
-
-// CIDProvRequest holds the output of `fastboot oem cid_prov_req`, Motorola's
-// after-sales command that emits the hardware bindings its PKI server needs to
-// mint a signed cid_prov_data payload. It is a read-only diagnostic, worth
-// capturing in recon because it exposes the SoC id even on a device whose cid
-// partition is corrupt (CarrierID 0xDEAD), which blocks AP fastboot flashing.
-//
-// The real output is hex blocks, not key/value. Field offsets below are
-// reverse-engineered from a fogona (SM_DIVAR) unit and gated on the 0x00F0
-// structure marker, so an ABL with a different layout parses as raw only:
-//
-//	0x00  u16 BE format version (0x0003 = secure production)
-//	0x42  16-byte device/key digest
-//	0x54  0x00F0 structure marker (the spec's Motorola CID magic)
-//	0x60  4-byte SoC / JTAG id, in the clear (e.g. 001B80E1)
-//	tail  0xFF fill — the empty signature region (this is the request, unsigned)
-type CIDProvRequest struct {
-	Supported     bool   // the bootloader accepted the command (vs "unknown command")
-	Raw           []byte // the concatenated hex-block payload, when the output is hex
-	FormatVersion int    // u16 BE at 0x00; 0 if the structure was not recognized
-	SoCID         string // JTAG/SoC id at 0x60 (uppercase hex), when recognized
-	Digest        string // device/key digest at 0x42 (hex), when recognized
-	// Fields holds "(bootloader) key: value" lines for an ABL that answers that
-	// way instead of hex; RawLines is every device line, for --raw.
-	Fields   map[string]string
-	RawLines []string
-}
-
-// PartitionDetail describes a partition entry from 'oem partition'.
-type PartitionDetail struct {
-	Name     string
-	OffsetKB uint64
-	SizeKB   uint64
-	IsSuper  bool // true if dynamic partition inside 'super'
-}
-
 // ParseGetVarOutput parses the stdout/stderr lines of 'fastboot getvar all'.
 // Handles standard "(bootloader) key: value", "key: value", and multiline array entries.
 func ParseGetVarOutput(text string) *DeviceRecon {
@@ -196,6 +123,7 @@ func ParseGetVarOutput(text string) *DeviceRecon {
 		PartitionSizes:  make(map[string]uint64),
 		ComponentBuilds: make(map[string]string),
 		RawVars:         make(map[string]string),
+		Extras:          make(map[string]any),
 	}
 
 	lines := strings.Split(text, "\n")
@@ -382,6 +310,22 @@ func ParseGetVarOutput(text string) *DeviceRecon {
 	}
 
 	return recon
+}
+
+// Set stores a vendor-probe result under key. Safe on a zero-value recon.
+func (r *DeviceRecon) Set(key string, val any) {
+	if r.Extras == nil {
+		r.Extras = make(map[string]any)
+	}
+	r.Extras[key] = val
+}
+
+// Get returns the vendor-probe result stored under key, or nil.
+func (r *DeviceRecon) Get(key string) any {
+	if r.Extras == nil {
+		return nil
+	}
+	return r.Extras[key]
 }
 
 func (r *DeviceRecon) getOrCreateSlot(slot string) *SlotInfo {
@@ -575,219 +519,7 @@ func matchesStockBuild(buildName string, recon *DeviceRecon) bool {
 	return matchedParts == len(parts) && matchedParts > 0
 }
 
-// ParseOEMHwOutput parses the output of 'fastboot oem hw'. Beyond the sensor
-// booleans it captures each feature's value, the range of values the family
-// ships, and the hwid-derivation rule when the value is fused rather than chosen.
-func ParseOEMHwOutput(text string) *OEMHardwareInfo {
-	hw := &OEMHardwareInfo{}
-	feats := map[string]*UTag{} // by feature name
-	var order []string          // from the `.features` list
-	hasAny := false
-
-	get := func(name string) *UTag {
-		f, ok := feats[name]
-		if !ok {
-			f = &UTag{Name: name}
-			feats[name] = f
-		}
-		return f
-	}
-
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "(bootloader)"))
-		if trimmed == "" || strings.HasPrefix(trimmed, "OKAY") || strings.HasPrefix(trimmed, "Finished") {
-			continue
-		}
-		// The `.features` list wraps across lines; a continuation has no colon and
-		// starts with the comma that joined it to the previous line.
-		if strings.HasPrefix(trimmed, ",") {
-			order = append(order, splitCSV(trimmed)...)
-			continue
-		}
-		parts := strings.SplitN(trimmed, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		keyLower := strings.ToLower(key)
-
-		switch {
-		case keyLower == ".features":
-			order = append(order, splitCSV(val)...)
-			continue
-		case strings.HasPrefix(keyLower, ".") || keyLower == "":
-			continue // .attributes, .version
-		}
-
-		// A feature line is either "<feat>" (the value) or "<feat>/.<attr>".
-		name, attr, hasAttr := strings.Cut(keyLower, "/")
-		switch {
-		case !hasAttr:
-			get(name).Value = val
-			hasAny = true
-		case attr == ".range":
-			get(name).Range = splitCSV(val)
-		case attr == ".auto" && strings.Contains(val, "hwid"):
-			// The fused-HW_ID derivation, e.g. "key=hwid;index=2;map=1:ATT,2:RET".
-			get(name).HWIDMap = val
-		}
-	}
-
-	if !hasAny {
-		return nil
-	}
-
-	// Mirror the well-known sensor bits from the collected values.
-	valOf := func(n string) string {
-		if f, ok := feats[n]; ok {
-			return f.Value
-		}
-		return ""
-	}
-	hw.DualSIM = strings.EqualFold(valOf("dualsim"), "true")
-	hw.ECompass = strings.EqualFold(valOf("ecompass"), "true")
-	hw.ESIM = strings.EqualFold(valOf("esim"), "true")
-	hw.FPS = strings.EqualFold(valOf("fps"), "true")
-	hw.NFC = strings.EqualFold(valOf("nfc"), "true")
-	hw.RadioType = valOf("radio")
-
-	// Emit features in the device's declared order, appending any it valued but
-	// left out of `.features`.
-	seen := map[string]bool{}
-	for _, n := range order {
-		if f, ok := feats[n]; ok && !seen[n] {
-			hw.UTags = append(hw.UTags, *f)
-			seen[n] = true
-		}
-	}
-	for _, n := range sortedKeysHW(feats) {
-		if !seen[n] {
-			hw.UTags = append(hw.UTags, *feats[n])
-		}
-	}
-	return hw
-}
-
-// splitCSV splits a comma list, trimming blanks — the empty tail of a wrapped
-// list yields nothing rather than an empty entry.
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func sortedKeysHW(m map[string]*UTag) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// ParseOEMReadSVOutput parses the security versions / anti-rollback registers from 'fastboot oem read_sv'.
-func ParseOEMReadSVOutput(text string) *SecurityVersions {
-	sv := &SecurityVersions{}
-	hasAny := false
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		trimmed = strings.TrimPrefix(trimmed, "(bootloader)")
-		trimmed = strings.TrimSpace(trimmed)
-		if trimmed == "" || strings.HasPrefix(trimmed, "OKAY") || strings.HasPrefix(trimmed, "Finished") {
-			continue
-		}
-		sv.RawLines = append(sv.RawLines, trimmed)
-		if strings.Contains(trimmed, "RIL #0 =") {
-			parts := strings.Split(trimmed, "=")
-			if len(parts) == 2 {
-				if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
-					sv.RIL0 = n
-					hasAny = true
-				}
-			}
-		} else if strings.Contains(trimmed, "RIL #2 =") {
-			parts := strings.Split(trimmed, "=")
-			if len(parts) == 2 {
-				if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
-					sv.RIL2 = n
-					hasAny = true
-				}
-			}
-		} else if strings.Contains(trimmed, "vbmeta RIL is") {
-			parts := strings.Fields(trimmed)
-			if len(parts) > 0 {
-				lastToken := strings.TrimSuffix(parts[len(parts)-1], ".")
-				if n, err := strconv.Atoi(lastToken); err == nil {
-					sv.VbmetaRIL = n
-					hasAny = true
-				}
-			}
-		}
-	}
-	if !hasAny && len(sv.RawLines) == 0 {
-		return nil
-	}
-	return sv
-}
-
-// ParseOEMPartitionOutput parses the partition table and dynamic super partition layout from 'fastboot oem partition'.
-func ParseOEMPartitionOutput(text string) ([]PartitionDetail, bool, []string) {
-	var partitions []PartitionDetail
-	var unpopulated []string
-	var superOffset uint64
-	hasSuper := false
-
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		trimmed = strings.TrimPrefix(trimmed, "(bootloader)")
-		trimmed = strings.TrimSpace(trimmed)
-		if trimmed == "" || strings.HasPrefix(trimmed, "OKAY") || strings.HasPrefix(trimmed, "Finished") {
-			continue
-		}
-
-		idxColon := strings.Index(trimmed, ":")
-		if idxColon == -1 {
-			continue
-		}
-		name := strings.TrimSpace(trimmed[:idxColon])
-		rest := trimmed[idxColon+1:]
-
-		var offsetKB, sizeKB uint64
-		for _, token := range strings.Split(rest, ",") {
-			token = strings.TrimSpace(token)
-			if strings.HasPrefix(token, "offset=") {
-				valStr := strings.TrimSuffix(strings.TrimPrefix(token, "offset="), "KB")
-				offsetKB, _ = strconv.ParseUint(valStr, 10, 64)
-			} else if strings.HasPrefix(token, "size=") {
-				valStr := strings.TrimSuffix(strings.TrimPrefix(token, "size="), "KB")
-				sizeKB, _ = strconv.ParseUint(valStr, 10, 64)
-			}
-		}
-
-		if name == "super" {
-			superOffset = offsetKB
-			hasSuper = true
-		}
-
-		isDynamic := hasSuper && offsetKB == superOffset && name != "super"
-
-		partitions = append(partitions, PartitionDetail{
-			Name:     name,
-			OffsetKB: offsetKB,
-			SizeKB:   sizeKB,
-			IsSuper:  isDynamic,
-		})
-
-		if isDynamic && strings.HasSuffix(name, "_b") && sizeKB == 0 {
-			unpopulated = append(unpopulated, name)
-		}
-	}
-
-	return partitions, len(unpopulated) > 0, unpopulated
-}
+// The Motorola OEM parsers (oem hw / read_sv / cid_prov_req / partition) and
+// their structs now live with the Motorola profile in internal/vendor; the
+// neutral recon keeps only vendor-agnostic getvar parsing and catalog/library
+// matching.

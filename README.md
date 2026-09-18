@@ -206,8 +206,9 @@ per-device identifiers for sharing.
 template (`00f0 0000 …002c`, a u16 channel at `0x2a`) — the stock/flashfile form
 `edl setcid` writes. Version **2** is a *signed* structure seen on
 secure-production units (a live fogona): `00f0 0002 …0070` carrying the chip
-serial, SoC id, CID, device serial and product name, then a ~176-byte opaque
-signature/cert block (**not** a recomputable hash — it needs Motorola's PKI).
+serial, SoC id, CID, device serial and product name, then an RSA signature and an
+embedded X.509 chain (leaf `LEN01MPKI01` → `PKIS SubCA` → the ABL's `PKIS Root`),
+~2.4 KB on a real dump (**not** a recomputable hash — it needs Motorola's PKI).
 
 **`oem cid_prov_req`** is the after-sales provisioning *request* recon decodes:
 the SoC id (in the clear, cross-checked to `JTAG_ID`), the format version, and a
