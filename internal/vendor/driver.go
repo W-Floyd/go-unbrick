@@ -13,6 +13,7 @@ import (
 
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/unlock"
 )
 
 // ErrUnsupported marks a vendor operation that is recognized but not implemented.
@@ -81,6 +82,47 @@ func StockBuildID(d Driver, t *blankflash.Target) string {
 		return ""
 	}
 	return si.StockBuildID(t)
+}
+
+// UnlockSource is an OEM bootloader-unlock input: the get_unlock_data challenge
+// string, a raw unlock-record blob (e.g. dumped from the cid partition), or both.
+type UnlockSource struct {
+	Text string // vendor challenge / wire string
+	Blob []byte // raw unlock record
+}
+
+// UnlockVerifier is an optional Driver capability: parsing this OEM's unlock
+// record into an unlock.Record. Each OEM stores and checks the bootloader-unlock
+// code differently (Motorola's DBVAL is a salted double-hash in the cid
+// partition; another OEM may use an entirely different construction), so it lives
+// behind the vendor seam. This single parser is all a vendor implements — the
+// returned Record carries its own verify closure. It only *verifies* a
+// vendor-issued code, never derives one.
+type UnlockVerifier interface {
+	ParseUnlock(src UnlockSource) (*unlock.Record, error)
+}
+
+// ParseUnlock tries each registered driver that verifies unlock codes and returns
+// the first Record one recognizes, or ErrUnsupported if no vendor claims it.
+func ParseUnlock(src UnlockSource) (*unlock.Record, error) {
+	var firstErr error
+	for _, d := range registry {
+		uv, ok := d.(UnlockVerifier)
+		if !ok {
+			continue
+		}
+		c, err := uv.ParseUnlock(src)
+		if err == nil {
+			return c, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, ErrUnsupported
 }
 
 // EDLEntry is an optional Driver capability: the commands that put this OEM's
