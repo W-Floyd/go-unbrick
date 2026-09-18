@@ -94,6 +94,9 @@ DEFAULT_SITES = [
     {"wp": "https://bypassfrpfiles.com", "category": "qcom-firehose"},
     # WordPress search: the on-site equivalent of `site:host firehose`.
     {"wp": "https://romprovider.com", "search": "firehose"},
+    # AndroidFileHost search: paginate results, resolve each fid via its mirrors API.
+    {"afh": "firehose"},
+    {"afh": "blankflash"},
 ]
 
 # Cool-off so repeated harvests don't hammer a scraped site: reuse the cached link
@@ -101,6 +104,7 @@ DEFAULT_SITES = [
 SCRAPE_TTL = 24 * 3600
 SCRAPE_DELAY = 1.0
 SCRAPE_UA = "Mozilla/5.0"
+AFH_MAX_PAGES = 40  # AndroidFileHost search paginates ~15/page; bound the walk
 
 TEMBLAST_URL = "https://www.temblast.com/ref/loaders.htm"
 
@@ -435,6 +439,10 @@ def resolve_archive_url(spec):
     if m:
         # Mega is end-to-end encrypted; only mega-get (MEGAcmd) can fetch it.
         return spec, f"mega_{m.group(1)}"
+    m = re.search(r"androidfilehost\.com/\?fid=([0-9]+)", spec)
+    if m:
+        # AFH gates downloads behind a per-file mirrors API; resolve at fetch time.
+        return spec, f"afh_{m.group(1)}"
     seg = [s for s in spec.rstrip("/").split("/") if s]
     stem = seg[-1] if seg else "download"
     return spec, re.sub(r"[^A-Za-z0-9._-]", "_", stem)
@@ -448,6 +456,23 @@ def mediafire_direct(page_url):
         return None
     m = re.search(rb'https://download[0-9]+\.mediafire\.com/[^"\'\s]+', res.stdout)
     return m.group(0).decode() if m else None
+
+
+def afh_direct(fid):
+    """Resolve an AndroidFileHost fid to a direct mirror URL via its mirrors API (the
+    URL carries an expiring token, so it must be fetched fresh at download time)."""
+    res = subprocess.run(
+        ["curl", "-s", "--compressed", "--max-time", "45", "-A", SCRAPE_UA,
+         "-H", "X-MOD-SBB-CTYPE: xhr", "-H", "X-Requested-With: XMLHttpRequest",
+         "-H", f"Referer: https://androidfilehost.com/?fid={fid}",
+         "--data", f"submit=true&action=getdownloadmirrors&fid={fid}",
+         "https://androidfilehost.com/libs/otf/mirrors.otf.php"],
+        capture_output=True, text=True)
+    try:
+        mirrors = json.loads(res.stdout).get("MIRRORS", [])
+        return mirrors[0]["url"] if mirrors else None
+    except Exception:
+        return None
 
 
 def mega_download(url, local):
@@ -482,6 +507,11 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
                 archives.mkdir(parents=True, exist_ok=True)
                 if stem.startswith("mega_"):
                     if not mega_download(url, local):
+                        return None
+                elif stem.startswith("afh_"):
+                    url = afh_direct(stem[len("afh_"):])
+                    if not url or subprocess.run(["curl", "-fsSL", "-g", url, "-o", str(local)]).returncode != 0:
+                        print(f"  [error] AFH download failed for {spec}", file=sys.stderr)
                         return None
                 else:
                     if stem.startswith("mediafire_"):
@@ -748,15 +778,36 @@ def _scrape_wp_search(site):
     return links
 
 
+def _scrape_afh(site):
+    """AndroidFileHost search: paginate results for a query, collecting file ids as
+    ?fid= URLs (resolved to a mirror at download time)."""
+    query = site["afh"]
+    fids, page = [], 1
+    while page <= AFH_MAX_PAGES:
+        html = _curl_text(f"https://androidfilehost.com/?w=search&s={urllib.parse.quote(query)}"
+                          f"&type=files&page={page}")
+        found = re.findall(r"fid=([0-9]{15,})", html or "")
+        if not found:
+            break
+        fids.extend(found)
+        page += 1
+        time.sleep(SCRAPE_DELAY)
+    urls = sorted({f"https://androidfilehost.com/?fid={f}" for f in fids})
+    print(f"  [scrape] androidfilehost [?{query}]: {len(urls)} file(s)")
+    return urls
+
+
 def scrape_site(site, cache_dir, dry_run=False, refresh=False):
-    """Collect off-site archive URLs from a site: an HTML index, a WordPress category, or a
-    WordPress search (the on-site `site:host <query>`).
+    """Collect off-site archive URLs from a site: an HTML index, a WordPress category, a
+    WordPress search (the on-site `site:host <query>`), or an AndroidFileHost search.
 
     The link list is cached per site for SCRAPE_TTL so repeated harvests don't hammer it:
     the slow, rude part is the per-post/per-page fan-out, not the separately cached
     downloads.
     """
-    if "search" in site:
+    if "afh" in site:
+        key = f"androidfilehost#{site['afh']}"
+    elif "search" in site:
         key = f"{site['wp']}#search={site['search']}"
     elif "wp" in site:
         key = f"{site['wp']}#cat={site['category']}"
@@ -777,7 +828,9 @@ def scrape_site(site, cache_dir, dry_run=False, refresh=False):
     if dry_run:
         return []
 
-    if "search" in site:
+    if "afh" in site:
+        collector = _scrape_afh
+    elif "search" in site:
         collector = _scrape_wp_search
     elif "wp" in site:
         collector = _scrape_wp_category
