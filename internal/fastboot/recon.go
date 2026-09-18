@@ -61,6 +61,7 @@ type DeviceRecon struct {
 	XBLBuild          string
 	HardwareFeatures  *OEMHardwareInfo
 	SecurityVersions  *SecurityVersions
+	CIDProvReq        *CIDProvRequest
 	LivePartitions    []PartitionDetail
 	UnpopulatedSlotB  bool
 	UnpopulatedParts  []string
@@ -149,6 +150,18 @@ type SecurityVersions struct {
 	VbmetaRIL int
 	RIL0      int
 	RIL2      int
+	RawLines  []string
+}
+
+// CIDProvRequest holds the output of `fastboot oem cid_prov_req`, Motorola's
+// after-sales command that emits the hardware bindings (SoC/UFS/eMMC IDs, RPMB
+// state) its PKI server needs to mint a signed cid_prov_data payload. It is a
+// read-only diagnostic, and the reason it is worth capturing in recon: it is the
+// only way to read those identifiers off a device whose cid partition is corrupt,
+// which leaves CarrierID reading 0xDEAD (0xFFFF) and blocks AP fastboot flashing.
+type CIDProvRequest struct {
+	Supported bool              // the bootloader accepted the command (vs "unknown command")
+	Fields    map[string]string // parsed "(bootloader) key: value" lines (CPU/UFS/RPMB ids)
 	RawLines  []string
 }
 
@@ -396,7 +409,7 @@ type LibraryMatchResult struct {
 	// different date, or carries a different AP build. The boot chain is what a
 	// blankflash replaces, so this build is the right donor even though the
 	// installed firmware as a whole is not the packaged one.
-	BootChainMatch string
+	BootChainMatch  string
 	CandidateLoader string
 	LoaderCount     int
 	Compatible      bool
@@ -548,7 +561,7 @@ func matchesStockBuild(buildName string, recon *DeviceRecon) bool {
 func ParseOEMHwOutput(text string) *OEMHardwareInfo {
 	hw := &OEMHardwareInfo{}
 	feats := map[string]*UTag{} // by feature name
-	var order []string               // from the `.features` list
+	var order []string          // from the `.features` list
 	hasAny := false
 
 	get := func(name string) *UTag {

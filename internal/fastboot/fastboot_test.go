@@ -526,6 +526,32 @@ OKAY [  0.007s]
 	}
 }
 
+func TestParseOEMCIDProvReq(t *testing.T) {
+	raw := `
+(bootloader) cid_prov_req: CPU_ID: 000460E100C0000A
+(bootloader) UFS_ID: 4D543132384742
+(bootloader) RPMB: provisioned
+OKAY [  0.011s]
+`
+	cp := ParseOEMCIDProvReqOutput(raw)
+	if !cp.Supported {
+		t.Fatal("expected Supported for a bootloader that answered")
+	}
+	if cp.Fields["UFS_ID"] != "4D543132384742" || cp.Fields["RPMB"] != "provisioned" {
+		t.Errorf("fields mismatch: %+v", cp.Fields)
+	}
+	if len(cp.RawLines) != 3 {
+		t.Errorf("expected 3 raw lines, got %d", len(cp.RawLines))
+	}
+}
+
+func TestParseOEMCIDProvReqUnsupported(t *testing.T) {
+	raw := "FAILED (remote: unknown command)\n"
+	if cp := ParseOEMCIDProvReqOutput(raw); cp.Supported {
+		t.Errorf("expected not Supported for a rejected command, got %+v", cp)
+	}
+}
+
 func TestParseOEMPartition(t *testing.T) {
 	raw := `
 (bootloader) hw: offset=128KB, size=8192KB
@@ -552,5 +578,3 @@ OKAY [  0.008s]
 		t.Errorf("expected product_a to be dynamic in super: %+v", parts[2])
 	}
 }
-
-

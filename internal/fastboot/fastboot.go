@@ -151,6 +151,14 @@ func (c *Client) GetVarAll(serial string) (*DeviceRecon, error) {
 		recon.SecurityVersions = ParseOEMReadSVOutput(svOut)
 	}
 
+	// Motorola CID provisioning request: emits the SoC/UFS/RPMB bindings, and is the only
+	// way to read them off a device whose corrupt cid partition reads CarrierID 0xDEAD.
+	if cpOut, err := c.run(3*time.Second, appendSerial(targetSerial, "oem", "cid_prov_req")...); err == nil {
+		if cp := ParseOEMCIDProvReqOutput(cpOut); cp.Supported {
+			recon.CIDProvReq = cp
+		}
+	}
+
 	// Safely probe OEM partition layout and detect dynamic slot allocation if supported
 	if partOut, err := c.run(3*time.Second, appendSerial(targetSerial, "oem", "partition")...); err == nil {
 		parts, unpop, unpopList := ParseOEMPartitionOutput(partOut)
@@ -351,6 +359,50 @@ func (c *Client) OEMReadSV(serial string) (*SecurityVersions, error) {
 	return ParseOEMReadSVOutput(out), nil
 }
 
+// OEMCIDProvReq issues Motorola's CID provisioning request ('fastboot oem cid_prov_req'),
+// which emits the hardware bindings (SoC/UFS/eMMC ids, RPMB state) needed to mint a signed
+// cid_prov_data payload. Read-only; used in recon to read those ids off a device whose cid
+// partition is corrupt (CarrierID 0xDEAD).
+func (c *Client) OEMCIDProvReq(serial string) (*CIDProvRequest, error) {
+	out, err := c.run(5*time.Second, appendSerial(serial, "oem", "cid_prov_req")...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseOEMCIDProvReqOutput(out), nil
+}
+
+// ParseOEMCIDProvReqOutput parses the bootloader lines of an `oem cid_prov_req` dump into
+// key/value fields (plus the raw lines). Supported is false when the bootloader rejects the
+// command, so recon can tell "not a Motorola after-sales ABL" from an empty response.
+func ParseOEMCIDProvReqOutput(text string) *CIDProvRequest {
+	r := &CIDProvRequest{Fields: map[string]string{}}
+	for _, line := range strings.Split(text, "\n") {
+		hadPrefix := strings.Contains(line, "(bootloader)")
+		l := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "(bootloader)"))
+		if l == "" {
+			continue
+		}
+		low := strings.ToLower(l)
+		// fastboot's own status lines aren't device output.
+		if !hadPrefix && (strings.HasPrefix(low, "okay") || strings.HasPrefix(low, "finished") ||
+			strings.HasPrefix(low, "failed")) {
+			continue
+		}
+		if strings.Contains(low, "unknown command") || strings.Contains(low, "not a supported") ||
+			strings.Contains(low, "not supported") {
+			continue
+		}
+		r.Supported = true
+		r.RawLines = append(r.RawLines, l)
+		if k, v, ok := strings.Cut(l, ":"); ok {
+			if k, v = strings.TrimSpace(k), strings.TrimSpace(v); k != "" && v != "" {
+				r.Fields[k] = v
+			}
+		}
+	}
+	return r
+}
+
 // OEMPartitions queries live partition geometry from UFS/eMMC ('fastboot oem partition').
 func (c *Client) OEMPartitions(serial string) ([]PartitionDetail, bool, []string, error) {
 	out, err := c.run(5*time.Second, appendSerial(serial, "oem", "partition")...)
@@ -467,4 +519,3 @@ func (c *Client) GetUnlockData(serial string) (string, error) {
 	}
 	return strings.Join(tokenParts, ""), nil
 }
-

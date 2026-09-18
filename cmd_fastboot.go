@@ -189,13 +189,29 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 	}
 	printField("Lock Status", lockStr)
 	cidDesc := r.CarrierID
-	if name := cat.CarrierIDName(r.CarrierID); name != "" {
+	if norm := library.NormalizeCID(r.CarrierID); norm == "0xDEAD" || norm == "0xFFFF" {
+		// A corrupt/tampered cid partition; ABL sets 0xDEAD and blocks AP fastboot.
+		// Recoverable via `fastboot oem cid_prov_req` -> signed cid_prov_data.
+		cidDesc = fmt.Sprintf("%s — CORRUPT (0xDEAD): cid partition tampered, AP flashing blocked", cidDesc)
+	} else if name := cat.CarrierIDName(r.CarrierID); name != "" {
 		cidDesc = fmt.Sprintf("%s — %s", cidDesc, name)
 	} else if slcf := lib.CarrierIDs()[library.NormalizeCID(r.CarrierID)]; slcf != "" {
 		// Uncatalogued CID, but a stored package declared it: name it from that.
 		cidDesc = fmt.Sprintf("%s — subsidy lock %s (from stored build)", cidDesc, slcf)
 	}
 	printField("Carrier ID (CID)", cidDesc)
+	if r.CIDProvReq != nil {
+		if len(r.CIDProvReq.Fields) > 0 {
+			kv := make([]string, 0, len(r.CIDProvReq.Fields))
+			for k, v := range r.CIDProvReq.Fields {
+				kv = append(kv, k+"="+v)
+			}
+			sort.Strings(kv)
+			printField("CID Prov Req (moto)", strings.Join(kv, ", "))
+		} else {
+			printField("CID Prov Req (moto)", fmt.Sprintf("available (%d line(s))", len(r.CIDProvReq.RawLines)))
+		}
+	}
 	printField("Channel ID", r.ChannelID)
 	printField("FRP State", r.FRPState)
 	printField("Verity State", r.VerityState)
