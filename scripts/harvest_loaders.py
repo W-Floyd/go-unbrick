@@ -358,6 +358,26 @@ def expand_singleimages(root):
     return written
 
 
+# Firehose protocol vocabulary a programmer embeds as plaintext; a boot-chain image
+# (xbl/abl/tz/aop/gpt) carries none. Distinguishes a device-named loader (ZUK.mbn,
+# Black-Shark.elf) from the boot images shipped alongside it in a firmware dump.
+FIREHOSE_MARKERS = (b"MaxPayloadSizeToTarget", b"NUM_DISK_SECTORS", b"rawmode",
+                    b"<configure", b"<program ", b"firehose", b"Firehose")
+
+
+def is_firehose_loader(path, blob=None):
+    """A programmer (firehose or older streaming), not a boot-chain image. Loader-named
+    files (prog_firehose/programmer/MPRG/NPRG/fhprg...) pass by name; a device-named
+    firehose loader passes by carrying the firehose XML vocabulary."""
+    if LOADER_NAME.search(path.name):
+        return True
+    try:
+        data = blob if blob is not None else path.read_bytes()
+    except OSError:
+        return False
+    return any(m in data for m in FIREHOSE_MARKERS)
+
+
 def repair_magic(head):
     """Sellers neuter loaders by flipping one byte of the magic: \\x7fELE for \\x7fELF,
     d1dc4b87 for the MBN codeword. Everything after the magic still validates, so the file
@@ -1019,7 +1039,7 @@ def main():
     seen_md5 = {}
     records = []
     scanned = skipped_known = skipped_dup = skipped_opaque = repaired = 0
-    skipped_bad = annotated = 0
+    skipped_bad = annotated = skipped_bootimg = 0
 
     for repo, root, site, url_for in sources:
         if not root.exists():
@@ -1049,6 +1069,13 @@ def main():
             ltype = classify_image(path)
             if args.skip_opaque and ltype == "OPAQUE":
                 skipped_opaque += 1
+                continue
+            # A signed image is only a loader if it's a programmer, not a boot-chain
+            # image (xbl/abl/tz/aop/gpt/km...). Per-device firmware dumps ship the whole
+            # chain; without this every one reads as a loader (Alephgsm/SAM alone had
+            # 1638 boot images vs 95 real loaders).
+            if ltype in ("ELF32", "ELF64", "MBN") and not is_firehose_loader(path):
+                skipped_bootimg += 1
                 continue
             seen_md5[md5] = path
 
@@ -1114,7 +1141,8 @@ def main():
     for r in records:
         by_type[r["type"]] += 1
     print(f"\nScanned {scanned} candidate file(s) across {len(sources)} source(s).")
-    print(f"  {annotated} carry a Temblast signer, {skipped_bad} dropped as known-bad.")
+    print(f"  {annotated} carry a Temblast signer, {skipped_bad} dropped as known-bad, "
+          f"{skipped_bootimg} boot-chain images (not loaders) skipped.")
     print(f"  {skipped_known} skipped as already catalogued, {skipped_dup} intra-repo duplicates"
           + (f", {skipped_opaque} opaque blobs." if args.skip_opaque else "."))
     if repaired:
