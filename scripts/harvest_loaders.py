@@ -106,6 +106,11 @@ SCRAPE_DELAY = 1.0
 SCRAPE_UA = "Mozilla/5.0"
 AFH_MAX_PAGES = 40  # AndroidFileHost search paginates ~15/page; bound the walk
 
+# A loader or blankflash bundle is well under this (the largest legit dump, romprovider.com.rar,
+# is 70 MB). Some "firehose" search hits are full firmware ROMs (10 GB+); cap downloads so one
+# stray link can't fill the disk.
+MAX_ARCHIVE_BYTES = 300 * 1024 * 1024
+
 TEMBLAST_URL = "https://www.temblast.com/ref/loaders.htm"
 
 # Expanded at runtime so new vendor repos are picked up without editing this list.
@@ -495,6 +500,16 @@ def mega_download(url, local):
     return True
 
 
+def _curl_download(url, local):
+    """Download url to local, following redirects, capped at MAX_ARCHIVE_BYTES so a stray
+    multi-GB firmware link can't fill the disk. Cleans up the partial file on failure."""
+    ok = subprocess.run(["curl", "-fsSL", "-g", "--max-filesize", str(MAX_ARCHIVE_BYTES),
+                         url, "-o", str(local)]).returncode == 0
+    if not ok:
+        Path(local).unlink(missing_ok=True)
+    return ok
+
+
 def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
     """Download (if a URL) and extract a loader archive; returns its extraction root."""
     archives = cache_dir / "archives"
@@ -510,7 +525,7 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
                         return None
                 elif stem.startswith("afh_"):
                     url = afh_direct(stem[len("afh_"):])
-                    if not url or subprocess.run(["curl", "-fsSL", "-g", url, "-o", str(local)]).returncode != 0:
+                    if not url or not _curl_download(url, local):
                         print(f"  [error] AFH download failed for {spec}", file=sys.stderr)
                         return None
                 else:
@@ -519,10 +534,9 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
                         if not url:
                             print(f"  [error] could not resolve MediaFire link {spec}", file=sys.stderr)
                             return None
-                    # Follow redirects (disroot 303s to DAV, Drive to usercontent); keep our
-                    # own stable cache name rather than the server's.
-                    if subprocess.run(["curl", "-fsSL", "-g", url, "-o", str(local)]).returncode != 0:
-                        print(f"  [error] failed to download {spec}", file=sys.stderr)
+                    if not _curl_download(url, local):
+                        print(f"  [error] failed to download {spec} (or exceeds "
+                              f"{MAX_ARCHIVE_BYTES // (1024*1024)}MB cap)", file=sys.stderr)
                         return None
         else:
             print(f"  [cache] {spec}")
@@ -681,6 +695,10 @@ def fetch_page(url, cache_dir, dry_run=False, refresh=False):
     return root
 
 
+# A firehose search on a firmware site also returns full stock-ROM posts (multi-GB, not
+# loaders). Their titles say so; skip them.
+NON_LOADER_POST = re.compile(r"stock rom|flash file|firmware|full rom", re.IGNORECASE)
+
 # Off-site file hosts a device page links its download to.
 _HOST_LINK = re.compile(
     r"https://drive\.google\.com/file/d/[A-Za-z0-9_-]+"
@@ -764,17 +782,25 @@ def _scrape_wp_search(site):
             break
         page += 1
         time.sleep(SCRAPE_DELAY)
-    links = []
+    links, skipped = [], 0
     for i in range(0, len(ids), 100):
         batch = ",".join(ids[i:i + 100])
-        body = _curl_text(f"{base}/wp-json/wp/v2/posts?include={batch}&per_page=100&_fields=content")
+        body = _curl_text(f"{base}/wp-json/wp/v2/posts?include={batch}&per_page=100&_fields=title,content")
         try:
-            for post in json.loads(body):
-                links.extend(_HOST_LINK.findall(post.get("content", {}).get("rendered", "")))
+            posts = json.loads(body)
         except Exception:
-            pass
+            continue
+        for post in posts:
+            title = post.get("title", {}).get("rendered", "")
+            # A firehose search also matches stock-firmware posts, whose link is a
+            # multi-GB ROM, not a loader. Keep loader posts, drop firmware.
+            if NON_LOADER_POST.search(title):
+                skipped += 1
+                continue
+            links.extend(_HOST_LINK.findall(post.get("content", {}).get("rendered", "")))
         time.sleep(SCRAPE_DELAY)
-    print(f"  [scrape] {base} [?{query}]: {len(ids)} post(s) -> {len(set(links))} link(s)")
+    print(f"  [scrape] {base} [?{query}]: {len(ids)} post(s), {skipped} firmware skipped "
+          f"-> {len(set(links))} link(s)")
     return links
 
 
