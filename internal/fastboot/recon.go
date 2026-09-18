@@ -201,7 +201,12 @@ func ParseGetVarOutput(text string) *DeviceRecon {
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "all:") || strings.HasPrefix(trimmed, "finished.") {
+		// Skip fastboot's own status lines. "Finished." is capitalised in real
+		// output, so match case-insensitively (a lowercase-only check let
+		// "Finished. Total time: 0.065s" through as a bogus getvar variable).
+		low := strings.ToLower(trimmed)
+		if trimmed == "" || strings.HasPrefix(low, "all:") || strings.HasPrefix(low, "finished") ||
+			strings.HasPrefix(low, "okay") || strings.HasPrefix(low, "failed") {
 			continue
 		}
 
