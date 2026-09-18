@@ -251,13 +251,17 @@ func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
 		// Gather and print in two passes so output streams: the neutral getvar
 		// sections appear immediately, the progress bar covers the paced OEM
 		// probes, then the probe-fed and analysis sections follow.
-		recon, _, err := reconWithProfile(client, d.Serial)
+		recon, drv, err := reconWithProfile(client, d.Serial)
 		if err != nil {
 			clearProgress()
 			fmt.Fprintf(os.Stderr, "Error querying device %s: %v\n", d.Serial, err)
 			continue
 		}
-		printReconDeviceSections(d.Serial, recon, cat, lib, redact)
+		vendorID := ""
+		if drv != nil {
+			vendorID = drv.ID() // scopes the Motorola-only CID/carrier/channel lookups
+		}
+		printReconDeviceSections(d.Serial, recon, cat, lib, vendorID, redact)
 		client.RunProbes(recon.Serial, recon)
 		clearProgress()
 		printReconAnalysis(client, recon, cat, lib, raw, redact)
@@ -286,7 +290,7 @@ func printReportSections(secs []fastboot.ReportSection) {
 // `getvar all` (hardware, security, slots, firmware, boot-chain stamps). It runs
 // before the paced OEM probes so this bulk streams out immediately; the probe-fed
 // vendor sections and the local analysis follow in printReconAnalysis.
-func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, redact bool) {
+func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, vendorID string, redact bool) {
 	fmt.Printf("Fastboot Device: %s\n", mask(redact, serial))
 
 	// 1. Hardware
@@ -298,8 +302,20 @@ func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catal
 		printField("HW Revision", r.HWRev)
 	}
 	printField("SKU", r.SKU)
-	printField("Carrier", r.Carrier)
-	printField("CPU / SoC", r.CPU)
+	carrierDesc := r.Carrier
+	if ch := cat.SoftwareChannelName(vendorID, r.Carrier); ch != "" {
+		carrierDesc = fmt.Sprintf("%s — %s", r.Carrier, ch)
+	}
+	printField("Carrier", carrierDesc)
+	cpuDesc := r.CPU
+	if fields := strings.Fields(r.CPU); len(fields) > 0 {
+		// getvar cpu is the qboot token plus a rev ("SM_DIVAR 1.0"); resolve the
+		// token to its marketing SoC, same mapping the Catalog Match line uses.
+		if soc := cat.ResolveVariant(fields[0], r.QCBaseline); soc != "" {
+			cpuDesc = fmt.Sprintf("%s (%s)", r.CPU, soc)
+		}
+	}
+	printField("CPU / SoC", cpuDesc)
 	if r.StorageType != "" {
 		ufsOrEmmc := r.StorageType
 		if r.RawVars["ufs"] != "" && r.RawVars["ufs"] != "false" {
@@ -352,14 +368,14 @@ func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catal
 		// A corrupt/tampered cid partition; ABL sets 0xDEAD and blocks AP fastboot.
 		// Recoverable via `fastboot oem cid_prov_req` -> signed cid_prov_data.
 		cidDesc = fmt.Sprintf("%s — %s", cidDesc, cBad("CORRUPT (0xDEAD): cid partition tampered, AP flashing blocked"))
-	} else if name := cat.CarrierIDName(r.CarrierID); name != "" {
+	} else if name := cat.CarrierIDName(vendorID, r.CarrierID); name != "" {
 		cidDesc = fmt.Sprintf("%s — %s", cidDesc, name)
 	} else if slcf := lib.CarrierIDs()[library.NormalizeCID(r.CarrierID)]; slcf != "" {
 		// Uncatalogued CID, but a stored package declared it: name it from that.
 		cidDesc = fmt.Sprintf("%s — subsidy lock %s (from stored build)", cidDesc, slcf)
-	} else if ref := cat.CarrierIDReference(r.CarrierID); ref != "" {
-		// Nothing attested; fall back to the forum table, marked unverified.
-		cidDesc = fmt.Sprintf("%s — %s %s", cidDesc, ref, cWarn("(unverified)"))
+	} else if ref := cat.CarrierIDReference(vendorID, r.CarrierID); ref != "" {
+		// Nothing attested; name it from the forum CID table (trusted for now).
+		cidDesc = fmt.Sprintf("%s — %s", cidDesc, ref)
 	}
 	printField("Carrier ID (CID)", cidDesc)
 	printField("Channel ID", r.ChannelID)

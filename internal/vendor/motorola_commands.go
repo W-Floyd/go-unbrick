@@ -27,7 +27,7 @@ func (m *motoFastboot) UnlockOutlook(r *fastboot.DeviceRecon, cat *catalog.Catal
 		return ""
 	}
 	slcf := lib.CarrierIDs()[library.NormalizeCID(r.CarrierID)]
-	name := cat.CarrierIDName(r.CarrierID)
+	name := cat.CarrierIDName(m.Name(), r.CarrierID)
 
 	because := ""
 	switch {
@@ -37,7 +37,7 @@ func (m *motoFastboot) UnlockOutlook(r *fastboot.DeviceRecon, cat *catalog.Catal
 		because = fmt.Sprintf(" (%s)", name)
 	}
 
-	if eligible, known := cat.UnlockEligible(r.CarrierID); known {
+	if eligible, known := cat.UnlockEligible(m.Name(), r.CarrierID); known {
 		if eligible {
 			return fmt.Sprintf("eligible: cid %s is on Motorola's unlock allow-list%s", r.CarrierID, because)
 		}

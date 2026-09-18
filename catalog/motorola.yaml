@@ -1,0 +1,171 @@
+# Motorola-specific reference data (CID, carrier, OTA software channel). These are
+# Motorola schemes — a CID or a channel code means nothing on another vendor — so
+# they live under vendor_data.motorola and the catalog serves them only when the
+# device's driver is Motorola (Driver.ID() == "motorola"). Other vendors add their
+# own vendor_data block; nothing here is shared.
+vendor_data:
+  motorola:
+    # CID — `fastboot getvar cid`, a 16-bit hex value (0x0032). ABL reads it from the
+    # factory-provisioned `cid` partition (partitions.yaml: identity, irreplaceable),
+    # so it survives flashing and identifies the carrier / subsidy channel the unit
+    # was built for. It is the package-matching key: a retail package declares its
+    # target in flashfile.xml as `<cid_value value="0x0032"/>`, and a package whose
+    # cid_value does not match the device's CID is refused. Every carrier_ids entry is
+    # read off an observed package; unattested CIDs stay absent rather than guessed.
+    # Keys are decimal, matching the `cidNN` filename token (0x0032 -> 50). Ingest
+    # harvests cid_value into each stock build's meta.json, so library.CarrierIDs() is
+    # the standing evidence; recon falls back to it for a CID this file does not name.
+    carrier_ids:
+      # XT2413-2_FOGONA_CC_14_U1TF34.100-35_subsidy-CCAWS_..._cid50_R4_CFC
+      # flashfile.xml: cid_value 0x0032, subsidy_lock_config slcf_rev_d_ccaws_v5.0.nvm
+      50: "CC channel (subsidy lock CCAWS)"
+      # XT2413V_FOGONA_TRACFONE_14_U1TFS34.100-35-14-1-4_subsidy-TRAC_VISIBLE_RSU_..._cid51
+      51: "TracFone / Visible (subsidy TRAC_VISIBLE_RSU)"
+
+    # Motorola's own list of the CIDs whose devices the unlock portal will serve,
+    # posted by Motorola support on the Lenovo developer forum:
+    # https://forums.lenovo.com/t5/MOTOROLA-Android-Developer/Bootloader-Unlock-Problems/m-p/3222809
+    # Closed-world: a CID absent from this list is a predicted refusal, not an unknown
+    # (unlike carrier_ids). A dated-less vendor claim, corroborated by two devices so
+    # far: 0x0032 (listed) unlocks; 0x0033 (absent) ships a carrier subsidy lock.
+    unlock_eligible_cids:
+      [0x0000, 0x0003, 0x0007, 0x0009, 0x000B, 0x000C, 0x000D, 0x000E, 0x0014, 0x0015, 0x00DE, 0x0032]
+
+    # CID meanings from a Motorola community post (2022-09-15), trusted for now but
+    # not independently attested from a package in this corpus. Kept apart from the
+    # package-attested carrier_ids (which carries subsidy-lock detail): recon uses this
+    # only when carrier_ids and the library have nothing, so where they agree the
+    # attested entry wins. Super-permission and 0xDEAD are states the post documents.
+    # 0x0032/0x0033 are intentionally omitted: carrier_ids already names them with
+    # subsidy-lock detail and always wins, so a reference row for them is dead weight.
+    cid_reference:
+      2: "Verizon"                              # 0x0002
+      18: "Amazon / AT&T / Cricket"             # 0x0012
+      21: "T-Mobile / Boost"                    # 0x0015
+      0: "super-permission (any-region firmware, same model)"    # 0x0000
+      255: "factory super-permission (factory firmware only)"    # 0x00FF
+      57005: "corrupt / unreadable CID"         # 0xDEAD
+
+    # OTA software channel (carrier update branch; the SKU token in package names,
+    # e.g. RETUS). Picks which official build a unit takes, distinct from the CID.
+    # Forum-sourced (2022-09-15), trusted for now, not attested against this corpus.
+    # Deprecated lanes (merged into a survivor) are kept for reading old packages,
+    # with the merge target noted. Keys are channel codes; lookup is case-insensitive.
+    software_channels:
+      # --- China ---
+      RETCN: "Retail China"
+      CMCC: "China Mobile"
+      CTCN: "China Telecom"
+
+      # --- Europe / Asia-Pacific (current) ---
+      EEGB: "EE (UK)"
+      RETAPAC: "Retail Asia-Pacific"
+      RETEU: "Retail Europe"
+      RETGB: "Retail UK"
+      RETIN: "Retail India"
+      RETKR: "Retail Korea"
+      RETMEA: "Retail Middle East (incl. Ukraine, Egypt)"
+      RETRU: "Retail Russia"
+      OPENEU: "Open Europe (Poland retail, Telenor)"
+      PLAYPL: "Play (Poland)"
+      PLUSPL: "Polkomtel / Plus (Poland)"
+      Softbank: "SoftBank (Japan)"
+      VFEU: "Vodafone Europe"
+      TESCOGB: "Tesco Mobile (UK)"
+      TELSTRA: "Telstra (Australia)"
+      TELEU: "Telenor (Serbia)"
+      TIMIT: "TIM (Italy)"
+      TRUETH: "True (Thailand)"
+      RETEU_DE: "Retail Germany"
+      RETEU_PL: "Retail Poland"
+      RETEU_RS: "Retail Serbia"
+      RETEU_IS: "Retail Iceland"
+
+      # --- North America (current) ---
+      ACG: "Associated Carrier Group (US)"
+      AMZ: "Amazon Prime (US)"
+      ATT: "AT&T (US)"
+      BOOST: "Boost Mobile (US)"
+      CC: "Consumer Cellular (US)"
+      COMCAST: "Comcast / Xfinity (US)"
+      CRICKET: "Cricket Wireless (US)"
+      FI: "Google Fi (US)"
+      METROPCS: "Metro by T-Mobile (US)"
+      RETCA: "Retail Canada"
+      RETUS: "Retail USA"
+      Spectrum: "Spectrum by Charter (US)"
+      TMO: "T-Mobile (US)"
+      TracFone: "TracFone Wireless (US)"
+      USC: "US Cellular"
+      VZW: "Verizon Wireless (US)"
+      RETUS_VS: "Visible Wireless (US)"
+
+      # --- Latin America (current) ---
+      AMXMX: "Telcel (Mexico, America Movil)"
+      ATTMX: "AT&T (Mexico)"
+      ALTMX: "Altan Redes (Mexico)"
+      AMXBR: "Claro (Brazil)"
+      AMXCL: "Claro (Chile)"
+      AMXCO: "Claro (Colombia)"
+      AMXPE: "Claro (Peru)"
+      AMXLA: "Claro (Central America / Puerto Rico / El Salvador)"
+      OPENCL: "Open Chile"
+      OPENLA: "Open Latin America (carrier-unlocked)"
+      OPENMX: "Open Mexico"
+      OPENPE: "Open Peru"
+      RETAR: "Retail Argentina"
+      RETBR: "Retail Brazil"
+      RETLA: "LATAM generic / Retail Colombia"
+      TEFBR: "Vivo (Brazil, Telefonica)"
+      TEFMX: "Movistar (Mexico)"
+      TIMBR: "TIM (Brazil)"
+      TIGCA: "Tigo (Guatemala)"
+
+      # --- Deprecated (merged into a survivor; kept for old packages) ---
+      ALTFR: "Altice (France) — deprecated"
+      AMZIN: "Amazon (India) — deprecated"
+      BOUYFR: "Bouygues (France) — deprecated"
+      DTEU: "T-Mobile (Netherlands/Poland/Germany) — deprecated"
+      DTPL: "T-Mobile (Poland) — deprecated → DTEU"
+      RETDE: "Retail Germany — deprecated → RETEU"
+      RETES: "Retail Spain — deprecated → RETEU"
+      RETFR: "Retail France — deprecated → RETEU"
+      RETID: "Retail Indonesia — deprecated → RETAPAC"
+      O2DE: "O2 (Germany, Telefonica)"
+      O2GB: "O2 (UK, Telefonica)"
+      ORAFR: "Orange (France) — deprecated → ORAEU"
+      ORAES: "Orange (Spain) — deprecated → ORAEU"
+      ORAEU: "Orange Europe"
+      VFAU: "Vodafone (Australia) — deprecated → RETAPAC"
+      VFDE: "Vodafone (Germany) — deprecated → VFEU"
+      VFIT: "Vodafone (Italy) — deprecated → VFEU"
+      VFGB: "Vodafone (UK)"
+      VFES: "Vodafone (Spain) — deprecated → VFEU"
+      VIPEU: "VIP Mobile (Serbia)"
+      WINDIT: "Wind Tre (Italy) — deprecated"
+      TESCOIE: "Tesco (Ireland) — deprecated → TESCOGB"
+      AMZEU: "Amazon (Europe) — deprecated"
+      RETEU_EMADA: "Retail EU (Poland/Romania/UK/Germany/Serbia/Spain)"
+      BWACA: "Bell (Canada) — deprecated → RETCA"
+      LRA: "Verizon LTE in Rural America — deprecated"
+      Sprint: "Sprint (US) — deprecated (acquired by T-Mobile)"
+      TKPCA: "Telus (Canada) — deprecated → RETCA"
+      RCICA: "Rogers Wireless (Canada) — deprecated"
+      WNDCA: "Wind / Freedom Mobile (Canada) — deprecated → RETCA"
+      ENTCL: "Entel (Chile)"
+      IUSMX: "Iusacell (Mexico) — deprecated → ATTMX"
+      NIIBR: "Nextel (Brazil) — deprecated"
+      NIICL: "Nextel (Chile) — deprecated"
+      NIIPE: "Nextel / Entel (Peru) — deprecated"
+      OIBR: "Oi / Telemar (Brazil)"
+      PERAR: "Personal (Argentina)"
+      RETCL: "Retail Chile"
+      RETLA1ST: "Retail LATAM First (carrier-locked)"
+      RETMX: "Retail Mexico"
+      TEFCL: "Movistar (Chile)"
+      TEFCO: "Movistar (Colombia)"
+      TEFLA: "Movistar (Argentina)"
+      TEFPE: "Movistar (Peru)"
+      TEFUNL: "Movistar (Peru, unlocked) — deprecated → TEFPE"
+      TIGCO: "Tigo (Colombia)"
+      WOMCL: "WOM (Chile)"

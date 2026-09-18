@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -220,14 +221,14 @@ func TestCarrierIDName(t *testing.T) {
 	}
 	// fastboot reports hex, firmware filenames spell the same CID in decimal.
 	for _, in := range []string{"0x0032", "0X32", "50"} {
-		if got := c.CarrierIDName(in); got != "CC channel (subsidy lock CCAWS)" {
+		if got := c.CarrierIDName("motorola", in); got != "CC channel (subsidy lock CCAWS)" {
 			t.Errorf("CarrierIDName(%q): got %q", in, got)
 		}
 	}
-	if got := c.CarrierIDName("0xFFFF"); got != "" {
+	if got := c.CarrierIDName("motorola", "0xFFFF"); got != "" {
 		t.Errorf("unattested CID should be unnamed, got %q", got)
 	}
-	if got := c.CarrierIDName("not-a-number"); got != "" {
+	if got := c.CarrierIDName("motorola", "not-a-number"); got != "" {
 		t.Errorf("garbage CID should be unnamed, got %q", got)
 	}
 }
@@ -238,18 +239,23 @@ func TestCarrierIDReference(t *testing.T) {
 		t.Fatalf("Default() failed: %v", err)
 	}
 	// A forum-only CID (Verizon 0x0002) has no attested name but a reference one.
-	if got := c.CarrierIDName("0x0002"); got != "" {
+	if got := c.CarrierIDName("motorola", "0x0002"); got != "" {
 		t.Errorf("0x0002 is not package-attested, want empty CarrierIDName, got %q", got)
 	}
-	if got := c.CarrierIDReference("0x0002"); got != "Verizon" {
+	if got := c.CarrierIDReference("motorola", "0x0002"); got != "Verizon" {
 		t.Errorf("CarrierIDReference(0x0002) = %q, want Verizon", got)
 	}
-	// Attested wins: 0x0032 keeps its package name, and a reference also exists.
-	if got := c.CarrierIDName("0x0032"); got != "CC channel (subsidy lock CCAWS)" {
+	// Attested wins for 0x0032: carrier_ids names it, and cid_reference omits it
+	// (dropped as redundant), so the reference lookup is empty there.
+	if got := c.CarrierIDName("motorola", "0x0032"); got != "CC channel (subsidy lock CCAWS)" {
 		t.Errorf("attested 0x0032 name changed: %q", got)
 	}
-	if got := c.CarrierIDReference("0x0032"); got != "retail / unlockable" {
-		t.Errorf("CarrierIDReference(0x0032) = %q, want retail / unlockable", got)
+	if got := c.CarrierIDReference("motorola", "0x0032"); got != "" {
+		t.Errorf("0x0032 should be omitted from cid_reference, got %q", got)
+	}
+	// A vendor with no reference block resolves to nothing.
+	if got := c.CarrierIDReference("xiaomi", "0x0002"); got != "" {
+		t.Errorf("non-motorola vendor should have no CID reference, got %q", got)
 	}
 }
 
@@ -259,18 +265,18 @@ func TestUnlockEligible(t *testing.T) {
 		t.Fatalf("Default() failed: %v", err)
 	}
 	// 0x0032 is on Motorola's published list; the retail fogona carries it.
-	if eligible, known := c.UnlockEligible("0x0032"); !known || !eligible {
+	if eligible, known := c.UnlockEligible("motorola", "0x0032"); !known || !eligible {
 		t.Errorf("0x0032: eligible=%v known=%v", eligible, known)
 	}
 	// The list is closed-world, so the TracFone channel's absence is an answer,
 	// not a gap: known must stay true.
-	if eligible, known := c.UnlockEligible("0x0033"); !known || eligible {
+	if eligible, known := c.UnlockEligible("motorola", "0x0033"); !known || eligible {
 		t.Errorf("0x0033: eligible=%v known=%v", eligible, known)
 	}
-	if eligible, known := c.UnlockEligible("0x00DE"); !known || !eligible {
+	if eligible, known := c.UnlockEligible("motorola", "0x00DE"); !known || !eligible {
 		t.Errorf("0x00DE: eligible=%v known=%v", eligible, known)
 	}
-	if _, known := c.UnlockEligible("not-a-number"); known {
+	if _, known := c.UnlockEligible("motorola", "not-a-number"); known {
 		t.Error("an unparseable CID cannot be judged")
 	}
 	// A catalog without the list must not imply every CID is ineligible.
@@ -278,7 +284,7 @@ func TestUnlockEligible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, known := empty.UnlockEligible("0x0032"); known {
+	if _, known := empty.UnlockEligible("motorola", "0x0032"); known {
 		t.Error("no allow-list loaded should report unknown, not ineligible")
 	}
 }
@@ -503,5 +509,23 @@ func TestPartitionsAndSafeguards(t *testing.T) {
 	swidWithAR := uint64(0x0000000200000003)
 	if name := c.SWIDName(swidWithAR); name != "Emergency Firehose Programmer" {
 		t.Errorf("SWIDName with AR: got %q, want Emergency Firehose Programmer", name)
+	}
+}
+
+func TestSoftwareChannelAndSoC(t *testing.T) {
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default() failed: %v", err)
+	}
+	// Channel lookup is case-insensitive (recon has "retus" from ro.carrier).
+	if got := c.SoftwareChannelName("motorola", "retus"); got != "Retail USA" {
+		t.Errorf("SoftwareChannelName(retus) = %q, want Retail USA", got)
+	}
+	if got := c.SoftwareChannelName("motorola", "nope"); got != "" {
+		t.Errorf("unknown channel should be empty, got %q", got)
+	}
+	// The getvar cpu token resolves to its marketing SoC (Hardware line).
+	if got := c.ResolveVariant("SM_DIVAR", ""); !strings.Contains(got, "Snapdragon 680") {
+		t.Errorf("ResolveVariant(SM_DIVAR) = %q, want it to name Snapdragon 680", got)
 	}
 }

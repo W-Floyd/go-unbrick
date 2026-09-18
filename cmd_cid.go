@@ -40,10 +40,16 @@ func newCIDVBMetaCmd() *cobra.Command {
 			fmt.Printf("CID:      %s (%d)\n", m.CIDHex(), m.CID)
 
 			cat := activeCatalog()
-			if name := cat.CarrierIDName(m.CIDHex()); name != "" {
+			// HAB_META is a Motorola scheme; scope the CID lookup to the device's
+			// vendor (from the codename), defaulting to motorola.
+			vendorID := "motorola"
+			if d, ok := cat.Device(m.Codename); ok && d.Vendor != "" {
+				vendorID = d.Vendor
+			}
+			if name := cat.CarrierIDName(vendorID, m.CIDHex()); name != "" {
 				fmt.Printf("Carrier:  %s\n", name)
-			} else if ref := cat.CarrierIDReference(m.CIDHex()); ref != "" {
-				fmt.Printf("Carrier:  %s (unverified)\n", ref)
+			} else if ref := cat.CarrierIDReference(vendorID, m.CIDHex()); ref != "" {
+				fmt.Printf("Carrier:  %s\n", ref)
 			}
 			return nil
 		},

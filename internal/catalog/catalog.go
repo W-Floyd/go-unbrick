@@ -75,29 +75,54 @@ type catalogFile struct {
 	SWIDs      map[uint64]string        `yaml:"sw_ids,omitempty"`
 	EFIGUIDs   map[string]string        `yaml:"efi_guids,omitempty"`
 	Partitions map[string]PartitionRule `yaml:"partitions,omitempty"`
-	CarrierIDs map[uint64]string        `yaml:"carrier_ids,omitempty"`
+	// VendorData namespaces vendor-specific reference tables (CID, carrier, OTA
+	// channel) by OEM id, since these schemes are not shared across vendors — a
+	// CID means nothing outside Motorola. Keyed by Driver.ID() ("motorola").
+	VendorData map[string]VendorReference `yaml:"vendor_data,omitempty"`
+}
+
+// VendorReference is one vendor's reference tables (see VendorData). All fields
+// are that vendor's own scheme; another vendor's block is independent.
+type VendorReference struct {
+	CarrierIDs map[uint64]string `yaml:"carrier_ids,omitempty"`
 	// UnlockEligibleCIDs is Motorola's published allow-list; absence from it means
 	// ineligible, so this is a closed world unlike carrier_ids.
 	UnlockEligibleCIDs []uint64 `yaml:"unlock_eligible_cids,omitempty"`
 	// CIDReference is a vendor-claimed CID→meaning map (a forum post), kept apart
-	// from the package-attested carrier_ids: it is a hint of last resort, not
-	// evidence, and callers must mark it as unverified.
+	// from the package-attested carrier_ids.
 	CIDReference map[uint64]string `yaml:"cid_reference,omitempty"`
+	// SoftwareChannels maps an OTA channel code (RETUS, VZW, …) to carrier + region.
+	SoftwareChannels map[string]string `yaml:"software_channels,omitempty"`
 }
 
 type Catalog struct {
-	devices      []*Device
-	byCode       map[string]*Device
-	variants     map[string]string
-	aliases      map[string]string
-	vendors      map[string]*VendorConfig
-	swIDs        map[uint64]string
-	efiGUIDs     map[string]string
-	partitions   map[string]PartitionRule
+	devices    []*Device
+	byCode     map[string]*Device
+	variants   map[string]string
+	aliases    map[string]string
+	vendors    map[string]*VendorConfig
+	swIDs      map[uint64]string
+	efiGUIDs   map[string]string
+	partitions map[string]PartitionRule
+	vendorRef  map[string]*vendorRefData // per-vendor CID/carrier/channel tables
+}
+
+// vendorRefData is one vendor's resolved reference tables (see VendorData).
+type vendorRefData struct {
 	carrierIDs   map[uint64]string
-	cidReference map[uint64]string // forum-sourced hints, unverified
+	cidReference map[uint64]string // forum-sourced hints
+	swChannels   map[string]string // OTA channel code (uppercased) → carrier/region
 	unlockCIDs   map[uint64]bool
 	hasUnlockCn  bool // an allow-list was loaded, so "absent" means ineligible
+}
+
+func newVendorRefData() *vendorRefData {
+	return &vendorRefData{
+		carrierIDs:   map[uint64]string{},
+		cidReference: map[uint64]string{},
+		swChannels:   map[string]string{},
+		unlockCIDs:   map[uint64]bool{},
+	}
 }
 
 // Load reads every *.yaml under dir as a device list and merges them.
@@ -108,16 +133,14 @@ func Load(dir string) (*Catalog, error) {
 	}
 	sort.Strings(files)
 	c := &Catalog{
-		byCode:       map[string]*Device{},
-		variants:     map[string]string{},
-		aliases:      map[string]string{},
-		vendors:      map[string]*VendorConfig{},
-		swIDs:        map[uint64]string{},
-		efiGUIDs:     map[string]string{},
-		partitions:   map[string]PartitionRule{},
-		carrierIDs:   map[uint64]string{},
-		cidReference: map[uint64]string{},
-		unlockCIDs:   map[uint64]bool{},
+		byCode:     map[string]*Device{},
+		variants:   map[string]string{},
+		aliases:    map[string]string{},
+		vendors:    map[string]*VendorConfig{},
+		swIDs:      map[uint64]string{},
+		efiGUIDs:   map[string]string{},
+		partitions: map[string]PartitionRule{},
+		vendorRef:  map[string]*vendorRefData{},
 	}
 
 	type fileItem struct {
@@ -178,20 +201,37 @@ func Load(dir string) (*Catalog, error) {
 				c.partitions[kClean] = v
 			}
 		}
-		for k, v := range cf.CarrierIDs {
-			if vClean := strings.TrimSpace(v); vClean != "" {
-				c.carrierIDs[k] = vClean
+		for vendorID, ref := range cf.VendorData {
+			vClean := strings.ToLower(strings.TrimSpace(vendorID))
+			if vClean == "" {
+				continue
 			}
-		}
-		for k, v := range cf.CIDReference {
-			if vClean := strings.TrimSpace(v); vClean != "" {
-				c.cidReference[k] = vClean
+			vr := c.vendorRef[vClean]
+			if vr == nil {
+				vr = newVendorRefData()
+				c.vendorRef[vClean] = vr
 			}
-		}
-		if len(cf.UnlockEligibleCIDs) > 0 {
-			c.hasUnlockCn = true
-			for _, cid := range cf.UnlockEligibleCIDs {
-				c.unlockCIDs[cid] = true
+			for k, v := range ref.CarrierIDs {
+				if s := strings.TrimSpace(v); s != "" {
+					vr.carrierIDs[k] = s
+				}
+			}
+			for k, v := range ref.CIDReference {
+				if s := strings.TrimSpace(v); s != "" {
+					vr.cidReference[k] = s
+				}
+			}
+			for k, v := range ref.SoftwareChannels {
+				kClean := strings.ToUpper(strings.TrimSpace(k))
+				if s := strings.TrimSpace(v); kClean != "" && s != "" {
+					vr.swChannels[kClean] = s
+				}
+			}
+			if len(ref.UnlockEligibleCIDs) > 0 {
+				vr.hasUnlockCn = true
+				for _, cid := range ref.UnlockEligibleCIDs {
+					vr.unlockCIDs[cid] = true
+				}
 			}
 		}
 	}
@@ -455,48 +495,69 @@ func (c *Catalog) SWIDName(swid uint64) string {
 	return ""
 }
 
-// CarrierIDName names the carrier / subsidy channel a Motorola CID denotes,
+// vendorData returns a vendor's resolved reference tables, or nil. vendor is a
+// Driver.ID() ("motorola"); the tables are that vendor's scheme, not shared.
+func (c *Catalog) vendorData(vendor string) *vendorRefData {
+	if c == nil {
+		return nil
+	}
+	return c.vendorRef[strings.ToLower(strings.TrimSpace(vendor))]
+}
+
+// CarrierIDName names the carrier / subsidy channel a vendor's CID denotes,
 // accepting the value either as fastboot reports it ("0x0032") or as firmware
 // package filenames spell it ("50"). The mapping is attested only by observed
 // package filenames, so most CIDs are unknown and callers show the raw value.
-func (c *Catalog) CarrierIDName(cid string) string {
-	if c == nil || len(c.carrierIDs) == 0 {
+func (c *Catalog) CarrierIDName(vendor, cid string) string {
+	vr := c.vendorData(vendor)
+	if vr == nil {
 		return ""
 	}
 	n, err := parseCID(cid)
 	if err != nil {
 		return ""
 	}
-	return c.carrierIDs[n]
+	return vr.carrierIDs[n]
 }
 
 // CarrierIDReference names a CID from the vendor-claimed forum table, used only
-// as a fallback when CarrierIDName (package-attested) has nothing. It is a hint,
-// not evidence — callers must present it as unverified.
-func (c *Catalog) CarrierIDReference(cid string) string {
-	if c == nil || len(c.cidReference) == 0 {
+// as a fallback when CarrierIDName (package-attested) has nothing.
+func (c *Catalog) CarrierIDReference(vendor, cid string) string {
+	vr := c.vendorData(vendor)
+	if vr == nil {
 		return ""
 	}
 	n, err := parseCID(cid)
 	if err != nil {
 		return ""
 	}
-	return c.cidReference[n]
+	return vr.cidReference[n]
 }
 
-// UnlockEligible reports whether Motorola's unlock portal serves this CID, and
+// SoftwareChannelName resolves a vendor's OTA channel code (e.g. "RETUS", any
+// case) to its carrier + region, or "" if unknown.
+func (c *Catalog) SoftwareChannelName(vendor, code string) string {
+	vr := c.vendorData(vendor)
+	if vr == nil {
+		return ""
+	}
+	return vr.swChannels[strings.ToUpper(strings.TrimSpace(code))]
+}
+
+// UnlockEligible reports whether a vendor's unlock portal serves this CID, and
 // whether an allow-list was loaded at all. The list is closed-world — Motorola
 // states that any CID not on it is ineligible — so a CID the list does not carry
 // is a predicted refusal rather than an unknown.
-func (c *Catalog) UnlockEligible(cid string) (eligible, known bool) {
-	if c == nil || !c.hasUnlockCn {
+func (c *Catalog) UnlockEligible(vendor, cid string) (eligible, known bool) {
+	vr := c.vendorData(vendor)
+	if vr == nil || !vr.hasUnlockCn {
 		return false, false
 	}
 	n, err := parseCID(cid)
 	if err != nil {
 		return false, false
 	}
-	return c.unlockCIDs[n], true
+	return vr.unlockCIDs[n], true
 }
 
 // parseCID reads a CID in either spelling: fastboot's hex ("0x0032") or the
