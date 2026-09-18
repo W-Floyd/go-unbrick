@@ -43,7 +43,7 @@ func newEDLCmd() *cobra.Command {
 		Use:   "edl",
 		Short: "provision and drive bkerler/edl to flash a qfil bundle over 9008",
 	}
-	c.AddCommand(newEDLInstallCmd(), newEDLVerifyCmd(), newEDLBackupCmd(), newEDLFlashCmd(), newEDLSetCIDCmd())
+	c.AddCommand(newEDLInstallCmd(), newEDLVerifyCmd(), newEDLBackupCmd(), newEDLFlashCmd(), newEDLSetCIDCmd(), newEDLReadCIDCmd())
 	return c
 }
 
@@ -313,6 +313,53 @@ func newEDLSetCIDCmd() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
+	return c
+}
+
+func newEDLReadCIDCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "readcid <bundle-dir>",
+		Short: "read the device's cid partition and print its software channel",
+		Long: "Reads the live device's cid partition over EDL 9008 and prints the channel\n" +
+			"value, to confirm a setcid or check what a unit shipped with. Read-only.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := args[0]
+			if err := validateBundle(dir); err != nil {
+				return err
+			}
+			r, err := ensureEDL(cmd.Context())
+			if err != nil {
+				return err
+			}
+			memory := "emmc"
+			if fileExists(filepath.Join(dir, edlRawProgramName)) {
+				if _, m, err := loadRawProgram(dir); err == nil {
+					memory = m
+				}
+			}
+			const readback = "cid-readback.bin"
+			fmt.Printf("Reading cid partition (--memory=%s)...\n", memory)
+			if err := r.ReadPartition(cmd.Context(), dir, edlLoaderName, memory, "cid", readback, os.Stdout); err != nil {
+				return err
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, readback))
+			if err != nil {
+				return err
+			}
+			// The loader returns the whole (sector-padded) partition; the image is
+			// its first 44 bytes.
+			if len(raw) < cid.Size {
+				return fmt.Errorf("cid read-back is %d bytes, want at least %d", len(raw), cid.Size)
+			}
+			value, err := cid.Parse(raw[:cid.Size])
+			if err != nil {
+				return err
+			}
+			fmt.Printf("cid = 0x%04X\n", value)
+			return nil
+		},
+	}
 	return c
 }
 

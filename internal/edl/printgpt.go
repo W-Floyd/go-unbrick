@@ -99,6 +99,12 @@ func (r *Runner) ReadGPT(ctx context.Context, workdir, loader, memory string, pr
 // loader ACKs the program command: "Wrote <file> to sector <N>.".
 var reWroteOK = regexp.MustCompile(`(?i)Wrote .* to sector \d+`)
 
+// ReadPartition dumps a partition by name to outfile via `edl r`, for read-back
+// verification. The loader reads the whole partition, so outfile is sector-padded.
+func (r *Runner) ReadPartition(ctx context.Context, workdir, loader, memory, partition, outfile string, progress io.Writer) error {
+	return stream(ctx, progress, workdir, r.bin, "r", partition, outfile, "--loader="+loader, "--memory="+memory)
+}
+
 // WritePartition writes file to a partition by name via `edl w`, then inspects
 // the output, because bkerler exits 0 even when a restricted loader refuses.
 //
