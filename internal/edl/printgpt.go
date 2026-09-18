@@ -95,14 +95,19 @@ func (r *Runner) ReadGPT(ctx context.Context, workdir, loader, memory string, pr
 	return ParsePrintGPT(buf.String())
 }
 
-// reWroteSectors matches bkerler's write summary, e.g. "Sector 0x0 of 0x0" — a
-// zero total means the loader accepted the command but moved nothing.
-var reWroteSectors = regexp.MustCompile(`Sector 0x[0-9a-fA-F]+ of 0x([0-9a-fA-F]+)`)
+// reWroteOK matches bkerler's per-partition confirmation, printed only after the
+// loader ACKs the program command: "Wrote <file> to sector <N>.".
+var reWroteOK = regexp.MustCompile(`(?i)Wrote .* to sector \d+`)
 
 // WritePartition writes file to a partition by name via `edl w`, then inspects
-// the output for the two ways a restricted loader fails while still exiting 0:
-// an explicit "range restricted" error, and a zero-sector write. bkerler reports
-// success in both cases, so a bare exit code is not enough to trust the write.
+// the output, because bkerler exits 0 even when a restricted loader refuses.
+//
+// The trustworthy signal is the "Wrote ... to sector N" line, which firehose_client
+// prints only when cmd_program returns True (an ACK from the loader); a refusal
+// prints "Error writing ..." or "range restricted". The old check keyed on the
+// progress bar's "Sector 0x0 of 0x0", but that count is filesize//sector_size, so
+// any sub-sector payload — the 44-byte CID image every setcid writes — renders as
+// "of 0x0" and was misread as a rejection.
 func (r *Runner) WritePartition(ctx context.Context, workdir, loader, memory, partition, file string, progress io.Writer) error {
 	var buf bytes.Buffer
 	w := io.MultiWriter(&buf, progress)
@@ -110,16 +115,13 @@ func (r *Runner) WritePartition(ctx context.Context, workdir, loader, memory, pa
 		return err
 	}
 	out := buf.String()
-	if strings.Contains(strings.ToLower(out), "range restricted") {
-		return fmt.Errorf("loader restricts writes to %s (protected region); the signed programmer forbids it — "+
-			"use an unrestricted/engineering Firehose loader or the fastboot route", partition)
+	low := strings.ToLower(out)
+	if strings.Contains(low, "range restricted") || strings.Contains(low, "error writing") {
+		return fmt.Errorf("loader refused the write to %s (protected region); use an "+
+			"unrestricted/engineering Firehose loader or the fastboot route", partition)
 	}
-	// A genuine single-sector write reports "of 0x1"; "of 0x0" means the loader
-	// took the command but wrote nothing.
-	for _, m := range reWroteSectors.FindAllStringSubmatch(out, -1) {
-		if parseHex(m[1]) == 0 {
-			return fmt.Errorf("write to %s moved 0 sectors — the loader silently rejected it (likely a protected region)", partition)
-		}
+	if !reWroteOK.MatchString(out) {
+		return fmt.Errorf("no write confirmation for %s in loader output (write not acknowledged)", partition)
 	}
 	return nil
 }
