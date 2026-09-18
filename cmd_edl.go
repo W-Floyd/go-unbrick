@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -308,12 +309,42 @@ func newEDLSetCIDCmd() *cobra.Command {
 			if err := r.WritePartition(cmd.Context(), dir, edlLoaderName, memory, "cid", edlCIDName, os.Stdout); err != nil {
 				return err
 			}
-			fmt.Printf("cid set to 0x%04X\n", value)
+			// The loader can ACK a write it then silently discards (the cid partition
+			// is write-protected on some devices), so a bare ACK is not proof. Read the
+			// partition back and confirm our image actually landed.
+			const readback = "cid-verify.bin"
+			fmt.Println("Verifying (reading cid back)...")
+			if err := r.ReadPartition(cmd.Context(), dir, edlLoaderName, memory, "cid", readback, os.Stdout); err != nil {
+				return fmt.Errorf("wrote cid but could not read it back to verify: %w", err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, readback))
+			if err != nil {
+				return err
+			}
+			if len(got) < len(img) || !bytes.Equal(got[:len(img)], img) {
+				return fmt.Errorf("cid write did NOT persist: the read-back does not match what was written, "+
+					"so the device's CID is unchanged. The cid partition is likely write-protected on this "+
+					"device (the loader ACKs the write but discards it), or it holds a signed version-2 image "+
+					"that rejects a raw overwrite. Read-back version: %s", cidVersionDesc(got))
+			}
+			fmt.Printf("cid set to 0x%04X (verified)\n", value)
 			return nil
 		},
 	}
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return c
+}
+
+// cidVersionDesc names the CID format of a read-back image, to explain a failed verify:
+// a version-2 image is the signed, write-protected form.
+func cidVersionDesc(img []byte) string {
+	if v, ok := cid.Version(img); ok {
+		if v >= 2 {
+			return fmt.Sprintf("v%d (signed/protected)", v)
+		}
+		return fmt.Sprintf("v%d", v)
+	}
+	return "unrecognized"
 }
 
 func newEDLReadCIDCmd() *cobra.Command {
