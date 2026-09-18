@@ -56,7 +56,20 @@ DEFAULT_REPOS = [
     # not index the binaries themselves, so `--match path` is what surfaces these.
     "openpst/assets",
     "ele7enxxh/msm8909w-law-2-0_amss_standard_oem",
+    # Found via --discover, tree-verified to carry real loaders (not bkerler dups).
+    "HadiKhoirudin/Qualcomm-Tool",
+    "HadiKhoirudin/Qualcomm-Tool-GUI",
+    "Alephgsm/SAM-unbrick-debrick",
 ]
+
+# --discover finds these but they are not worth cloning: GhostwheeI is a 1.2 GB batch-script
+# grab-bag whose loader set is a re-copy of bkerler/Loaders (already harvested), and the
+# sdm660 trees are 1 GB of firmware source with no compiled firehose.
+DISCOVER_DENYLIST = {
+    "GhostwheeI/TheBatchCompendium",
+    "David112x/android-firmware-qti-sdm660",
+    "me-cafebabe-backyard/android-firmware-qti-sdm660",
+}
 
 # HTML indexes that link loader files. Walked recursively, so an autoindex root is enough.
 DEFAULT_PAGES = [
@@ -209,7 +222,7 @@ def discover_repos(cache_dir, known, dry_run=False, refresh=False):
         print(f"  [discover] {term}: {len(hits)} repo(s)")
         candidates |= hits
         time.sleep(CODE_SEARCH_DELAY)
-    candidates -= set(known)
+    candidates -= set(known) | DISCOVER_DENYLIST
     print(f"  [discover] {len(candidates)} new candidate repo(s); checking trees for loaders...")
     found = []
     for repo in sorted(candidates):
