@@ -378,6 +378,14 @@ func (c *Client) SetActiveSlot(serial, slot string) error {
 	return err
 }
 
+// Flash writes file to the named partition. A locked bootloader rejects this
+// for non-standard partitions; the caller is expected to gate on unlock state.
+func (c *Client) Flash(serial, partition, file string) error {
+	args := appendSerial(serial, "flash", partition, file)
+	_, err := c.run(120*time.Second, args...)
+	return err
+}
+
 // RebootEDL instructs the bootloader into Qualcomm Emergency Download (9008)
 // mode, using the commands the caller's vendor driver supplies — there is no
 // common one, and firing every OEM's command at a bootloader that did not ask

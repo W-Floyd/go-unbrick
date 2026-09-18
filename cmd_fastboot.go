@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/cid"
 	"go-unbrick/internal/fastboot"
 	"go-unbrick/internal/library"
 	"go-unbrick/internal/safeguard"
@@ -42,6 +44,7 @@ Resolves 'fastboot' binary directly from system PATH.`,
 		newFastbootSlotCmd(&fastbootBin, &serial),
 		newFastbootEDLCmd(&fastbootBin, &serial),
 		newFastbootUnlockDataCmd(&fastbootBin, &serial),
+		newFastbootSetCIDCmd(&fastbootBin, &serial),
 	)
 
 	return cmd
@@ -532,6 +535,75 @@ func newFastbootUnlockDataCmd(fastbootBin, serial *string) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newFastbootSetCIDCmd writes a chosen software channel to the cid partition via
+// fastboot. Unlike the EDL route, this needs an unlocked bootloader — a locked
+// Motorola bootloader rejects flashing cid, in which case `edl setcid` is the way.
+func newFastbootSetCIDCmd(fastbootBin, serial *string) *cobra.Command {
+	var yes, force bool
+	c := &cobra.Command{
+		Use:   "setcid <value>",
+		Short: "flash a chosen software channel to the cid partition (needs unlocked bootloader)",
+		Long: "Builds a Motorola CID image for <value> (e.g. 0x33 for cid51) and flashes it\n" +
+			"to the cid partition. The bootloader must be in bootloader mode and unlocked;\n" +
+			"a locked device rejects this — use `edl setcid` instead, which bypasses the lock.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("usage: setcid <value> (value in hex 0x.. or decimal)")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			value, err := parseCIDValue(args[0])
+			if err != nil {
+				return err
+			}
+			client, err := fastboot.NewClient(*fastbootBin)
+			if err != nil {
+				return err
+			}
+			targetSerial, err := resolveSerial(client, *serial)
+			if err != nil {
+				return err
+			}
+			if err := requireBootloader(client, targetSerial, "cid flashing"); err != nil {
+				return err
+			}
+			if force {
+				fmt.Fprintln(os.Stderr, "! --force: skipping the unlock precheck; the device may still reject this")
+			} else if recon, err := client.GetVarAll(targetSerial); err == nil && !recon.Unlocked {
+				return fmt.Errorf("bootloader is locked; it will reject flashing cid. Use `edl setcid` (bypasses the lock), or --force to try anyway")
+			}
+
+			f, err := os.CreateTemp("", "cid-*.bin")
+			if err != nil {
+				return err
+			}
+			defer os.Remove(f.Name())
+			if _, err := f.Write(cid.Build(value)); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+			fmt.Printf("Built CID 0x%04X (%d bytes: %s)\n", value, cid.Size, filepath.Base(f.Name()))
+
+			if !yes {
+				fmt.Printf("\nAbout to flash the cid partition with 0x%04X. Type 'cid' to proceed: ", value)
+				if !confirm("cid") {
+					return fmt.Errorf("aborted")
+				}
+			}
+			if err := client.Flash(targetSerial, "cid", f.Name()); err != nil {
+				return err
+			}
+			fmt.Printf("cid set to 0x%04X\n", value)
+			return nil
+		},
+	}
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
+	c.Flags().BoolVar(&force, "force", false, "attempt the flash even if the bootloader reports locked (let the device reject it)")
+	return c
 }
 
 // newFastbootHashCmd exposes the bootloader's own hashing of a partition in
