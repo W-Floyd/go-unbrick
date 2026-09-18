@@ -34,3 +34,6 @@ target/
 
 unbrick
 samples/
+
+# Third-party reference tooling (large binaries); analysis folded into TODO.md.
+recon/
