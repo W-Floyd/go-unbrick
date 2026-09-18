@@ -416,7 +416,7 @@ def resolve_archive_url(spec):
 
 def mediafire_direct(page_url):
     """The download<N>.mediafire.com direct URL behind a MediaFire /file/ page."""
-    res = subprocess.run(["curl", "-fsSL", "--compressed", "--max-time", "45", "-A", SCRAPE_UA, page_url],
+    res = subprocess.run(["curl", "-fsSL", "-g","--compressed", "--max-time", "45", "-A", SCRAPE_UA, page_url],
                          capture_output=True)
     if res.returncode != 0:
         return None
@@ -441,7 +441,7 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
                         return None
                 # Follow redirects (disroot 303s to DAV, Drive to usercontent); keep our own
                 # stable cache name rather than the server's.
-                if subprocess.run(["curl", "-fsSL", url, "-o", str(local)]).returncode != 0:
+                if subprocess.run(["curl", "-fsSL", "-g",url, "-o", str(local)]).returncode != 0:
                     print(f"  [error] failed to download {spec}", file=sys.stderr)
                     return None
         else:
@@ -568,7 +568,7 @@ def fetch_page(url, cache_dir, dry_run=False, refresh=False):
         if current in seen:
             continue
         seen.add(current)
-        res = subprocess.run(["curl", "-fsSL", "--max-time", "60", current], capture_output=True)
+        res = subprocess.run(["curl", "-fsSL", "-g","--max-time", "60", current], capture_output=True)
         if res.returncode != 0:
             print(f"  [warning] failed index {current}", file=sys.stderr)
             continue
@@ -591,7 +591,7 @@ def fetch_page(url, cache_dir, dry_run=False, refresh=False):
             if target.exists():
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            if subprocess.run(["curl", "-fsSL", full, "-o", str(target)]).returncode != 0:
+            if subprocess.run(["curl", "-fsSL", "-g",full, "-o", str(target)]).returncode != 0:
                 print(f"  [warning] failed {full}", file=sys.stderr)
                 target.unlink(missing_ok=True)
             else:
@@ -609,7 +609,7 @@ _HOST_LINK = re.compile(
 
 
 def _curl_text(url):
-    r = subprocess.run(["curl", "-fsSL", "--compressed", "--max-time", "60", "-A", SCRAPE_UA, url],
+    r = subprocess.run(["curl", "-fsSL", "-g","--compressed", "--max-time", "60", "-A", SCRAPE_UA, url],
                        capture_output=True)
     return r.stdout.decode("utf-8", "ignore") if r.returncode == 0 else None
 
@@ -825,7 +825,7 @@ def parse_html_content(html_text):
 def refresh_catalog(catalog_path):
     """Re-scrape the Temblast table into catalog_path. Nothing else regenerates it."""
     print(f"Fetching {TEMBLAST_URL} ...")
-    res = subprocess.run(["curl", "-fsSL", "--max-time", "60", TEMBLAST_URL], capture_output=True)
+    res = subprocess.run(["curl", "-fsSL", "-g","--max-time", "60", TEMBLAST_URL], capture_output=True)
     if res.returncode != 0:
         print("  [error] could not fetch the Temblast page", file=sys.stderr)
         return False
