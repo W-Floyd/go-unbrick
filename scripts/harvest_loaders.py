@@ -196,6 +196,66 @@ def shannon_entropy(data):
     return -sum((c / n) * math.log2(c / n) for c in freq.values())
 
 
+# Motorola's SINGLE_N_LONELY container (singleimage.bin blankflash). See
+# internal/blankflash/singleimage.go: 0x100 magic block, then per file a 0x100 header
+# (name at 0, u64 LE size at 0xf8) plus content padded to a 0x1000 boundary.
+SINGLEIMAGE_MAGIC = b"SINGLE_N_LONELY\x00"
+# Only the firehose programmer is a loader; the container's other records are the
+# signed boot chain (abl/xbl/tz/hyp/...) and must not be harvested.
+SINGLEIMAGE_LOADER = re.compile(r"^(prog|programmer).*\.(elf|mbn)$", re.IGNORECASE)
+
+
+def singleimage_programmer(blob):
+    """The programmer record's bytes from a SINGLE_N_LONELY container, or None."""
+    hdr, pageln, size_off = 0x100, 0x1000, 0xf8
+    if blob[:len(SINGLEIMAGE_MAGIC)] != SINGLEIMAGE_MAGIC:
+        return None
+    p = hdr
+    while p + hdr <= len(blob):
+        h = blob[p:p + hdr]
+        name = h[:size_off]
+        z = name.find(b"\0")
+        if z >= 0:
+            name = name[:z]
+        if not name:
+            break
+        size = int.from_bytes(h[size_off:size_off + 8], "little")
+        start = p + hdr
+        if size < 0 or start + size > len(blob):
+            break
+        nm = name.decode("latin1")
+        if nm == "LONELY_N_SINGLE":
+            break
+        if SINGLEIMAGE_LOADER.match(nm):
+            return blob[start:start + size]
+        p += hdr + size + ((pageln - size % pageln) % pageln)
+    return None
+
+
+def expand_singleimages(root):
+    """Carve the programmer out of each SINGLE_N_LONELY container under root into a
+    sidecar the loader scan can pick up. Idempotent; returns how many it wrote."""
+    written = 0
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or ".git" in p.parts or p.name.endswith(".programmer.elf"):
+            continue
+        try:
+            with open(p, "rb") as f:
+                if f.read(len(SINGLEIMAGE_MAGIC)) != SINGLEIMAGE_MAGIC:
+                    continue
+                blob = SINGLEIMAGE_MAGIC + f.read()
+        except OSError:
+            continue
+        sidecar = p.with_name(p.name + ".programmer.elf")
+        if sidecar.exists():
+            continue
+        prog = singleimage_programmer(blob)
+        if prog:
+            sidecar.write_bytes(prog)
+            written += 1
+    return written
+
+
 def repair_magic(head):
     """Sellers neuter loaders by flipping one byte of the magic: \\x7fELE for \\x7fELF,
     d1dc4b87 for the MBN codeword. Everything after the magic still validates, so the file
@@ -796,6 +856,10 @@ def main():
     for repo, root, site, url_for in sources:
         if not root.exists():
             continue
+        # Blankflash donors (Motorola singleimage.bin) hide the programmer inside a
+        # SINGLE_N_LONELY container the flat scan skips; carve it out first.
+        if n := expand_singleimages(root):
+            print(f"  [singleimage] {repo}: carved {n} programmer(s)")
         for path in sorted(root.rglob("*")):
             if not path.is_file() or ".git" in path.parts:
                 continue
