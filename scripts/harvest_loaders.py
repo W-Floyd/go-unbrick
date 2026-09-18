@@ -76,6 +76,9 @@ DEFAULT_SITES = [
         "index": "https://therxtx.com/motorola-repair-center/motorola-blankflash/",
         "page_pattern": r"therxtx\.com/motorola-[^\"']*blankflash",
     },
+    # WordPress sites: enumerate a category via the REST API and pull each post's link.
+    {"wp": "https://www.gadgetsdr.com", "category": "emmc-files"},
+    {"wp": "https://bypassfrpfiles.com", "category": "qcom-firehose"},
 ]
 
 # Cool-off so repeated harvests don't hammer a scraped site: reuse the cached link
@@ -389,9 +392,23 @@ def resolve_archive_url(spec):
         # confirm=t skips the large-file virus-scan interstitial; harmless for small ones.
         return (f"https://drive.usercontent.google.com/download?id={gid}&export=download&confirm=t",
                 f"gdrive_{gid}")
+    m = re.search(r"mediafire\.com/file/([A-Za-z0-9]+)", spec)
+    if m:
+        # MediaFire hides the direct URL behind the /file/ page; resolve it at fetch time.
+        return spec, f"mediafire_{m.group(1)}"
     seg = [s for s in spec.rstrip("/").split("/") if s]
     stem = seg[-1] if seg else "download"
     return spec, re.sub(r"[^A-Za-z0-9._-]", "_", stem)
+
+
+def mediafire_direct(page_url):
+    """The download<N>.mediafire.com direct URL behind a MediaFire /file/ page."""
+    res = subprocess.run(["curl", "-fsSL", "--compressed", "--max-time", "45", "-A", SCRAPE_UA, page_url],
+                         capture_output=True)
+    if res.returncode != 0:
+        return None
+    m = re.search(rb'https://download[0-9]+\.mediafire\.com/[^"\'\s]+', res.stdout)
+    return m.group(0).decode() if m else None
 
 
 def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
@@ -404,6 +421,11 @@ def fetch_archive(spec, cache_dir, dry_run=False, refresh=False, password=None):
             print(f"  [curl] {spec}")
             if not dry_run:
                 archives.mkdir(parents=True, exist_ok=True)
+                if stem.startswith("mediafire_"):
+                    url = mediafire_direct(url)
+                    if not url:
+                        print(f"  [error] could not resolve MediaFire link {spec}", file=sys.stderr)
+                        return None
                 # Follow redirects (disroot 303s to DAV, Drive to usercontent); keep our own
                 # stable cache name rather than the server's.
                 if subprocess.run(["curl", "-fsSL", url, "-o", str(local)]).returncode != 0:
@@ -573,51 +595,88 @@ _HOST_LINK = re.compile(
     r"|https://www\.mediafire\.com/[^\s\"'<>]+")
 
 
-def scrape_site(site, cache_dir, dry_run=False, refresh=False):
-    """Two-level scrape: an index page links per-device pages, each of which links an
-    off-site archive (Drive/Mega/Mediafire). Returns those archive URLs.
+def _curl_text(url):
+    r = subprocess.run(["curl", "-fsSL", "--compressed", "--max-time", "60", "-A", SCRAPE_UA, url],
+                       capture_output=True)
+    return r.stdout.decode("utf-8", "ignore") if r.returncode == 0 else None
 
-    The link list is cached per index with a timestamp and only re-scraped once past
-    SCRAPE_TTL, so repeated harvests don't hammer the site -- the slow, rude part is
-    the fan-out over device pages, not the (separately cached) downloads.
-    """
+
+def _scrape_html_index(site):
+    """index page -> per-device pages (by page_pattern) -> off-site archive links."""
     index = site["index"]
     pattern = re.compile(site["page_pattern"])
+    html = _curl_text(index)
+    if html is None:
+        print(f"  [warning] failed to fetch index {index}", file=sys.stderr)
+        return []
+    pages = sorted({urllib.parse.urljoin(index, h)
+                    for h in re.findall(r'href="([^"]+)"', html) if pattern.search(h)})
+    links = []
+    for p in pages:
+        t = _curl_text(p)
+        if t:
+            links.extend(_HOST_LINK.findall(t))
+        time.sleep(SCRAPE_DELAY)
+    print(f"  [scrape] {index}: {len(pages)} page(s) -> {len(set(links))} link(s)")
+    return links
+
+
+def _scrape_wp_category(site):
+    """WordPress REST API: enumerate a category's posts and pull the archive link out of
+    each post's rendered content. Works on any WP firehose site, not just this one."""
+    base = site["wp"].rstrip("/")
+    slug = site["category"]
+    cats = _curl_text(f"{base}/wp-json/wp/v2/categories?slug={slug}")
+    try:
+        cat_id = json.loads(cats)[0]["id"]
+    except Exception:
+        print(f"  [warning] no WP category {slug!r} at {base}", file=sys.stderr)
+        return []
+    links, page = [], 1
+    while True:
+        body = _curl_text(f"{base}/wp-json/wp/v2/posts?categories={cat_id}&per_page=100&page={page}&_fields=content")
+        try:
+            posts = json.loads(body)
+        except Exception:
+            break
+        if not isinstance(posts, list) or not posts:
+            break
+        for post in posts:
+            links.extend(_HOST_LINK.findall(post.get("content", {}).get("rendered", "")))
+        if len(posts) < 100:
+            break
+        page += 1
+        time.sleep(SCRAPE_DELAY)
+    print(f"  [scrape] {base} [{slug}]: {len(set(links))} link(s)")
+    return links
+
+
+def scrape_site(site, cache_dir, dry_run=False, refresh=False):
+    """Collect off-site archive URLs from a site (HTML index or WordPress category).
+
+    The link list is cached per site for SCRAPE_TTL so repeated harvests don't hammer it:
+    the slow, rude part is the per-post/per-page fan-out, not the separately cached
+    downloads.
+    """
+    key = site.get("index") or f"{site['wp']}#cat={site['category']}"
     cache = cache_dir / "scrape_cache"
-    cachefile = cache / (re.sub(r"[^A-Za-z0-9._-]", "_", index) + ".json")
+    cachefile = cache / (re.sub(r"[^A-Za-z0-9._-]", "_", key) + ".json")
 
     if cachefile.exists() and not refresh:
         age = time.time() - cachefile.stat().st_mtime
         if age < SCRAPE_TTL:
             try:
                 links = json.loads(cachefile.read_text())["links"]
-                print(f"  [cache] {index}: {len(links)} link(s), scraped {int(age // 3600)}h ago")
+                print(f"  [cache] {key}: {len(links)} link(s), scraped {int(age // 3600)}h ago")
                 return links
             except Exception:
                 pass
     if dry_run:
         return []
 
-    print(f"  [scrape] {index}")
-    res = subprocess.run(["curl", "-fsSL", "--max-time", "60", "-A", SCRAPE_UA, index],
-                         capture_output=True)
-    if res.returncode != 0:
-        print(f"  [warning] failed to fetch index {index}", file=sys.stderr)
-        return []
-    html = res.stdout.decode("utf-8", "ignore")
-    pages = sorted({urllib.parse.urljoin(index, h)
-                    for h in re.findall(r'href="([^"]+)"', html) if pattern.search(h)})
-    links = []
-    for p in pages:
-        r = subprocess.run(["curl", "-fsSL", "--max-time", "45", "-A", SCRAPE_UA, p],
-                           capture_output=True)
-        if r.returncode == 0:
-            links.extend(_HOST_LINK.findall(r.stdout.decode("utf-8", "ignore")))
-        time.sleep(SCRAPE_DELAY)
-    links = sorted(set(links))
+    links = sorted(set(_scrape_wp_category(site) if "wp" in site else _scrape_html_index(site)))
     cache.mkdir(parents=True, exist_ok=True)
-    cachefile.write_text(json.dumps({"fetched_at": time.time(), "index": index, "links": links}, indent=2))
-    print(f"  [scrape] {index}: {len(pages)} page(s) -> {len(links)} link(s)")
+    cachefile.write_text(json.dumps({"fetched_at": time.time(), "key": key, "links": links}, indent=2))
     return links
 
 
