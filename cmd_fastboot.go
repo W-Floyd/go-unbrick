@@ -30,7 +30,7 @@ and transitioning from ABL bootloader mode into Qualcomm EDL (9008) mode.
 Resolves 'fastboot' binary directly from system PATH.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default to running reconnaissance
-			return runFastbootRecon(fastbootBin, serial, false)
+			return runFastbootRecon(fastbootBin, serial, false, false)
 		},
 	}
 
@@ -51,19 +51,20 @@ Resolves 'fastboot' binary directly from system PATH.`,
 }
 
 func newFastbootReconCmd(fastbootBin, serial *string) *cobra.Command {
-	var raw bool
+	var raw, redact bool
 	c := &cobra.Command{
 		Use:   "recon",
 		Short: "query device variables, audit dual-slot health, and cross-reference catalog & library",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFastbootRecon(*fastbootBin, *serial, raw)
+			return runFastbootRecon(*fastbootBin, *serial, raw, redact)
 		},
 	}
 	c.Flags().BoolVar(&raw, "raw", false, "also dump the device's raw output (every getvar var and oem probe line)")
+	c.Flags().BoolVar(&redact, "redact", false, "mask per-device identifiers and secrets (serial, IMEI, UID, chip id, cid_prov_req digest) for sharing")
 	return c
 }
 
-func runFastbootRecon(fastbootBin, serial string, raw bool) error {
+func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
 	client, err := fastboot.NewClient(fastbootBin)
 	if err != nil {
 		return err
@@ -101,14 +102,14 @@ func runFastbootRecon(fastbootBin, serial string, raw bool) error {
 			continue
 		}
 
-		printReconReport(d.Serial, recon, cat, lib, raw)
+		printReconReport(d.Serial, recon, cat, lib, raw, redact)
 	}
 
 	return nil
 }
 
-func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw bool) {
-	fmt.Printf("Fastboot Device: %s\n", serial)
+func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw, redact bool) {
+	fmt.Printf("Fastboot Device: %s\n", mask(redact, serial))
 
 	// 1. Hardware
 	fmt.Println("  Hardware:")
@@ -137,18 +138,19 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		printField("Battery", voltStr+socText)
 	}
 	if r.UID != "" {
-		uidDesc := r.UID
+		uidDesc := mask(redact, r.UID)
 		if r.JTAGID != "" {
-			uidDesc = fmt.Sprintf("%s (JTAG ID: %s)", r.UID, r.JTAGID)
+			// JTAG_ID is SoC-wide, not per-device — never redacted.
+			uidDesc = fmt.Sprintf("%s (JTAG ID: %s)", mask(redact, r.UID), r.JTAGID)
 		}
 		printField("Silicon UID", uidDesc)
 	}
-	printField("Chip ID", r.ChipID)
-	printField("IMEI", r.IMEI)
+	printField("Chip ID", mask(redact, r.ChipID))
+	printField("IMEI", mask(redact, r.IMEI))
 	printField("Manufactured", r.ManufactureDate)
 	printField("Display Panel", r.PrimaryDisplay)
 	if r.PCBPartNo != "" || r.BattID != "" {
-		printField("Part Numbers", strings.TrimSpace(fmt.Sprintf("PCB %s  Battery %s", r.PCBPartNo, r.BattID)))
+		printField("Part Numbers", strings.TrimSpace(fmt.Sprintf("PCB %s  Battery %s", mask(redact, r.PCBPartNo), mask(redact, r.BattID))))
 	}
 
 	if r.HardwareFeatures != nil {
@@ -216,7 +218,8 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 			parts = append(parts, fmt.Sprintf("fmt v%d", cp.FormatVersion))
 		}
 		if cp.Digest != "" {
-			parts = append(parts, "digest "+cp.Digest)
+			// Per-device hardware-key-derived secret; masked under --redact.
+			parts = append(parts, "digest "+mask(redact, cp.Digest))
 		}
 		kv := make([]string, 0, len(cp.Fields))
 		for k, v := range cp.Fields {
@@ -433,13 +436,20 @@ func printReconReport(serial string, r *fastboot.DeviceRecon, cat *catalog.Catal
 		}
 	}
 	if raw {
-		printRawDump(r)
+		printRawDump(r, redact)
 	}
+}
+
+// sensitiveVar names getvar variables that carry a per-device identifier, masked under
+// --redact so a shared raw dump does not leak them.
+var sensitiveVar = map[string]bool{
+	"imei": true, "imei2": true, "meid": true, "uid": true, "chipid": true,
+	"serialno": true, "serial": true, "battid": true, "iccid": true, "esimid": true,
 }
 
 // printRawDump shows everything the device reported that the curated report leaves out:
 // every getvar variable, and the oem-probe lines (cid_prov_req as a hex dump).
-func printRawDump(r *fastboot.DeviceRecon) {
+func printRawDump(r *fastboot.DeviceRecon, redact bool) {
 	fmt.Println("\n  Raw Device Output:")
 	if len(r.RawVars) > 0 {
 		fmt.Println("    getvar all:")
@@ -449,14 +459,29 @@ func printRawDump(r *fastboot.DeviceRecon) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			fmt.Printf("      %s: %s\n", k, r.RawVars[k])
+			v := r.RawVars[k]
+			if sensitiveVar[strings.ToLower(k)] {
+				v = mask(redact, v)
+			}
+			fmt.Printf("      %s: %s\n", k, v)
 		}
 	}
 	if cp := r.CIDProvReq; cp != nil {
 		fmt.Printf("    oem cid_prov_req (%d bytes):\n", len(cp.Raw))
 		if len(cp.Raw) > 0 {
-			for off := 0; off < len(cp.Raw); off += 16 {
-				row := cp.Raw[off:min(off+16, len(cp.Raw))]
+			dump := cp.Raw
+			if redact {
+				// Blank the two per-device regions: the digest (0x42) and the chip
+				// serial (0x5C). Offsets are the reverse-engineered structure.
+				dump = append([]byte(nil), cp.Raw...)
+				for _, rg := range [][2]int{{0x42, 0x52}, {0x5c, 0x60}} {
+					for i := rg[0]; i < rg[1] && i < len(dump); i++ {
+						dump[i] = 0
+					}
+				}
+			}
+			for off := 0; off < len(dump); off += 16 {
+				row := dump[off:min(off+16, len(dump))]
 				var asc strings.Builder
 				for _, b := range row {
 					if b >= 32 && b < 127 {
@@ -508,6 +533,18 @@ func printField(label, val string) {
 	if val != "" {
 		fmt.Printf("    %-20s %s\n", label+":", val)
 	}
+}
+
+// mask hides the middle of a per-device identifier or secret, keeping enough at each
+// end to correlate two dumps without exposing the full value. Only when redact is set.
+func mask(redact bool, s string) string {
+	if !redact || s == "" {
+		return s
+	}
+	if len(s) <= 8 {
+		return strings.Repeat("•", len(s))
+	}
+	return s[:4] + "…" + s[len(s)-4:]
 }
 
 func newFastbootSlotCmd(fastbootBin, serial *string) *cobra.Command {
