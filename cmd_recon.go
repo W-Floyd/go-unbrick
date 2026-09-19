@@ -730,11 +730,8 @@ func typeLabel(name string, head []byte) string {
 	case filetype.ELF:
 		return "ELF"
 	}
-	if len(head) >= 8 && string(head[:8]) == "MotoLogo" {
-		return "MotoLogo"
-	}
-	if _, ok := cid.Version(head); ok {
-		return "Motorola CID"
+	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
+		return info.Label
 	}
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".nvm":
@@ -819,6 +816,10 @@ func summarize(head, data []byte) string {
 			return fmt.Sprintf(" — %d records", len(recs)-1)
 		}
 	}
+	// Vendor-specific formats with no neutral magic (CID, MotoLogo, SLCF).
+	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok && info.Detail != "" {
+		return " — " + info.Detail
+	}
 	return ""
 }
 
@@ -869,37 +870,22 @@ func reconContainer(path string) error {
 }
 
 func reconContentFallback(path string, head []byte) error {
-	// Motorola CID partition image (magic 0x00F0).
-	if v, ok := cid.Version(head); ok {
-		fmt.Printf("  Motorola CID image, version %d", v)
-		if cid.IsSigned(head) {
-			fmt.Printf(" (signed, secure-production)")
+	// Vendor-specific content with no neutral magic (CID image, MotoLogo, SLCF).
+	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
+		line := "  " + info.Label
+		if info.Detail != "" {
+			line += " — " + info.Detail
 		}
-		fmt.Println()
+		fmt.Println(line)
 		return nil
 	}
-	// SLCF subsidy config (.nvm): ASCII hex NV records.
-	if strings.HasSuffix(strings.ToLower(path), ".nvm") || hasSLCFPrefix(head) {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		cfg, err := vendor.ParseSLCF(data)
-		if err == nil {
-			if !cfg.Locked {
-				fmt.Printf("  Motorola SLCF subsidy config: no lock (retail default)\n")
-			} else {
-				fmt.Printf("  Motorola SLCF subsidy config: LOCKED, %d-digit key, %d network(s)\n", cfg.ControlKeyDigits, len(cfg.PLMNs))
-			}
-			return nil
-		}
+	// An empty subsidy default (.nvm) has no content to recognize.
+	if strings.HasSuffix(strings.ToLower(path), ".nvm") {
+		fmt.Println("  Motorola SLCF subsidy config: no lock (retail default)")
+		return nil
 	}
 	fmt.Printf("  (no deeper recognizer; try `inspect` for ELF/blankflash detail)\n")
 	return nil
-}
-
-func hasSLCFPrefix(head []byte) bool {
-	return len(head) >= 4 && string(head[:4]) == "8021"
 }
 
 func humanBytes(n int64) string {
