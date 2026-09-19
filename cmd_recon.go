@@ -526,6 +526,38 @@ func reconZip(path string) error {
 			}
 		}
 	}
+	// HAB signing binding + anti-rollback baseline from signing-info.txt.
+	if _, data, err := srcfile.Open(path, "signing-info.txt"); err == nil {
+		if si := vendor.ParseSigningInfo(data); si != nil {
+			parts := []string{}
+			if si.HABCID >= 0 {
+				parts = append(parts, fmt.Sprintf("HAB CID %d", si.HABCID))
+			}
+			if si.SecurityVersion >= 0 {
+				parts = append(parts, fmt.Sprintf("security-version %d", si.SecurityVersion))
+			}
+			if si.Region != "" {
+				parts = append(parts, "region "+si.Region)
+			}
+			if si.CustomerSigned {
+				parts = append(parts, "customer-signed")
+			}
+			if len(parts) > 0 {
+				fmt.Printf("  Signing: %s\n", strings.Join(parts, ", "))
+			}
+			if len(si.Rollback) > 0 {
+				enf := "not enforced"
+				if si.EnforceOTARoll {
+					enf = "enforced"
+				}
+				if len(si.RollbackBumped) == 0 {
+					fmt.Printf("  Anti-rollback: %s, all %d images at 0x00 (baseline)\n", enf, len(si.Rollback))
+				} else {
+					fmt.Printf("  Anti-rollback: %s, bumped: %s\n", enf, strings.Join(si.RollbackBumped, ", "))
+				}
+			}
+		}
+	}
 	// Cascade through the members, descending into nested containers.
 	members, err := srcfile.Members(path, 8192)
 	if err != nil || len(members) == 0 {
