@@ -647,8 +647,30 @@ func cascade(name string, data []byte, indent string, depth int) {
 		}
 	case filetype.GPT:
 		if t, err := qfil.ParseGPT(data); err == nil {
+			cat := activeCatalog()
+			others := 0
 			for _, p := range t.Partitions {
-				fmt.Printf("%s  %-22s %s\n", indent, p.Name, humanBytes(int64(p.NumSectors*uint64(t.SectorSize))))
+				sz := int64(p.NumSectors * uint64(t.SectorSize))
+				base := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(p.Name, "_a"), "_b"))
+				r, ok := cat.PartitionRule(p.Name)
+				// Interesting = per-device data you must preserve, plus the big dynamic
+				// containers; the replaceable boot chain (from the package) is collapsed.
+				if !(cat.IsProtected(p.Name) || base == "super" || base == "userdata") {
+					others++
+					continue
+				}
+				tag := ""
+				if ok && r.Category != "" {
+					tag = "  (" + r.Category
+					if r.Criticality != "" {
+						tag += "/" + r.Criticality
+					}
+					tag += ")"
+				}
+				fmt.Printf("%s  %-20s %s%s\n", indent, p.Name, humanBytes(sz), tag)
+			}
+			if others > 0 {
+				fmt.Printf("%s  (+%d replaceable boot/other partitions)\n", indent, others)
 			}
 		}
 	case filetype.AndroidBoot, filetype.AndroidVendorBoot:
