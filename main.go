@@ -71,7 +71,8 @@ func newRootCmd() *cobra.Command {
 		newCatalogCmd(), newLibraryCmd(), newDeriveCmd(),
 		newStockCmd(), newEFICmd(), newDiffCmd(),
 		newSafeguardCmd(), newFastbootCmd(), newBootimgCmd(),
-		newEDLCmd(), newUnlockCmd(), newCIDCmd(),
+		newEDLCmd(), newUnlockCmd(), newCIDCmd(), newModemCmd(), newSLCFCmd(),
+		newReconCmd(),
 	)
 	return root
 }

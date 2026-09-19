@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
 	"go-unbrick/internal/cid"
+	"go-unbrick/internal/srcfile"
 )
 
 // newCIDCmd groups offline CID (carrier/customer ID) inspection of firmware.
@@ -19,16 +19,18 @@ func newCIDCmd() *cobra.Command {
 	return c
 }
 
-// newCIDVBMetaCmd reads the CID a firmware's vbmeta.img is built for, from its
-// HAB_META AVB property — so you can compare a package's target CID against a
-// device's live `fastboot getvar cid` before flashing.
+// newCIDVBMetaCmd reads the codename and CID from a vbmeta.img HAB_META property.
+// NOTE: this HAB_META CID is a signing/base value, constant across a device's
+// carrier variants — it is NOT the carrier CID the bootloader matches. For that,
+// read flashfile.xml's cid_value (see `recon` on a stock zip). This command is
+// still useful to confirm the codename and base signing CID of a lone vbmeta.img.
 func newCIDVBMetaCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "vbmeta <vbmeta.img>",
-		Short: "extract the target codename and CID from a vbmeta image (HAB_META)",
+		Use:   "vbmeta <stock.zip | vbmeta.img>",
+		Short: "read the codename and base (signing) CID from a vbmeta image (HAB_META)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			data, err := os.ReadFile(args[0])
+			_, data, err := srcfile.Open(args[0], "vbmeta.img")
 			if err != nil {
 				return err
 			}
@@ -36,21 +38,9 @@ func newCIDVBMetaCmd() *cobra.Command {
 			if !ok {
 				return fmt.Errorf("no HAB_META property found in %s (not a Motorola vbmeta image?)", args[0])
 			}
-			fmt.Printf("Codename: %s\n", m.Codename)
-			fmt.Printf("CID:      %s (%d)\n", m.CIDHex(), m.CID)
-
-			cat := activeCatalog()
-			// HAB_META is a Motorola scheme; scope the CID lookup to the device's
-			// vendor (from the codename), defaulting to motorola.
-			vendorID := "motorola"
-			if d, ok := cat.Device(m.Codename); ok && d.Vendor != "" {
-				vendorID = d.Vendor
-			}
-			if name := cat.CarrierIDName(vendorID, m.CIDHex()); name != "" {
-				fmt.Printf("Carrier:  %s\n", name)
-			} else if ref := cat.CarrierIDReference(vendorID, m.CIDHex()); ref != "" {
-				fmt.Printf("Carrier:  %s\n", ref)
-			}
+			fmt.Printf("Codename:  %s\n", m.Codename)
+			fmt.Printf("HAB CID:   %s (%d) — signing/base value, not the carrier CID\n", m.CIDHex(), m.CID)
+			fmt.Printf("           (carrier CID is flashfile.xml cid_value; see `recon`)\n")
 			return nil
 		},
 	}
