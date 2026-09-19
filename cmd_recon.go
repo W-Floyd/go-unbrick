@@ -645,6 +645,12 @@ func cascade(name string, data []byte, indent string, depth int) {
 			}
 			cascade(r.Name, r.Data, indent+"  ", depth-1)
 		}
+	case filetype.GPT:
+		if t, err := qfil.ParseGPT(data); err == nil {
+			for _, p := range t.Partitions {
+				fmt.Printf("%s  %-22s %s\n", indent, p.Name, humanBytes(int64(p.NumSectors*uint64(t.SectorSize))))
+			}
+		}
 	case filetype.AndroidBoot, filetype.AndroidVendorBoot:
 		descendBootRamdisk(data, indent+"  ")
 	case filetype.SparseImage:
