@@ -56,7 +56,9 @@ func Detect(head []byte) Kind {
 		return DeviceTree
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0xed26ff3a:
 		return SparseImage
-	case len(head) >= 520 && bytes.Equal(head[512:520], []byte("EFI PART")):
+	case len(head) >= 520 && bytes.Equal(head[512:520], []byte("EFI PART")): // 512-byte sectors
+		return GPT
+	case len(head) >= 4104 && bytes.Equal(head[4096:4104], []byte("EFI PART")): // 4K sectors (UFS)
 		return GPT
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("EFI PART")): // header with no protective MBR
 		return GPT

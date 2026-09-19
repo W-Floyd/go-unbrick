@@ -11,6 +11,8 @@ func TestDetect(t *testing.T) {
 	binary.LittleEndian.PutUint16(ext4[0x438:], 0xEF53)
 	gpt := make([]byte, 520)
 	copy(gpt[512:], "EFI PART")
+	gpt4k := make([]byte, 4104)
+	copy(gpt4k[4096:], "EFI PART")
 	sparse := make([]byte, 4)
 	binary.LittleEndian.PutUint32(sparse, 0xed26ff3a)
 	erofs := make([]byte, 1028)
@@ -29,6 +31,7 @@ func TestDetect(t *testing.T) {
 		{"avb", []byte("AVB0xxxx"), VBMeta},
 		{"sparse", sparse, SparseImage},
 		{"gpt", gpt, GPT},
+		{"gpt-4k", gpt4k, GPT},
 		{"ext4", ext4, Ext4},
 		{"erofs", erofs, EROFS},
 		{"dtbo", dtbo, DTBOTable},

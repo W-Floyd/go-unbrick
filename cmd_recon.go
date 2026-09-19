@@ -300,7 +300,7 @@ func runFileRecon(path string) error {
 	if err != nil {
 		return err
 	}
-	head := make([]byte, 4096)
+	head := make([]byte, 8192) // enough for a 4K-sector GPT header at offset 4096
 	n, _ := io.ReadFull(f, head)
 	head = head[:n]
 	fi, _ := f.Stat()
@@ -528,7 +528,7 @@ func reconZip(path string) error {
 		}
 	}
 	// Cascade through the members, descending into nested containers.
-	members, err := srcfile.Members(path, 4096)
+	members, err := srcfile.Members(path, 8192)
 	if err != nil || len(members) == 0 {
 		return err
 	}
@@ -623,12 +623,10 @@ func isContainer(k filetype.Kind) bool {
 
 // cascade prints one node and recurses into its children up to depth levels.
 func cascade(name string, data []byte, indent string, depth int) {
-	head := data
-	if len(head) > 4096 {
-		head = data[:4096]
-	}
-	kind := filetype.Detect(head)
-	fmt.Printf("%s%-26s [%s]%s\n", indent, name, typeLabel(name, head), summarize(head, data))
+	// Detect on the full in-memory record: some magics (a 4K-sector GPT header)
+	// sit past the first 4 KiB. filetype only indexes what it needs, so this is cheap.
+	kind := filetype.Detect(data)
+	fmt.Printf("%s%-26s [%s]%s\n", indent, name, typeLabel(name, data), summarize(data, data))
 	if kind == filetype.ELF {
 		collectKeys(data)
 	}
