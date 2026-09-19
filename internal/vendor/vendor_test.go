@@ -539,4 +539,3 @@ func TestContentBasedIngestion(t *testing.T) {
 		t.Errorf("Xiaomi CanIngest failed to detect post-build=xiaomi/ in %s", xiaomiZip)
 	}
 }
-

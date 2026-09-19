@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/cid"
 )
 
 // ArtifactInfo is a vendor-recognized file: a short type label and optional detail.
@@ -23,10 +22,10 @@ type ArtifactInfo struct {
 // format matches.
 func RecognizeArtifact(cat *catalog.Catalog, data []byte) (ArtifactInfo, bool) {
 	// Motorola CID image (magic 0x00F0): v0 carrier template or signed v2 record.
-	if v, ok := cid.Version(data); ok {
+	if v, ok := CIDVersion(data); ok {
 		info := ArtifactInfo{Label: "Motorola CID"}
-		if v == 0 && len(data) >= cid.Size {
-			if ch, err := cid.Parse(data[:cid.Size]); err == nil {
+		if v == 0 && len(data) >= CIDSize {
+			if ch, err := CIDParse(data[:CIDSize]); err == nil {
 				hexv := fmt.Sprintf("0x%04x", ch)
 				info.Detail = "v0 template, channel " + hexv
 				if cat != nil {
@@ -39,7 +38,7 @@ func RecognizeArtifact(cat *catalog.Catalog, data []byte) (ArtifactInfo, bool) {
 			}
 		} else {
 			info.Detail = fmt.Sprintf("v%d", v)
-			if cid.IsSigned(data) {
+			if CIDIsSigned(data) {
 				info.Detail += " signed (secure-production)"
 			}
 		}

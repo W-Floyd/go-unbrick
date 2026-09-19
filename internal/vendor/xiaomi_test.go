@@ -222,10 +222,10 @@ func TestXiaomiRecoveryZipAliasTranslation(t *testing.T) {
 	copy(gptData[4096:], "EFI PART")
 
 	zipBytes := createTestZip(t, map[string][]byte{
-		"firmware-update/qupv3fw.elf":  qupfwData,
-		"firmware-update/uefi_sec.mbn": uefiData,
-		"firmware-update/km4.mbn":      kmData,
-		"firmware-update/NON-HLOS.bin": modemData,
+		"firmware-update/qupv3fw.elf":   qupfwData,
+		"firmware-update/uefi_sec.mbn":  uefiData,
+		"firmware-update/km4.mbn":       kmData,
+		"firmware-update/NON-HLOS.bin":  modemData,
 		"firmware-update/gpt_main0.bin": gptData,
 	}, false)
 

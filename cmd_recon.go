@@ -20,7 +20,6 @@ import (
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/bootelf"
 	"go-unbrick/internal/bootimg"
-	"go-unbrick/internal/cid"
 	"go-unbrick/internal/dtbo"
 	"go-unbrick/internal/filetype"
 	"go-unbrick/internal/lp"
@@ -489,7 +488,7 @@ func reconZip(path string) error {
 	// carrier variants (e.g. HAB_META says 0x0032 even in a 0x0033 package).
 	codename := ""
 	if _, data, err := srcfile.Open(path, "vbmeta.img"); err == nil {
-		if m, ok := cid.ParseHABMeta(data); ok {
+		if m, ok := vendor.ParseHABMeta(data); ok {
 			codename = m.Codename
 		}
 	}
@@ -767,7 +766,7 @@ func summarize(head, data []byte) string {
 		if h, err := avb.Parse(head); err == nil {
 			s := fmt.Sprintf(" — libavb %d.%d, %s", h.VersionMajor, h.VersionMinor, h.Algorithm)
 			if data != nil {
-				if m, ok := cid.ParseHABMeta(data); ok {
+				if m, ok := vendor.ParseHABMeta(data); ok {
 					s += fmt.Sprintf(", HAB %s/%s", m.Codename, m.CIDHex())
 				}
 			}
@@ -835,7 +834,7 @@ func reconVBMeta(path string) error {
 			fmt.Printf("  Signed by: %s\n", h.Release)
 		}
 	}
-	if m, ok := cid.ParseHABMeta(data); ok {
+	if m, ok := vendor.ParseHABMeta(data); ok {
 		fmt.Printf("  HAB_META: codename %s, base CID %s (signing value, not carrier CID)\n", m.Codename, m.CIDHex())
 	}
 	return nil

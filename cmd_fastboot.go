@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/cid"
 	"go-unbrick/internal/fastboot"
 	"go-unbrick/internal/library"
 	"go-unbrick/internal/safeguard"
@@ -737,12 +736,12 @@ func newFastbootSetCIDCmd(fastbootBin, serial *string) *cobra.Command {
 				return err
 			}
 			defer os.Remove(f.Name())
-			if _, err := f.Write(cid.Build(value)); err != nil {
+			if _, err := f.Write(vendor.CIDBuild(value)); err != nil {
 				f.Close()
 				return err
 			}
 			f.Close()
-			fmt.Printf("Built CID 0x%04X (%d bytes: %s)\n", value, cid.Size, filepath.Base(f.Name()))
+			fmt.Printf("Built CID 0x%04X (%d bytes: %s)\n", value, vendor.CIDSize, filepath.Base(f.Name()))
 
 			if !yes {
 				fmt.Printf("\nAbout to flash the cid partition with 0x%04X. Type 'cid' to proceed: ", value)

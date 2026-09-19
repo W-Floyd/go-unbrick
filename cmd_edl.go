@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/cid"
 	"go-unbrick/internal/edl"
 	"go-unbrick/internal/qfil"
+	"go-unbrick/internal/vendor"
 )
 
 // Bundle filenames the qfil driver emits (internal/qfil).
@@ -280,7 +280,7 @@ func newEDLSetCIDCmd() *cobra.Command {
 			if err := validateBundle(dir); err != nil {
 				return err
 			}
-			img := cid.Build(value)
+			img := vendor.CIDBuild(value)
 			imgPath := filepath.Join(dir, edlCIDName)
 			if err := os.WriteFile(imgPath, img, 0o644); err != nil {
 				return err
@@ -338,7 +338,7 @@ func newEDLSetCIDCmd() *cobra.Command {
 // cidVersionDesc names the CID format of a read-back image, to explain a failed verify:
 // a version-2 image is the signed, write-protected form.
 func cidVersionDesc(img []byte) string {
-	if v, ok := cid.Version(img); ok {
+	if v, ok := vendor.CIDVersion(img); ok {
 		if v >= 2 {
 			return fmt.Sprintf("v%d (signed/protected)", v)
 		}
@@ -380,10 +380,10 @@ func newEDLReadCIDCmd() *cobra.Command {
 			}
 			// The loader returns the whole (sector-padded) partition; the image is
 			// its first 44 bytes.
-			if len(raw) < cid.Size {
-				return fmt.Errorf("cid read-back is %d bytes, want at least %d", len(raw), cid.Size)
+			if len(raw) < vendor.CIDSize {
+				return fmt.Errorf("cid read-back is %d bytes, want at least %d", len(raw), vendor.CIDSize)
 			}
-			value, err := cid.Parse(raw[:cid.Size])
+			value, err := vendor.CIDParse(raw[:vendor.CIDSize])
 			if err != nil {
 				return err
 			}

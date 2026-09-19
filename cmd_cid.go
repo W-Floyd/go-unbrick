@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/cid"
 	"go-unbrick/internal/srcfile"
+	"go-unbrick/internal/vendor"
 )
 
 // newCIDCmd groups offline CID (carrier/customer ID) inspection of firmware.
@@ -34,7 +34,7 @@ func newCIDVBMetaCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			m, ok := cid.ParseHABMeta(data)
+			m, ok := vendor.ParseHABMeta(data)
 			if !ok {
 				return fmt.Errorf("no HAB_META property found in %s (not a Motorola vbmeta image?)", args[0])
 			}

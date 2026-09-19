@@ -484,4 +484,3 @@ func (qualcomm) Assemble(d *blankflash.Donor, t *blankflash.Target, opts Assembl
 		Provision: opts.Provision,
 	})
 }
-
