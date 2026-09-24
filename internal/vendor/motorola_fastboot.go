@@ -128,41 +128,55 @@ func MotoUnlockData(r *fastboot.DeviceRecon) string {
 	return v
 }
 
-// motoUnlockCrossCheck compares the challenge's device-bound fields — the salt
-// (the chip UID) and the serial — against what the rest of recon read from
-// getvar. Provisioning bakes them together, so a mismatch means the cid record
-// belongs to a different unit (a transplanted or cloned board): the code derived
-// from it would not unlock THIS device. Returns a suffix for the report line, or
-// "" when there is nothing to compare. Under redact it states the verdict without
-// echoing the identifiers.
-func motoUnlockCrossCheck(r *fastboot.DeviceRecon, wire string, redact bool) string {
+// motoBinding is one device-bound field of an unlock challenge, compared
+// against what getvar reported for this unit.
+type motoBinding struct{ Field, Got, Want string }
+
+// motoUnlockBinding compares the challenge's device-bound fields — the salt (the
+// chip UID) and the serial — against what the rest of recon read from getvar.
+// Provisioning bakes them together, so a mismatch means the cid record belongs
+// to a different unit (a transplanted or cloned board): the code derived from it
+// would not unlock THIS device. It is the body of both the report line and the
+// registered cross-fact check, so the two cannot drift.
+func motoUnlockBinding(r *fastboot.DeviceRecon, wire string) (bound []string, foreign []motoBinding) {
 	rec, err := parseMotoWire(wire)
 	if err != nil {
-		return ""
+		return nil, nil
 	}
-	var bound, foreign []string
 	if r.UID != "" && len(rec.salt) >= 8 {
 		uid := strings.ToLower(strings.ReplaceAll(r.UID, " ", ""))
 		if got := hex.EncodeToString(rec.salt[:8]); got == uid {
 			bound = append(bound, "UID")
-		} else if redact {
-			foreign = append(foreign, "UID")
 		} else {
-			foreign = append(foreign, "UID "+got+" ≠ "+uid)
+			foreign = append(foreign, motoBinding{"UID", got, uid})
 		}
 	}
 	if r.Serial != "" && rec.serial != "" {
 		if strings.EqualFold(rec.serial, r.Serial) {
 			bound = append(bound, "serial")
-		} else if redact {
-			foreign = append(foreign, "serial")
 		} else {
-			foreign = append(foreign, "serial "+rec.serial+" ≠ "+r.Serial)
+			foreign = append(foreign, motoBinding{"serial", rec.serial, r.Serial})
 		}
 	}
+	return bound, foreign
+}
+
+// motoUnlockCrossCheck renders the binding verdict as a suffix for the report
+// line, or "" when there is nothing to compare. Under redact it states the
+// verdict without echoing the identifiers.
+func motoUnlockCrossCheck(r *fastboot.DeviceRecon, wire string, redact bool) string {
+	bound, foreign := motoUnlockBinding(r, wire)
 	switch {
 	case len(foreign) > 0:
-		return " [!] FOREIGN cid — provisioned for another device (" + strings.Join(foreign, "; ") + ")"
+		parts := make([]string, 0, len(foreign))
+		for _, f := range foreign {
+			if redact {
+				parts = append(parts, f.Field)
+				continue
+			}
+			parts = append(parts, f.Field+" "+f.Got+" ≠ "+f.Want)
+		}
+		return " [!] FOREIGN cid — provisioned for another device (" + strings.Join(parts, "; ") + ")"
 	case len(bound) > 0:
 		return " — ✓ device-bound (" + strings.Join(bound, " + ") + " match)"
 	default:

@@ -18,6 +18,7 @@ const (
 	headerMagic    = 0x414c5030 // "0PLA" LE
 	sectorSize     = 512
 	partitionNames = 36 // name field length in an LpMetadataPartition
+	extentLinear   = 0  // LP_TARGET_TYPE_LINEAR
 )
 
 // Partition is one logical partition in super.
@@ -25,6 +26,11 @@ type Partition struct {
 	Name      string
 	SizeBytes uint64
 	Group     string
+	// OffsetBytes is where the partition's first extent begins within super,
+	// from the extent's target_data sector. Zero for a partition with no linear
+	// extent. Enough to seek to a logical volume (system, product) inside super
+	// without mapping it.
+	OffsetBytes uint64
 }
 
 // Metadata is the parsed super map.
@@ -85,6 +91,17 @@ func Parse(data []byte) (*Metadata, error) {
 		}
 		return le.Uint64(tables[base : base+8]) // num_sectors is first
 	}
+	// extentTarget is the physical sector a LINEAR extent starts at. The extent
+	// struct is packed: {num_sectors u64, target_type u32, target_data u64,
+	// target_source u32}, so target_data sits at offset 12, not 16. 0 for a
+	// non-linear or missing extent.
+	extentTarget := func(idx uint32) uint64 {
+		base := int(eOff + idx*eEntry)
+		if base+20 > len(tables) || le.Uint32(tables[base+8:base+12]) != extentLinear {
+			return 0
+		}
+		return le.Uint64(tables[base+12 : base+20])
+	}
 
 	for i := uint32(0); i < pNum; i++ {
 		base := int(pOff + i*pEntry)
@@ -104,7 +121,10 @@ func Parse(data []byte) (*Metadata, error) {
 		if int(groupIdx) < len(groups) {
 			grp = groups[groupIdx]
 		}
-		m.Partitions = append(m.Partitions, Partition{Name: name, SizeBytes: sectors * sectorSize, Group: grp})
+		m.Partitions = append(m.Partitions, Partition{
+			Name: name, SizeBytes: sectors * sectorSize, Group: grp,
+			OffsetBytes: extentTarget(firstExtent) * sectorSize,
+		})
 	}
 	return m, nil
 }

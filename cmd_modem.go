@@ -25,7 +25,7 @@ func newModemCmd() *cobra.Command {
 		Use:   "modem",
 		Short: "inspect a Motorola modem image (radio.img / NON-HLOS.bin)",
 	}
-	c.AddCommand(newModemLsCmd(), newModemExtractCmd())
+	c.AddCommand(newModemLsCmd(), newModemExtractCmd(), newModemRawCmd())
 	return c
 }
 
@@ -79,5 +79,34 @@ func newModemExtractCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVarP(&out, "out", "o", "", "write to this path instead of printing size+hash")
+	return c
+}
+
+func newModemRawCmd() *cobra.Command {
+	var out string
+	c := &cobra.Command{
+		Use:   "raw <stock.zip | radio.img | NON-HLOS.bin>",
+		Short: "write the resolved raw ext4 image (for external tools)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			img, err := modemImage(args[0])
+			if err != nil {
+				return err
+			}
+			raw, err := modem.Resolve(img)
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				out = "modem_ext4.img"
+			}
+			if err := os.WriteFile(out, raw, 0o644); err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s (%d bytes)\n", out, len(raw))
+			return nil
+		},
+	}
+	c.Flags().StringVarP(&out, "out", "o", "", "output path (default modem_ext4.img)")
 	return c
 }

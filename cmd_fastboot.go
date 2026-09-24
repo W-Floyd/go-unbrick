@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 
 	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/facts"
 	"go-unbrick/internal/fastboot"
 	"go-unbrick/internal/library"
 	"go-unbrick/internal/safeguard"
@@ -30,7 +30,7 @@ and transitioning from ABL bootloader mode into Qualcomm EDL (9008) mode.
 Resolves 'fastboot' binary directly from system PATH.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default to running reconnaissance
-			return runFastbootRecon(fastbootBin, serial, false, false)
+			return runFastbootRecon(fastbootBin, serial, false, false, "", false, "")
 		},
 	}
 
@@ -84,61 +84,23 @@ func (e *fastbootEnv) Catalog() *catalog.Catalog { return activeCatalog() }
 func (e *fastbootEnv) Library() *library.Library { return library.Open(libraryDir()) }
 
 func newFastbootReconCmd(fastbootBin, serial *string) *cobra.Command {
-	var raw, redact bool
+	var raw, redact, noLearn bool
+	var pin string
+	var why string
 	c := &cobra.Command{
 		Use:   "recon",
 		Short: "query device variables, audit dual-slot health, and cross-reference catalog & library",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFastbootRecon(*fastbootBin, *serial, raw, redact)
+			return runFastbootRecon(*fastbootBin, *serial, raw, redact, why, noLearn, pin)
 		},
 	}
+	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why soc), with every corroborating source")
 	c.Flags().BoolVar(&raw, "raw", false, "also dump the device's raw output (every getvar var and oem probe line)")
 	c.Flags().BoolVar(&redact, "redact", false, "mask per-device identifiers and secrets (serial, IMEI, UID, chip id, cid_prov_req digest, unlock challenge) for sharing")
+	c.Flags().BoolVar(&noLearn, "no-learn", false, "do not record this device's non-identifying facts to the library knowledge store")
+	c.Flags().StringVar(&pin, "pin", "", "tie this recon to a named device session (stitched with edl/adb/ssh recons of the same physical device under the same label)")
 	return c
 }
-
-// barSink drives a schollz/progressbar from fastboot recon steps. The step total
-// is not fully known up front (the partition-probe count is discovered mid-run),
-// so Begin seeds it and AddTotal/ChangeMax extends it as ProbePartitionState is
-// entered. nil bar = progress disabled (stderr not a terminal).
-type barSink struct{ bar *progressbar.ProgressBar }
-
-func (b *barSink) Begin(total int) {
-	// Fixed total = probe count; it never grows, so the bar only moves forward
-	// (per-partition sub-steps relabel via Describe without advancing). The last
-	// Advance reaches max and ClearOnFinish wipes the line before the report.
-	b.bar = progressbar.NewOptions(total,
-		progressbar.OptionSetWriter(os.Stderr),
-		progressbar.OptionSetDescription("querying device"),
-		progressbar.OptionShowDescriptionAtLineEnd(), // bar first, label after it
-		progressbar.OptionSetWidth(24),
-		progressbar.OptionClearOnFinish(),
-	)
-}
-
-func (b *barSink) Describe(label string) {
-	if b.bar != nil {
-		b.bar.Describe(label)
-	}
-}
-
-func (b *barSink) Advance() {
-	if b.bar != nil {
-		_ = b.bar.Add(1)
-	}
-}
-
-// stderrProgress returns a progress sink, or nil when stderr is not a terminal
-// (keeps piped output clean). Callers clear the bar with clearProgress before
-// printing the report.
-func stderrProgress() fastboot.ProgressSink {
-	if fi, err := os.Stderr.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
-		return nil
-	}
-	return &barSink{}
-}
-
-func clearProgress() { fmt.Fprint(os.Stderr, "\r\033[K") }
 
 // colorEnabled is true when stdout is a terminal and NO_COLOR is unset, so the
 // report stays plain text when piped or redirected.
@@ -214,7 +176,7 @@ func hwRevPhase(rev string) string {
 	}
 }
 
-func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
+func runFastbootRecon(fastbootBin, serial string, raw, redact bool, why string, noLearn bool, pin string) error {
 	client, err := fastboot.NewClient(fastbootBin)
 	if err != nil {
 		return err
@@ -263,7 +225,7 @@ func runFastbootRecon(fastbootBin, serial string, raw, redact bool) error {
 		printReconDeviceSections(d.Serial, recon, cat, lib, vendorID, redact)
 		client.RunProbes(recon.Serial, recon)
 		clearProgress()
-		printReconAnalysis(client, recon, cat, lib, raw, redact)
+		printReconAnalysis(client, recon, cat, lib, raw, redact, why, noLearn, pin)
 	}
 
 	return nil
@@ -460,7 +422,7 @@ func printReconDeviceSections(serial string, r *fastboot.DeviceRecon, cat *catal
 // (vendor sections) plus the local catalog/library analysis. Split from the
 // getvar-derived device sections so the latter can stream out before the probes
 // run — see runFastbootRecon.
-func printReconAnalysis(client *fastboot.Client, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw, redact bool) {
+func printReconAnalysis(client *fastboot.Client, r *fastboot.DeviceRecon, cat *catalog.Catalog, lib *library.Library, raw, redact bool, why string, noLearn bool, pin string) {
 	// 4c. Vendor-specific sections (sensors, anti-rollback, CID provisioning,
 	// utag variant space) come from the installed profile's reporter — the
 	// command layer prints them without naming a vendor.
@@ -556,8 +518,40 @@ func printReconAnalysis(client *fastboot.Client, r *fastboot.DeviceRecon, cat *c
 			}
 		}
 	}
+	// 7. Cross-checks. Everything above is what the device said; this is what the
+	// derivation graph makes of it — the same graph the file-side recon runs, so a
+	// device fact and a package fact are checked against each other by one set of
+	// rules. Only the judgments print here; the values already have their sections.
+	printDeviceFacts(r, cat, why, redact, noLearn, pin)
+
 	if raw {
 		printRawDump(client, r, redact)
+	}
+}
+
+// printDeviceFacts resolves the collected recon through the derivation graph and
+// prints what it found wrong, plus a --why trace when one was asked for.
+func printDeviceFacts(r *fastboot.DeviceRecon, cat *catalog.Catalog, why string, redact, noLearn bool, pin string) {
+	bag := facts.NewBag()
+	facts.Set(bag, fastboot.SourceRecon, r,
+		facts.Provenance{Source: "getvar all", Authority: facts.Attested})
+	if cat != nil {
+		facts.Set(bag, facts.SourceCatalog, cat,
+			facts.Provenance{Source: "catalog", Authority: facts.Reference})
+	}
+	res := reconGraph().ResolveAll(bag, facts.Options{})
+	if len(res.Findings) > 0 {
+		fmt.Println("\n" + cHdr("  Cross-checks:"))
+		printFindings(res.Findings)
+	}
+	if why != "" {
+		fmt.Println("\n" + cHdr("  Derivation of "+why+":"))
+		for _, line := range facts.Explain(bag, why) {
+			fmt.Println("    " + mask(redact, line))
+		}
+	}
+	if !noLearn {
+		learnFromRecon(bag, pin, []string{r.Serial})
 	}
 }
 

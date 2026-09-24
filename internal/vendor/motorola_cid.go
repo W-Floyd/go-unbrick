@@ -126,3 +126,52 @@ func CIDParse(img []byte) (uint16, error) {
 	}
 	return binary.BigEndian.Uint16(img[cidValueOffset:]), nil
 }
+
+// cidDead is the carrier value ABL loads on a corrupt/unprovisioned record —
+// the 0xDEAD state (a 16-bit 0xffff sentinel), not a real channel.
+const cidDead = 0xffff
+
+// cidBaseForVersion is the record header base offset, exactly as ABL's CID
+// loader (FUN_0004b340) computes it: version ≤1 (and the unsigned v0 template)
+// use base 0x28, the v2 signed record uses 0x2a.
+func cidBaseForVersion(v uint16) int {
+	if v >= 2 {
+		return 0x2a
+	}
+	return 0x28
+}
+
+// CIDCarrier reads the carrier channel from a cid partition image of any version.
+// ABL loads it as a big-endian u16 at header_base+2 after RSA-verifying a signed
+// (v2) record; offline we cannot verify the signature, so a v2 value is
+// unattested — the caller must treat it as lower authority than a package
+// manifest. Returns false for the 0xDEAD sentinel (a corrupt/unprovisioned cid,
+// not a channel) and for anything without the 0x00F0 magic.
+//
+// The layout is not reverse-engineered guesswork: it is what FUN_0004b340 does.
+// See ../fogona-abl-notes dec/CRYPTO.md and FACTORY.md.
+//
+// How strong the corroboration is, precisely: a real fogona v2 dump reads
+// 0x0032 here, which matches that device's HAB_META CID — but fogona's HAB
+// (signing/base) CID is 0x0032 on *every* variant, including the packages whose
+// carrier cid_value is 0x0033. So agreement with HAB_META shows the offset is
+// not nonsense; it does not show that the field is the carrier CID rather than
+// the base CID, because on this device family the two coincide at 0x0032. A
+// unit whose carrier CID is 0x0033 is what would distinguish them, and no such
+// dump is in the corpus. Until one is, `fastboot getvar cid` is the
+// authoritative answer for a live device and this stays Derived.
+func CIDCarrier(img []byte) (uint16, bool) {
+	v, ok := CIDVersion(img)
+	if !ok {
+		return 0, false
+	}
+	off := cidBaseForVersion(v) + 2
+	if len(img) < off+2 {
+		return 0, false
+	}
+	val := binary.BigEndian.Uint16(img[off:])
+	if val == cidDead {
+		return 0, false
+	}
+	return val, true
+}

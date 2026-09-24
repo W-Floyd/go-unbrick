@@ -15,6 +15,7 @@ import (
 
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/catalog"
+	"go-unbrick/internal/facts"
 	"go-unbrick/internal/fastboot"
 	"go-unbrick/internal/library"
 	"go-unbrick/internal/unlock"
@@ -237,6 +238,65 @@ func EDLCommands(d Driver) [][]string {
 	}
 	return e.EDLCommands()
 }
+
+// FactDeriver is an optional Driver capability: the derivations this OEM knows
+// — which fact it can produce from which source, at what cost and authority.
+// It is how vendor knowledge reaches the neutral planner without the planner
+// learning any of it.
+type FactDeriver interface {
+	FactProviders() []facts.Provider
+}
+
+// FactChecker is an optional Driver capability: this OEM's cross-fact
+// invariants (an unlock salt that must equal the device UID, a signing CID that
+// must match its customer region). Same-fact disagreement needs no vendor code
+// — the planner finds it — so only relationships *between* facts belong here.
+type FactChecker interface {
+	FactChecks() []facts.Check
+}
+
+// FactRecognizer is an optional Driver capability: telling this OEM's own
+// formats apart by their content, so ingesting a package is a matter of asking
+// each member what it is rather than asking the package for names we guessed.
+type FactRecognizer interface {
+	FactRecognizers() []facts.Recognizer
+}
+
+// Recognizers gathers every registered driver's format recognizers.
+func Recognizers() []facts.Recognizer {
+	var out []facts.Recognizer
+	for _, d := range Drivers() {
+		if fr, ok := d.(FactRecognizer); ok {
+			out = append(out, fr.FactRecognizers()...)
+		}
+	}
+	return out
+}
+
+// Providers gathers every registered driver's derivations.
+func Providers() []facts.Provider {
+	var out []facts.Provider
+	for _, d := range Drivers() {
+		if fd, ok := d.(FactDeriver); ok {
+			out = append(out, fd.FactProviders()...)
+		}
+	}
+	return out
+}
+
+// Checks gathers every registered driver's cross-fact invariants.
+func Checks() []facts.Check {
+	var out []facts.Check
+	for _, d := range Drivers() {
+		if fc, ok := d.(FactChecker); ok {
+			out = append(out, fc.FactChecks()...)
+		}
+	}
+	return out
+}
+
+// FactGraph is the derivation graph of everything the registered vendors know.
+func FactGraph() *facts.Graph { return facts.New(Providers(), Checks()) }
 
 // StockNamer is an optional Driver capability: reading the device codename the
 // OEM stamped into a harvested stock image, so an import can identify itself

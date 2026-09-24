@@ -16,13 +16,21 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"go-unbrick/internal/adb"
 	"go-unbrick/internal/avb"
 	"go-unbrick/internal/blankflash"
 	"go-unbrick/internal/bootelf"
 	"go-unbrick/internal/bootimg"
+	"go-unbrick/internal/devcfg"
 	"go-unbrick/internal/dtbo"
+	"go-unbrick/internal/edl"
+	"go-unbrick/internal/facts"
+	"go-unbrick/internal/fastboot"
 	"go-unbrick/internal/filetype"
+	"go-unbrick/internal/imgfacts"
+	"go-unbrick/internal/linuxdev"
 	"go-unbrick/internal/lp"
+	"go-unbrick/internal/mcfg"
 	"go-unbrick/internal/modem"
 	"go-unbrick/internal/qfil"
 	"go-unbrick/internal/rsakey"
@@ -38,7 +46,8 @@ import (
 // resolved through the vendor seam and vendor parsers.
 func newReconCmd() *cobra.Command {
 	var depth int
-	var carve string
+	var carve, why string
+	var verify, learn bool
 	c := &cobra.Command{
 		Use:   "recon <file>",
 		Short: "identify any file (stock zip, image, container, config) and report what it is",
@@ -46,11 +55,17 @@ func newReconCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reconDepth = depth
 			reconCarveDir = carve
+			reconWhy = why
+			reconVerify = verify
+			reconLearn = learn
 			return runFileRecon(args[0])
 		},
 	}
 	c.Flags().IntVar(&depth, "depth", 4, "how many container levels to cascade into (zip → radio → NON-HLOS → ext4)")
 	c.Flags().StringVar(&carve, "carve", "", "write every unique embedded cert (PEM+DER) and key (PEM) to this directory")
+	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
+	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
+	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
 	return c
 }
 
@@ -59,6 +74,201 @@ var reconDepth = 4
 
 // reconCarveDir, when set, is where extracted certs/keys are written (--carve).
 var reconCarveDir string
+
+// reconWhy names the fact whose derivation to explain (--why); reconVerify opts
+// into running redundant derivations for cross-checking (--verify).
+var (
+	reconWhy    string
+	reconVerify bool
+	// reconLearn opts a file recon into contributing its raw facts to the
+	// knowledge store — off by default, since an image's facts describe the
+	// artifact, not a unit in hand; on, they corroborate what devices report.
+	reconLearn bool
+)
+
+// reconGraph is every derivation available to a recon: the neutral device and
+// image providers, the booted-Linux ones, plus whatever the registered vendors
+// contribute. Every recon builds it, which is what lets a fact from a package, a
+// fact from the bootloader and a fact from a running install meet in one Bag.
+func reconGraph() *facts.Graph {
+	ps := append(fastboot.FactProviders(), imgfacts.FactProviders()...)
+	ps = append(ps, linuxdev.FactProviders()...)
+	ps = append(ps, adb.FactProviders()...)
+	ps = append(ps, edl.FactProviders()...)
+	return facts.New(append(ps, vendor.Providers()...), vendor.Checks())
+}
+
+// reconRecognizers is what any recon hands its bytes to: the neutral formats
+// plus each vendor's own. Shared so a partition read off a live device is
+// recognized by the very rules a packaged image is.
+func reconRecognizers() []facts.Recognizer {
+	return append(imgfacts.Recognizers(), vendor.Recognizers()...)
+}
+
+// reconIngest resolves everything a file can say about itself. What it contains
+// is discovered, not assumed: every member is offered to the recognizers, which
+// decide what each one is from its content, and only then does the planner run.
+func reconIngest(path string) (*facts.Bag, []facts.Finding) {
+	bag := facts.NewBag()
+	if cat := activeCatalog(); cat != nil {
+		facts.Set(bag, facts.SourceCatalog, cat,
+			facts.Provenance{Source: "catalog", Authority: facts.Reference})
+	}
+	bar := newBar()
+	defer bar.Clear()
+	if err := imgfacts.Ingest(bag, reconRecognizers(), path, bar); err != nil {
+		return bag, []facts.Finding{{Severity: facts.Warn, Message: "reading " + filepath.Base(path) + ": " + err.Error()}}
+	}
+	res := reconGraph().ResolveAll(bag, facts.Options{Verify: reconVerify})
+	return bag, res.Findings
+}
+
+// printWhy prints the derivation trace --why asked for.
+func printWhy(b *facts.Bag) {
+	if reconWhy == "" {
+		return
+	}
+	for _, line := range facts.Explain(b, reconWhy) {
+		fmt.Println("  " + line)
+	}
+}
+
+// printIdentityFacts renders what the planner resolved about a device or the
+// firmware for one, each line under the caller's indent.
+//
+// Order and wording are the report's, not the graph's: the bag is keyed by fact,
+// the reader wants identity, then build, then what is locked down. It does not
+// care where the bytes came from, so a stock package and a set of partitions
+// read off a live device print the same way.
+func printIdentityFacts(b *facts.Bag, indent string) {
+	for _, line := range identityFactLines(b) {
+		fmt.Println(indent + line)
+	}
+}
+
+func identityFactLines(b *facts.Bag) []string {
+	var out []string
+	add := func(format string, a ...any) { out = append(out, fmt.Sprintf(format, a...)) }
+
+	if cid, ok := facts.Get(b, facts.CID); ok {
+		line := fmt.Sprintf("Target: CID 0x%04X", cid)
+		if name, ok := facts.Get(b, facts.Codename); ok {
+			line = fmt.Sprintf("Target: codename %s, CID 0x%04X", name, cid)
+		}
+		if mk, ok := facts.Get(b, vendor.MarketingName); ok {
+			line += fmt.Sprintf(" (%s)", mk)
+		}
+		if carrier, ok := facts.Get(b, facts.Carrier); ok {
+			line += " — " + carrier
+		}
+		out = append(out, line)
+	}
+	if v, ok := facts.Get(b, facts.SoftwareVersion); ok {
+		add("Build:  %s", v)
+	}
+	if v, ok := facts.Get(b, facts.BuildFingerprint); ok {
+		add("Fingerprint: %s", v)
+	}
+	if v, ok := facts.Get(b, facts.SystemFingerprint); ok {
+		add("System fp:   %s", v)
+	}
+	if v, ok := facts.Get(b, facts.SecurityPatch); ok {
+		add("Patch level: %s", v)
+	}
+	if v, ok := facts.Get(b, facts.AVBKey); ok {
+		line := "AVB key: sha256 " + short(v)
+		if rb, ok := facts.Get(b, facts.AVBRollbackIndex); ok {
+			line += fmt.Sprintf(", rollback %d", rb)
+		}
+		out = append(out, line)
+	}
+	var comp []string
+	if v, ok := facts.Get(b, vendor.MBMVersion); ok {
+		comp = append(comp, "MBM "+v)
+	}
+	if v, ok := facts.Get(b, vendor.ModemVersion); ok {
+		comp = append(comp, "modem "+v)
+	}
+	if len(comp) > 0 {
+		add("Components: %s", strings.Join(comp, ", "))
+	}
+	if lock, ok := facts.Get(b, vendor.SubsidyLock); ok {
+		add("Subsidy: %s", b.Show(vendor.SubsidyLock.Name(), lock))
+	}
+	var signing []string
+	if v, ok := facts.Get(b, facts.SigningCID); ok {
+		signing = append(signing, fmt.Sprintf("HAB CID %d", v))
+	}
+	if v, ok := facts.Get(b, facts.SecurityVersion); ok {
+		signing = append(signing, fmt.Sprintf("security-version %d", v))
+	}
+	if v, ok := facts.Get(b, facts.Region); ok {
+		signing = append(signing, "region "+v)
+	}
+	if v, _ := facts.Get(b, facts.CustomerSigned); v {
+		signing = append(signing, "customer-signed")
+	}
+	if len(signing) > 0 {
+		add("Signing: %s", strings.Join(signing, ", "))
+	}
+	var sb []string
+	if v, ok := facts.Get(b, facts.JTAGID); ok {
+		sb = append(sb, "JTAG "+v)
+	}
+	if v, ok := facts.Get(b, facts.OEMID); ok {
+		sb = append(sb, "OEM_ID "+v)
+	}
+	if v, ok := facts.Get(b, facts.RootKeyHash); ok {
+		sb = append(sb, "root "+short(v))
+	}
+	if len(sb) > 0 {
+		add("Secure boot: %s", strings.Join(sb, ", "))
+	}
+	if table, ok := facts.Get(b, facts.AntiRollbackTable); ok {
+		enf := "not enforced"
+		if v, _ := facts.Get(b, facts.EnforceAntiRollback); v {
+			enf = "enforced"
+		}
+		if bumped := facts.Bumped(table); len(bumped) == 0 {
+			add("Anti-rollback: %s, all %d images at 0x00 (baseline)", enf, len(table))
+		} else {
+			add("Anti-rollback: %s, bumped: %s", enf, strings.Join(bumped, ", "))
+		}
+	}
+	if ids, ok := facts.Get(b, imgfacts.OTACerts); ok {
+		add("OTA key: %s", b.Show(imgfacts.OTACerts.Name(), ids))
+	}
+	var props []string
+	if v, ok := facts.Get(b, facts.BuildDate); ok {
+		props = append(props, "built "+v)
+	}
+	if v, ok := facts.Get(b, facts.ABEnabled); ok {
+		if v {
+			props = append(props, "A/B seamless")
+		} else {
+			props = append(props, "non-A/B")
+		}
+	}
+	if len(props) > 0 {
+		add("Properties: %s", strings.Join(props, ", "))
+	}
+	return out
+}
+
+// printFindings renders the planner's judgments after the values, the way the
+// rest of recon warns: a same-fact disagreement, or a broken cross-fact invariant.
+func printFindings(fs []facts.Finding) {
+	for _, f := range fs {
+		switch f.Severity {
+		case facts.Error:
+			fmt.Println(cBad("  [!] " + f.Message))
+		case facts.Info:
+			fmt.Println(cGood("  [✓] " + f.Message))
+		default:
+			fmt.Println(cWarn("  [!] " + f.Message))
+		}
+	}
+}
 
 // certRec is one unique embedded key/cert, deduped across the whole recon so the
 // shared attestation chain (Root CA 724, Motorola CA, …) prints once, not per image.
@@ -313,10 +523,13 @@ func runFileRecon(path string) error {
 	fmt.Printf("  Type:  %s\n", kind)
 
 	resetCerts() // keys/certs are gathered during the walk, printed deduped after
+	// Resolve before rendering: the identity lines a package prints are the
+	// planner's answers, and the judgments about them print after everything else.
+	bag, findings := reconIngest(path)
 	var rerr error
 	switch kind {
 	case filetype.Zip:
-		rerr = reconZip(path)
+		rerr = reconZip(path, bag)
 	case filetype.VBMeta:
 		rerr = reconVBMeta(path)
 	case filetype.SingleNLonely:
@@ -335,7 +548,7 @@ func runFileRecon(path string) error {
 		rerr = reconExt4(path)
 	default:
 		// Vendor-specific content with no neutral magic: Motorola CID image or SLCF.
-		rerr = reconContentFallback(path, head)
+		rerr = reconContentFallback(path, head, bag)
 	}
 	printCollectedKeys()
 	if reconCarveDir != "" && len(certAccum.order) > 0 {
@@ -343,6 +556,21 @@ func runFileRecon(path string) error {
 			return err
 		}
 	}
+	printWhy(bag)
+	if reconLearn {
+		// Only a codename-scoped artifact (a stock package, a device image) is
+		// device knowledge. A lone component — one MBN, one loader — has only a
+		// JTAG, and JTAG names the silicon, not the unit: the same part ships in
+		// every device sharing that die, so learning it keyed by JTAG would pool
+		// unrelated phones. JTAG-fallback keying is for a *live* device (still one
+		// unit), never a file.
+		if _, ok := facts.Get(bag, facts.Codename); ok {
+			learnFromRecon(bag, "", nil) // no unit in hand, so no serial to stitch by
+		} else {
+			fmt.Printf("\n  %s no codename in this artifact — a lone component is not device knowledge; not learned\n", cWarn("[i]"))
+		}
+	}
+	printFindings(findings)
 	return rerr
 }
 
@@ -397,7 +625,41 @@ func reconELF(path string) error {
 		fmt.Printf("  Secboot: %s HW_ID=%s key=RSA-%d\n", secbootAnnotate(id), id.HWID, id.KeyBits)
 	}
 	collectKeys(data)
+	printDevcfgPolicy(data)
 	return nil
+}
+
+// printDevcfgPolicy surfaces the OEM secure-boot posture when the ELF is a
+// devcfg.mbn — the /tz/oem TrustZone policy node. It is the one place the device
+// declares its ROT-transfer, RPMB-keystore, anti-rollback (MRC) and image-
+// encryption stance, none of which is visible from the signature chain.
+func printDevcfgPolicy(data []byte) {
+	for _, c := range devcfg.FromELF(data) {
+		p := c.OEM()
+		if !p.Found {
+			continue
+		}
+		fmt.Println("  OEM secure-boot policy (/tz/oem):")
+		yn := func(b bool) string {
+			if b {
+				return "yes"
+			}
+			return "no"
+		}
+		fmt.Printf("    ROT transfer (SendROT):  APPS %s, MODEM %s\n", yn(p.ROTTransferAPPS), yn(p.ROTTransferMODEM))
+		fmt.Printf("    RPMB keystore/counter:   keystore %s, counter %s, key-provision %s, autoprov %s\n",
+			yn(p.RPMBKeystore), yn(p.RPMBCounter), yn(p.AllowRPMBKeyProvision), yn(!p.DisableRPMBAutoprov))
+		fmt.Printf("    Anti-rollback (MRC):     activation-list %d, revocation-list %d\n", p.MRCActivation, p.MRCRevocation)
+		extras := []string{"counter-measures " + yn(p.CounterMeasure), "image-encryption " + yn(p.ImageEncryption)}
+		if p.HasPubKey {
+			extras = append(extras, "OEM RSA pubkey embedded")
+		}
+		if p.HasPKHashFuse {
+			extras = append(extras, "ROT PK-hash field present")
+		}
+		fmt.Printf("    %s\n", strings.Join(extras, ", "))
+		return
+	}
 }
 
 func reconGPT(path string) error {
@@ -470,10 +732,28 @@ func reconExt4(path string) error {
 		}
 		fmt.Printf("    %-28s %s\n", e.Path, humanBytes(int64(e.Size)))
 	}
+	printModemCarrier(data, "  ")
 	return nil
 }
 
-func reconZip(path string) error {
+// printModemCarrier prints the carrier/variant each mcfg config in a modem
+// filesystem is built for — the identity that ties this modem image to a carrier.
+func printModemCarrier(ext4 []byte, indent string) {
+	if bb := modem.Baseband(ext4); bb != "" {
+		fmt.Printf("%sModem baseband: %s\n", indent, bb)
+	}
+	entries, err := modem.List(ext4)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if note := mcfgNote(ext4, e.Path); note != "" {
+			fmt.Printf("%sModem %s\n", indent, note)
+		}
+	}
+}
+
+func reconZip(path string, bag *facts.Bag) error {
 	// Which vendor's package is this?
 	vendorID := ""
 	if drv, ok := vendor.Detect(path); ok {
@@ -483,81 +763,18 @@ func reconZip(path string) error {
 	if _, pkg, ok := vendor.DetectStock(path); ok && pkg != nil {
 		fmt.Printf("  Kind:   stock firmware package\n")
 	}
-	// Authoritative target CID comes from flashfile.xml (cid_value), not the vbmeta
-	// HAB_META CID — that one is a signing/base value, constant across a device's
-	// carrier variants (e.g. HAB_META says 0x0032 even in a 0x0033 package).
-	codename := ""
-	if _, data, err := srcfile.Open(path, "vbmeta.img"); err == nil {
-		if m, ok := vendor.ParseHABMeta(data); ok {
-			codename = m.Codename
-		}
-	}
-	if _, data, err := srcfile.Open(path, "flashfile.xml"); err == nil {
-		ff := vendor.ParseFlashfile(data)
-		if ff.CIDValue != "" {
-			line := "  Target: CID " + ff.CIDValue
-			if codename != "" {
-				line = fmt.Sprintf("  Target: codename %s, CID %s", codename, ff.CIDValue)
-			}
-			if name := activeCatalog().CarrierIDName(vendorID, ff.CIDValue); name != "" {
-				line += " — " + name
-			} else if ref := activeCatalog().CarrierIDReference(vendorID, ff.CIDValue); ref != "" {
-				line += " — " + ref
-			}
-			fmt.Println(line)
-		}
-		if ff.SoftwareVersion != "" {
-			fmt.Printf("  Build:  %s\n", ff.SoftwareVersion)
-		}
-	}
-	// Subsidy lock from the slcf member.
-	if names, _ := srcfile.Glob(path, "slcf_*.nvm"); len(names) > 0 {
-		if _, data, err := srcfile.Open(path, names...); err == nil {
-			if cfg, err := vendor.ParseSLCF(data); err == nil {
-				if cfg.Locked {
-					nets := make([]string, 0, len(cfg.PLMNs))
-					for _, p := range cfg.PLMNs {
-						nets = append(nets, p.String())
-					}
-					fmt.Printf("  Subsidy: LOCKED, %d-digit key, networks: %s\n", cfg.ControlKeyDigits, strings.Join(nets, ", "))
-				} else {
-					fmt.Printf("  Subsidy: none (retail)\n")
-				}
-			}
-		}
-	}
-	// HAB signing binding + anti-rollback baseline from signing-info.txt.
-	if _, data, err := srcfile.Open(path, "signing-info.txt"); err == nil {
-		if si := vendor.ParseSigningInfo(data); si != nil {
-			parts := []string{}
-			if si.HABCID >= 0 {
-				parts = append(parts, fmt.Sprintf("HAB CID %d", si.HABCID))
-			}
-			if si.SecurityVersion >= 0 {
-				parts = append(parts, fmt.Sprintf("security-version %d", si.SecurityVersion))
-			}
-			if si.Region != "" {
-				parts = append(parts, "region "+si.Region)
-			}
-			if si.CustomerSigned {
-				parts = append(parts, "customer-signed")
-			}
-			if len(parts) > 0 {
-				fmt.Printf("  Signing: %s\n", strings.Join(parts, ", "))
-			}
-			if len(si.Rollback) > 0 {
-				enf := "not enforced"
-				if si.EnforceOTARoll {
-					enf = "enforced"
-				}
-				if len(si.RollbackBumped) == 0 {
-					fmt.Printf("  Anti-rollback: %s, all %d images at 0x00 (baseline)\n", enf, len(si.Rollback))
-				} else {
-					fmt.Printf("  Anti-rollback: %s, bumped: %s\n", enf, strings.Join(si.RollbackBumped, ", "))
-				}
-			}
-		}
-	}
+	// The system partition's own build.prop, read from super, is the authoritative
+	// source of ro.system.build.fingerprint (the ramdisk's copy is stale) and it
+	// corroborates the patch/date. Read it before rendering so it shows and so a
+	// subsequent --learn contributes the true system identity.
+	learnSystemProps(path, bag)
+	// What the package says about itself was resolved before this ran: the
+	// recognizers decided what each member is, the vendor's rules turned those
+	// into facts, and the planner cross-checked the ones two members both
+	// produce. Recon only renders. In particular the carrier CID (flashfile
+	// cid_value) and the HAB signing CID (vbmeta HAB_META) are different facts,
+	// which is why their legitimate difference is not a disagreement.
+	printIdentityFacts(bag, "  ")
 	// Cascade through the members, descending into nested containers.
 	members, err := srcfile.Members(path, 8192)
 	if err != nil || len(members) == 0 {
@@ -567,30 +784,42 @@ func reconZip(path string) error {
 	fmt.Printf("  Contents (%d members):\n", len(members))
 	var chunkCount int
 	var chunkBytes int64
+	var expand []srcfile.Member
 	for _, m := range members {
-		base := filepath.Base(m.Name)
-		kind := filetype.Detect(m.Head)
 		// Collapse the super sparsechunk fragments into one aggregate line.
-		if strings.Contains(base, "sparsechunk") {
+		if strings.Contains(filepath.Base(m.Name), "sparsechunk") {
 			chunkCount++
 			chunkBytes += int64(m.Size)
 			continue
 		}
-		// Don't expand anything too big; label it and move on.
-		if int64(m.Size) > maxCascadeRead {
+		expand = append(expand, m)
+	}
+	// The bar shows only while a member is being read; it is cleared before
+	// anything prints, and the next member's Describe redraws it below.
+	bar := newBar()
+	bar.Begin(len(expand))
+	for _, m := range expand {
+		base := filepath.Base(m.Name)
+		kind := filetype.Detect(m.Head)
+		bar.Describe("reading " + base)
+		switch {
+		case int64(m.Size) > maxCascadeRead:
+			// Don't expand anything too big; label it and move on.
+			bar.Clear()
 			fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
-			continue
-		}
-		if !isContainer(kind) {
+		case !isContainer(kind):
+			bar.Clear()
 			fmt.Printf("    %-26s [%s]%s\n", base, typeLabel(base, m.Head), summarize(m.Head, nil))
-			continue
+		default:
+			_, data, err := srcfile.Open(path, base)
+			bar.Clear()
+			if err != nil {
+				fmt.Printf("    %-26s [%s]  (unreadable)\n", base, typeLabel(base, m.Head))
+			} else {
+				cascade(base, data, "    ", reconDepth)
+			}
 		}
-		_, data, err := srcfile.Open(path, base)
-		if err != nil {
-			fmt.Printf("    %-26s [%s]  (unreadable)\n", base, typeLabel(base, m.Head))
-			continue
-		}
-		cascade(base, data, "    ", reconDepth)
+		bar.Advance()
 	}
 	if chunkCount > 0 {
 		fmt.Printf("    %-26s [android-sparse]  %d fragments, %s (super: dynamic partitions)\n",
@@ -603,7 +832,9 @@ func reconZip(path string) error {
 // printSuperMap reads super's logical-partition map from just the first chunk
 // (the liblp metadata lives at the front), so it never expands the whole image.
 func printSuperMap(path, indent string) {
+	stop := spin("reading super metadata…")
 	_, chunk0, err := srcfile.Open(path, "super.img_sparsechunk.0")
+	stop()
 	if err != nil {
 		return
 	}
@@ -635,9 +866,18 @@ func secbootAnnotate(id *secboot.Identity) string {
 	if soc, ok := activeCatalog().SoCByJTAG(id.JTAGID); ok && soc != "" {
 		jtag += " (" + soc + ")"
 	}
-	sw := fmt.Sprintf("SW_ID=%d", id.SWID)
+	sw := fmt.Sprintf("SW_ID=%d", id.SWType())
 	if n := activeCatalog().SWIDName(id.SWID); n != "" {
 		sw += " (" + n + ")"
+	}
+	if m := id.Meta; m != nil {
+		sw += fmt.Sprintf(" ARB=%d", m.AntiRollback)
+		if len(id.Signers) > 1 {
+			sw += " QTI+OEM-signed"
+		}
+		if len(m.Serials) > 0 {
+			sw += fmt.Sprintf(" serial-bound(%d)", len(m.Serials))
+		}
 	}
 	return oem + " " + jtag + " " + sw
 }
@@ -722,11 +962,42 @@ func cascade(name string, data []byte, indent string, depth int) {
 					fmt.Printf("%s  … (+more; `modem ls`)\n", indent)
 					break
 				}
-				fmt.Printf("%s  %-24s %s\n", indent, filepath.Base(e.Path), humanBytes(int64(e.Size)))
+				line := fmt.Sprintf("%s  %-24s %s", indent, filepath.Base(e.Path), humanBytes(int64(e.Size)))
+				if note := mcfgNote(data, e.Path); note != "" {
+					line += " — " + note
+				}
+				fmt.Println(line)
 				shown++
 			}
 		}
 	}
+}
+
+// mcfgNote returns a one-line carrier/variant summary for an mcfg_*.mbn leaf, or
+// "" if the file is not an mcfg. It reads the member from the modem image and
+// parses the MCFG identity (the carrier this modem config is built for).
+func mcfgNote(ext4 []byte, path string) string {
+	b := strings.ToLower(filepath.Base(path))
+	if !strings.HasPrefix(b, "mcfg") || !strings.HasSuffix(b, ".mbn") {
+		return ""
+	}
+	data, err := modem.Extract(ext4, path)
+	if err != nil {
+		return ""
+	}
+	c, ok := mcfg.Parse(data)
+	if !ok || c.Profile == "" {
+		return ""
+	}
+	kind := "HW variant"
+	if c.SW {
+		kind = "carrier"
+	}
+	note := fmt.Sprintf("%s %q", kind, c.Profile)
+	if len(c.APNs) > 0 {
+		note += " (APNs: " + strings.Join(c.APNs, ", ") + ")"
+	}
+	return note
 }
 
 func ext4Notable(p string) bool {
@@ -789,6 +1060,9 @@ func summarize(head, data []byte) string {
 		}
 		if info, err := bootelf.Analyze(data); err == nil {
 			s := " — " + info.Arch
+			if info.QCVersion != "" {
+				s += ", " + info.QCVersion // e.g. TZ.XF.5.1.6-…, XBL.…, ABL.…
+			}
 			if id := info.Identity; id != nil {
 				s += ", " + secbootAnnotate(id)
 			}
@@ -859,17 +1133,98 @@ func reconVBMeta(path string) error {
 	if err != nil {
 		return err
 	}
-	if h, err := avb.Parse(data); err == nil {
-		fmt.Printf("  AVB:     libavb %d.%d, %s, rollback %d, flags 0x%x\n",
-			h.VersionMajor, h.VersionMinor, h.Algorithm, h.RollbackIndex, h.Flags)
+	if img, err := avb.ParseImage(data); err == nil {
+		h := img.Header
+		fmt.Printf("  AVB:     libavb %d.%d, %s, rollback %d (loc %d), flags 0x%x\n",
+			h.VersionMajor, h.VersionMinor, h.Algorithm, h.RollbackIndex, img.RollbackIndexLocation, h.Flags)
 		if h.Release != "" {
 			fmt.Printf("  Signed by: %s\n", h.Release)
 		}
+		if img.PublicKeySHA256 != "" {
+			fmt.Printf("  AVB key:  sha256 %s\n", img.PublicKeySHA256)
+		}
+		printAVBDescriptors(img)
 	}
 	if m, ok := vendor.ParseHABMeta(data); ok {
 		fmt.Printf("  HAB_META: codename %s, base CID %s (signing value, not carrier CID)\n", m.Codename, m.CIDHex())
 	}
 	return nil
+}
+
+// printAVBDescriptors renders the verified-boot manifest: which partitions AVB
+// protects (hash/hashtree), the partitions chained to a separate key, and the
+// per-partition os_version / security_patch the vbmeta signs over — the
+// authoritative source for the release each partition was built at.
+func printAVBDescriptors(img *avb.Image) {
+	var protected, chains []string
+	osv := map[string]string{}
+	patch := map[string]string{}
+	for _, d := range img.Descriptors {
+		switch d.Kind {
+		case "hash":
+			protected = append(protected, fmt.Sprintf("%s (%s)", d.Partition, humanBytes(int64(d.ImageSize))))
+		case "hashtree":
+			protected = append(protected, d.Partition+" (verity)")
+		case "chain":
+			chains = append(chains, fmt.Sprintf("%s → key sha256 %s (rollback loc %d)", d.Partition, short(d.ChainKeySHA256), d.ChainRollbackLoc))
+		case "property":
+			if p, ok := strings.CutPrefix(d.Key, "com.android.build."); ok {
+				if part, ok := strings.CutSuffix(p, ".os_version"); ok {
+					osv[part] = d.Value
+				} else if part, ok := strings.CutSuffix(p, ".security_patch"); ok {
+					patch[part] = d.Value
+				}
+			}
+		}
+	}
+	for _, c := range chains {
+		fmt.Printf("  AVB chain: %s\n", c)
+	}
+	if len(protected) > 0 {
+		fmt.Printf("  Protects: %s\n", strings.Join(protected, ", "))
+	}
+	// The os_version per partition is the signed record of the release split.
+	if rels := distinctValues(osv); len(rels) > 1 {
+		fmt.Printf("  OS version: split — %s\n", partitionsByValue(osv))
+	} else if len(rels) == 1 {
+		fmt.Printf("  OS version: %s (all partitions)\n", rels[0])
+	}
+	if p := distinctValues(patch); len(p) >= 1 {
+		fmt.Printf("  Patch level: %s\n", strings.Join(p, ", "))
+	}
+}
+
+// distinctValues returns the sorted unique values of a map.
+func distinctValues(m map[string]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range m {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// partitionsByValue groups partition names by their value, e.g.
+// "14: product,system · 13: boot,vendor".
+func partitionsByValue(m map[string]string) string {
+	byVal := map[string][]string{}
+	for part, v := range m {
+		byVal[v] = append(byVal[v], part)
+	}
+	vals := distinctValues(m)
+	// Show highest (newest) first.
+	sort.Sort(sort.Reverse(sort.StringSlice(vals)))
+	parts := make([]string, 0, len(vals))
+	for _, v := range vals {
+		ps := byVal[v]
+		sort.Strings(ps)
+		parts = append(parts, v+": "+strings.Join(ps, ","))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func reconContainer(path string) error {
@@ -896,11 +1251,12 @@ func reconContainer(path string) error {
 		if entries, err := modem.List(data); err == nil {
 			fmt.Printf("  Modem filesystem: %d files (try `modem ls`)\n", len(entries))
 		}
+		printModemCarrier(data, "  ")
 	}
 	return nil
 }
 
-func reconContentFallback(path string, head []byte) error {
+func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 	// Vendor-specific content with no neutral magic (CID image, MotoLogo, SLCF).
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
 		line := "  " + info.Label
@@ -915,8 +1271,28 @@ func reconContentFallback(path string, head []byte) error {
 		fmt.Println("  Motorola SLCF subsidy config: no lock (retail default)")
 		return nil
 	}
+	// No artifact recognizer claimed it, but a fact recognizer may have: say what
+	// the file turned out to be rather than that nothing read it.
+	if srcs := recognizedSources(bag); len(srcs) > 0 {
+		fmt.Printf("  Recognized: %s\n", strings.Join(srcs, ", "))
+		return nil
+	}
 	fmt.Printf("  (no deeper recognizer; try `inspect` for ELF/blankflash detail)\n")
 	return nil
+}
+
+// recognizedSources names the leaf sources ingestion found in the file itself,
+// dropping the two that describe the run rather than the file.
+func recognizedSources(bag *facts.Bag) []string {
+	var out []string
+	for _, n := range bag.Names() {
+		if !strings.HasPrefix(n, "source:") ||
+			n == facts.SourceCatalog.Name() || n == facts.SourceStockZip.Name() {
+			continue
+		}
+		out = append(out, strings.TrimPrefix(n, "source:"))
+	}
+	return out
 }
 
 func humanBytes(n int64) string {

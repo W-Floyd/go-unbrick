@@ -48,6 +48,7 @@ package devcfg
 
 import (
 	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"sort"
 )
@@ -205,6 +206,105 @@ func Parse(seg []byte, base uint64) (*Config, bool) {
 	}
 	sort.Slice(c.Devices, func(i, j int) bool { return c.Devices[i].Name < c.Devices[j].Name })
 	return c, true
+}
+
+// Device returns the named configuration node, e.g. "/tz/oem".
+func (c *Config) Device(name string) (Device, bool) {
+	for _, d := range c.Devices {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return Device{}, false
+}
+
+// Prop returns the named property of a device.
+func (d Device) Prop(name string) (Property, bool) {
+	for _, p := range d.Props {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Property{}, false
+}
+
+// FromELF decodes every devcfg store carried in a devcfg.mbn ELF. The blob is
+// split across PT_LOAD segments (one main store, plus a hyp/OEM store), each
+// with its own load address the in-image pointers resolve against, so the ELF
+// program headers are what make the pointers meaningful. Returns nil for a file
+// that is not a devcfg ELF.
+func FromELF(data []byte) []*Config {
+	f, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	var out []*Config
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_LOAD || p.Filesz == 0 {
+			continue
+		}
+		seg := make([]byte, p.Filesz)
+		if _, err := p.ReadAt(seg, 0); err != nil {
+			continue
+		}
+		if c, ok := Parse(seg, p.Paddr); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// OEMPolicy is the security-relevant subset of the /tz/oem node: the TrustZone
+// OEM secure-boot posture. It is the readable half of the crown jewels — the
+// RSA public key (OEM_pub_mod/exp) and the ROT PK-hash are stored as byte
+// pointers this decoder cannot yet resolve, so only their presence is reported.
+type OEMPolicy struct {
+	Found bool
+
+	ROTTransferAPPS  bool // OEM_rot_enable_transfer_APPS  — SendROT to the AP
+	ROTTransferMODEM bool // OEM_rot_enable_transfer_MODEM — SendROT to the modem
+
+	RPMBKeystore          bool // OEM_keystore_enable_rpmb
+	RPMBCounter           bool // OEM_counter_enable_rpmb
+	AllowRPMBKeyProvision bool // OEM_allow_rpmb_key_provision
+	DisableRPMBAutoprov   bool // OEM_disable_rpmb_autoprovisioning
+
+	MRCActivation  uint32 // OEM_MRC_activation_list  — multiple-root-cert select
+	MRCRevocation  uint32 // OEM_MRC_revocation_list  — revoked root certs
+	CounterMeasure bool   // OEM_counter_measure_enable
+
+	ImageEncryption bool // oem_image_encryption_key1_sel, or a non-zero key
+	HasPubKey       bool // OEM_pub_mod present (byte pointer, blob unresolved)
+	HasPKHashFuse   bool // OEM_rot_pk_hash1_fuse_values present
+}
+
+// OEM extracts the /tz/oem policy from a store, if it carries one.
+func (c *Config) OEM() OEMPolicy {
+	d, ok := c.Device("/tz/oem")
+	if !ok {
+		return OEMPolicy{}
+	}
+	p := OEMPolicy{Found: true}
+	u := func(name string) uint32 {
+		if pr, ok := d.Prop(name); ok {
+			return pr.Value
+		}
+		return 0
+	}
+	has := func(name string) bool { _, ok := d.Prop(name); return ok }
+	p.ROTTransferAPPS = u("OEM_rot_enable_transfer_APPS") != 0
+	p.ROTTransferMODEM = u("OEM_rot_enable_transfer_MODEM") != 0
+	p.RPMBKeystore = u("OEM_keystore_enable_rpmb") != 0
+	p.RPMBCounter = u("OEM_counter_enable_rpmb") != 0
+	p.AllowRPMBKeyProvision = u("OEM_allow_rpmb_key_provision") != 0
+	p.DisableRPMBAutoprov = u("OEM_disable_rpmb_autoprovisioning") != 0
+	p.MRCActivation = u("OEM_MRC_activation_list")
+	p.MRCRevocation = u("OEM_MRC_revocation_list")
+	p.CounterMeasure = u("OEM_counter_measure_enable") != 0
+	p.ImageEncryption = u("oem_image_encryption_key1_sel") != 0
+	p.HasPubKey = has("OEM_pub_mod")
+	p.HasPKHashFuse = has("OEM_rot_pk_hash1_fuse_values")
+	return p
 }
 
 // properties decodes the 8-byte records of one device's block.

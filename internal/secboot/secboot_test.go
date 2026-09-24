@@ -356,3 +356,156 @@ func TestFromELF_MELF(t *testing.T) {
 }
 
 
+
+func TestScanRestriction(t *testing.T) {
+	restricted := []byte("...\x00range restricted: lun=%lld...\x00handler %s is restricted!\x00Peek is disabled on secure boot devices%c\x00")
+	r := ScanRestriction(restricted)
+	if !r.Restricted() || !r.RangeGated || !r.HandlerGated || !r.PeekPokeOff {
+		t.Fatalf("restricted loader: %+v", r)
+	}
+	open := ScanRestriction([]byte("a plain firehose loader with no gate strings"))
+	if open.Restricted() {
+		t.Fatalf("unrestricted loader flagged: %+v", open)
+	}
+}
+
+// mbnV6Seg builds a v6 hash-segment prefix: the 48-byte header and one
+// metadata block per (signer, words) pair, QTI first as on disk.
+func mbnV6Seg(qti, oem []uint32) []byte {
+	le := binary.LittleEndian
+	hdr := make([]byte, 48)
+	le.PutUint32(hdr[4:], 6)
+	block := func(w []uint32) []byte {
+		b := make([]byte, mbnV6MetaSize)
+		for i, v := range w {
+			le.PutUint32(b[i*4:], v)
+		}
+		return b
+	}
+	var body []byte
+	if qti != nil {
+		le.PutUint32(hdr[40:], mbnV6MetaSize)
+		body = append(body, block(qti)...)
+	}
+	if oem != nil {
+		le.PutUint32(hdr[44:], mbnV6MetaSize)
+		body = append(body, block(oem)...)
+	}
+	return append(hdr, body...)
+}
+
+func TestParseMetadata(t *testing.T) {
+	// major, minor, sw_id, hw_id, oem_id, model_id, app_id, flags, soc_vers[12], serials[8], root, arb
+	words := func(sw, oem, flags, arb uint32, serial uint32) []uint32 {
+		w := make([]uint32, 30)
+		w[2], w[4], w[7], w[8], w[20], w[29] = sw, oem, flags, 0x9007, serial, arb
+		return w
+	}
+	md := parseMetadata(mbnV6Seg(words(7, 1, 0xa, 0, 0), words(7, 0x2e8, 0x2, 3, 0xdeadbeef)))
+	if len(md) != 2 || md[0].Signer != "oem" || md[1].Signer != "qti" {
+		t.Fatalf("signers: %+v", md)
+	}
+	m := md[0]
+	if m.SWID != 7 || m.OEMID != 0x2e8 || m.AntiRollback != 3 || m.Flags&MetaSoCHWVersion == 0 ||
+		len(m.SoCVersions) != 1 || m.SoCVersions[0] != 0x9007 || len(m.Serials) != 1 {
+		t.Fatalf("oem block: %+v", m)
+	}
+	if got := parseMetadata(mbnV6Seg(nil, words(28, 0x2e8, 2, 0, 0))); len(got) != 1 || got[0].SWID != 28 {
+		t.Fatalf("oem-only: %+v", got)
+	}
+	v5 := make([]byte, 48)
+	binary.LittleEndian.PutUint32(v5[4:], 5)
+	if got := parseMetadata(v5); got != nil {
+		t.Fatalf("v5 header has no metadata, got %+v", got)
+	}
+}
+
+func TestParseMetadataV7(t *testing.T) {
+	le := binary.LittleEndian
+	// 40-byte header, 24-byte common block, 224-byte OEM block — the layout
+	// every v7 programmer in the library shares.
+	seg := make([]byte, 40+24+224)
+	le.PutUint32(seg[4:], 7)
+	le.PutUint32(seg[8:], 24)   // common
+	le.PutUint32(seg[16:], 224) // oem
+	le.PutUint32(seg[40+8:], 3) // common sw_id
+	oem := seg[64:]
+	le.PutUint32(oem[0:], 2)
+	le.PutUint32(oem[8:], 2) // anti-rollback
+	le.PutUint32(oem[16:], 0xa008)
+	md := parseMetadata(seg)
+	if len(md) != 1 || md[0].Signer != "oem" || md[0].SWID != 3 || md[0].AntiRollback != 2 ||
+		len(md[0].SoCVersions) != 1 || md[0].SoCVersions[0] != 0xa008 {
+		t.Fatalf("v7: %+v", md)
+	}
+}
+
+func TestScanPeek(t *testing.T) {
+	fh := "firehose MaxPayloadSizeToTarget"
+	cases := []struct {
+		name string
+		data string
+		want PeekSupport
+	}{
+		{"packed", "\x7fELF random binary with no vocabulary", PeekUnknown},
+		{"none", fh + " read program configure", PeekNone},
+		{"gated", fh + " <peek> handler; Peek is disabled on secure boot devices", PeekGated},
+		{"enabled", fh + " <peek> <poke> handlers present, no gate", PeekEnabled},
+		{"enabled-fmt", fh + " size in bytes is %d, nothing to peek/poke", PeekEnabled},
+		{"streaming-hostdl", "ehostdl streaming download protocol", PeekNA},
+		{"raw-unreadable", "\x08\x00\x00\xea bare ARM image, no vocabulary", PeekUnknown},
+	}
+	for _, c := range cases {
+		if got := ScanPeek([]byte(c.data)); got != c.want {
+			t.Errorf("%s: got %v (%s), want %v", c.name, got, got, c.want)
+		}
+	}
+	// A QSB/MBN container is a streaming loader: peek is not applicable.
+	if got := ScanPeek([]byte{0xd1, 0xdc, 0x4b, 0x84, 0, 0, 0, 0}); got != PeekNA {
+		t.Errorf("QSB: got %v, want PeekNA", got)
+	}
+}
+
+// buildTwoSegELF makes a 64-bit ELF with a loadable (code/data) segment and a
+// separate Qualcomm hash segment, so loaderText's carve-out can be exercised.
+func buildTwoSegELF(code, hash []byte) []byte {
+	const ehsize, phentsize = 64, 56
+	hdr := make([]byte, ehsize+2*phentsize)
+	copy(hdr, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
+	binary.LittleEndian.PutUint32(hdr[0x14:], 1)
+	binary.LittleEndian.PutUint64(hdr[0x20:], ehsize)
+	binary.LittleEndian.PutUint16(hdr[0x34:], ehsize)
+	binary.LittleEndian.PutUint16(hdr[0x36:], phentsize)
+	binary.LittleEndian.PutUint16(hdr[0x38:], 2)
+	codeOff := uint64(len(hdr))
+	hashOff := codeOff + uint64(len(code))
+	// ph0: loadable code (flags type nibble 0)
+	o := ehsize
+	binary.LittleEndian.PutUint64(hdr[o+8:], codeOff)
+	binary.LittleEndian.PutUint64(hdr[o+32:], uint64(len(code)))
+	// ph1: hash segment (flags type nibble 2)
+	o = ehsize + phentsize
+	binary.LittleEndian.PutUint32(hdr[o+4:], 0x02000000)
+	binary.LittleEndian.PutUint64(hdr[o+8:], hashOff)
+	binary.LittleEndian.PutUint64(hdr[o+32:], uint64(len(hash)))
+	return append(append(hdr, code...), hash...)
+}
+
+// A "peek"/"poke" appearing only in a certificate CN (the hash segment) must
+// NOT read as peek support — loaderText carves the hash segment out.
+func TestScanPeekIgnoresCertText(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	certs := makeCert(t, pkix.Name{
+		CommonName:         "peek poke firehose attacker CN",
+		OrganizationalUnit: []string{"04 02E8 OEM_ID"},
+	}, key)
+	// Code segment without firehose vocab; the peek/poke/firehose text lives
+	// only in the cert CN.
+	if got := ScanPeek(buildTwoSegELF([]byte("boot code only"), certs)); got == PeekEnabled || got == PeekGated {
+		t.Fatalf("cert-CN text leaked into peek detection: got %v", got)
+	}
+	// Same certs, but the code segment now carries real firehose + peek text.
+	if got := ScanPeek(buildTwoSegELF([]byte("firehose peek poke handler"), certs)); got != PeekEnabled {
+		t.Fatalf("loadable peek text: got %v, want enabled", got)
+	}
+}

@@ -1,9 +1,15 @@
 module go-unbrick
 
-go 1.25.0
+go 1.26.1
+
+// Nokia/Microsoft-era Qualcomm attestation certs carry negative serials, which
+// crypto/x509 otherwise refuses — losing the loader's whole secboot identity.
+godebug x509negativeserial=1
 
 require (
+	github.com/Xe/erofs v0.8.0
 	github.com/dsoprea/go-ext4 v0.0.0-20190528173430-c13b09fc0ff8
+	github.com/electricbubble/gadb v0.1.0
 	github.com/klauspost/compress v1.20.0
 	github.com/pierrec/lz4/v4 v4.1.30
 	github.com/schollz/progressbar/v3 v3.19.1
@@ -11,6 +17,10 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/ulikunitz/xz v0.5.16
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
+	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.58.0
+	golang.org/x/term v0.46.0
+	golang.org/x/text v0.42.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -30,8 +40,9 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/net v0.0.0-20200501053045-e0ff5e5a1de5 // indirect
-	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/term v0.44.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
+
+replace github.com/dsoprea/go-ext4 => github.com/W-Floyd/go-ext4 v0.0.0-20260920151443-568f8a2dfbfc
+
+replace github.com/Xe/erofs => ./third_party/xe-erofs

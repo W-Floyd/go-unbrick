@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,7 +31,8 @@ func newLibraryCmd() *cobra.Command {
 	c := &cobra.Command{Use: "library", Short: "manage the local loader + stock store"}
 	c.AddCommand(newLibraryAddLoaderCmd(), newLibraryAddStockCmd(), newLibraryAddStockZipCmd(),
 		newLibraryHarvestDonorsCmd(), newLibraryListCmd(), newLibrarySyncCmd(), newLibraryImportLoadersCmd(),
-		newLibraryKeysCmd())
+		newLibraryKeysCmd(), newLibraryReindexCmd(), newLibraryPruneCmd(), newLibraryHarvestCmd(),
+		newLibraryUnpinCmd())
 	return c
 }
 
@@ -222,7 +225,14 @@ func newLibrarySyncCmd() *cobra.Command {
 					skipped++
 					continue
 				}
-				id, err := secboot.FromELF(blob)
+				adm := library.Admit(blob, e.Name)
+				if adm.Reject != "" {
+					fmt.Fprintf(os.Stderr, "  ! %s: %s, skipping\n", e.Name, adm.Reject)
+					skipped++
+					continue
+				}
+				blob = adm.Programmer
+				id, err := secboot.FromImage(blob)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  ! %s: unparseable loader cert, skipping: %v\n", e.Name, err)
 					skipped++
@@ -258,6 +268,120 @@ func newLibrarySyncCmd() *cobra.Command {
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "list what would be fetched without downloading")
 	c.Flags().BoolVar(&includeVariants, "include-variants", false, "also fetch peek/edlauth research builds (won't authenticate on secure boot)")
 	c.Flags().IntVar(&limit, "limit", 0, "max loaders to ingest (0 = all)")
+	return c
+}
+
+func newLibraryUnpinCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unpin <label>",
+		Short: "end a device session started with recon --pin (discards its stitch buffer)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := library.Open(libraryDir()).Unpin(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("unpinned %q\n", args[0])
+			return nil
+		},
+	}
+}
+
+func newLibraryReindexCmd() *cobra.Command {
+	var write bool
+	c := &cobra.Command{
+		Use:   "reindex",
+		Short: "re-derive stored loaders' secboot fields (SW_ID, OEM/HW/JTAG, root) from their programmer.elf",
+		Long: "Loaders filed before MBN v6 metadata was read carry the leaf cert's SW_ID, which on\n" +
+			"v6 images is not per-image and omits the anti-rollback version. Lists what would\n" +
+			"change; --write rewrites meta.json.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			changes, err := library.Open(libraryDir()).Reindex(write)
+			byField := map[string]int{}
+			var moved, dups int
+			for _, c := range changes {
+				for _, f := range c.FieldChanged {
+					byField[f]++
+				}
+				if c.MovedTo != nil {
+					moved++
+					if c.Duplicate {
+						dups++
+					}
+				}
+			}
+			for _, c := range changes {
+				line := fmt.Sprintf("  %s@%s ", c.Ref.Family, c.Ref.Build)
+				if c.OldSWID != c.NewSWID {
+					line += fmt.Sprintf(" SW_ID %d → %d", c.OldSWID, c.NewSWID)
+				}
+				if n := len(c.FieldChanged); n > 1 || (n == 1 && c.OldSWID == c.NewSWID) {
+					line += fmt.Sprintf("  [%s]", strings.Join(c.FieldChanged, ","))
+				}
+				if c.MovedTo != nil {
+					if c.Duplicate {
+						line += fmt.Sprintf("  → %s (already there; removed)", c.MovedTo)
+					} else {
+						line += fmt.Sprintf("  → %s", c.MovedTo)
+					}
+				}
+				fmt.Println(line)
+			}
+			verb := "would change"
+			if write {
+				verb = "changed"
+			}
+			fmt.Printf("%d loaders %s; by field: %v; %d refiled (%d of them duplicates of a loader already in the right family)\n",
+				len(changes), verb, byField, moved, dups)
+			return err
+		},
+	}
+	c.Flags().BoolVar(&write, "write", false, "rewrite meta.json and refile misfiled loaders (default: report only)")
+	return c
+}
+
+func newLibraryPruneCmd() *cobra.Command {
+	var write, verbose bool
+	c := &cobra.Command{
+		Use:   "prune",
+		Short: "remove stored \"loaders\" that are not usable programmers; unwrap containers",
+		Long: "Applies the ingest admission check to the existing library: boot stages, boot-chain\n" +
+			"images, auth digests and patched builds (code that no longer matches its signed\n" +
+			"hash table) are removed; Motorola singleimage containers are replaced by the\n" +
+			"programmer inside them. Lists what would change; --write applies it.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			acts, err := library.Open(libraryDir()).Prune(write)
+			tally := map[string]int{}
+			for _, a := range acts {
+				tally[a.Action+"/"+a.Class]++
+				if verbose {
+					fmt.Printf("  %-16s %s@%s  %s\n", a.Action, a.Ref.Family, a.Ref.Build, a.Why)
+				}
+			}
+			verb := "would change"
+			if write {
+				verb = "changed"
+			}
+			keys := make([]string, 0, len(tally))
+			for k := range tally {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			fmt.Printf("%d loaders %s:\n", len(acts), verb)
+			for _, k := range keys {
+				fmt.Printf("  %-28s %d\n", k, tally[k])
+			}
+			// An unwrapped programmer's own cert may name a different family
+			// than the container it was filed under.
+			if write && tally["unwrap/container"] > 0 {
+				fmt.Println("Unwrapped programmers may belong to another family: run `library reindex --write` to refile them.")
+			}
+			return err
+		},
+	}
+	c.Flags().BoolVar(&write, "write", false, "apply (default: report only)")
+	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "list every affected loader")
 	return c
 }
 
@@ -842,32 +966,6 @@ var oemVendor = map[string]string{
 	"6000": "lenovo",
 }
 
-func fallbackJTAGFromFilename(filename, currentJTAG string) string {
-	if currentJTAG != "" && currentJTAG != "00000000" {
-		return currentJTAG
-	}
-	base := filepath.Base(filename)
-	parts := strings.Split(base, "_")
-	for _, p := range parts {
-		if len(p) == 16 && isHex(p) && strings.Trim(p[:8], "0") != "" {
-			return strings.ToUpper(p[:8])
-		}
-	}
-	if currentJTAG != "" {
-		return currentJTAG
-	}
-	return "00000000"
-}
-
-func isHex(s string) bool {
-	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
-			return false
-		}
-	}
-	return true
-}
-
 func newLibraryImportLoadersCmd() *cobra.Command {
 	var vendorFilter string
 	var dryRun bool
@@ -881,111 +979,148 @@ func newLibraryImportLoadersCmd() *cobra.Command {
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			lib := library.Open(libraryDir())
-
-			type workItem struct {
-				path   string
-				signer string
-				source string
-			}
-			var items []workItem
-
-			manifestPath := filepath.Join(dir, "manifest.json")
-			if mBytes, err := os.ReadFile(manifestPath); err == nil {
-				var records []manifestLoaderRecord
-				if err := json.Unmarshal(mBytes, &records); err == nil {
-					for _, rec := range records {
-						target := filepath.Join(dir, rec.SavedFile)
-						items = append(items, workItem{
-							path:   target,
-							signer: rec.Signer,
-							source: filepath.Base(rec.SavedFile),
-						})
-					}
-				}
-			}
-
-			if len(items) == 0 {
-				_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-					if err == nil && !info.IsDir() {
-						ext := strings.ToLower(filepath.Ext(p))
-						if ext == ".elf" || ext == ".bin" || ext == ".mbn" || ext == ".melf" {
-							items = append(items, workItem{
-								path:   p,
-								signer: filepath.Base(filepath.Dir(p)),
-								source: filepath.Base(p),
-							})
-						}
-					}
-					return nil
-				})
-			}
-
-			if len(items) == 0 {
-				return fmt.Errorf("no loader files found in %s", dir)
-			}
-
-			fmt.Printf("Scanning %d loader files in %s...\n", len(items), dir)
-			var added, dup, skipped int
-
-			for i, item := range items {
-				if limit > 0 && i >= limit {
-					break
-				}
-				blob, err := os.ReadFile(item.path)
-				if err != nil {
-					skipped++
-					continue
-				}
-				id, err := secboot.FromImage(blob)
-				if err != nil {
-					skipped++
-					continue
-				}
-				v := normalizeSignerVendor(item.signer, id.OEMID)
-				if vendorFilter != "" && v != strings.ToLower(vendorFilter) {
-					continue
-				}
-				jtag := fallbackJTAGFromFilename(item.source, id.JTAGID)
-				fam := catalog.Family{Vendor: v, JTAGID: jtag}
-				if dryRun {
-					fmt.Printf("  would import %s  JTAG=%s OEM=%s SW_ID=%d (%dB)\n",
-						fam, id.JTAGID, id.OEMID, id.SWID, len(blob))
-					added++
-					continue
-				}
-
-				donor := &blankflash.Donor{
-					Programmer: blob,
-					Source:     item.source,
-				}
-				before := len(lib.Builds(fam))
-				ref, err := lib.AddLoader(fam, donor, item.source)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "  ! error storing %s: %v\n", item.path, err)
-					skipped++
-					continue
-				}
-				if len(lib.Builds(fam)) == before {
-					dup++
-					continue
-				}
-				added++
-				fmt.Printf("  + %s@%s  JTAG=%s OEM=%s SW_ID=%d (%dB)\n",
-					fam, ref.Build, id.JTAGID, id.OEMID, id.SWID, len(blob))
-			}
-
-			verb := "imported"
-			if dryRun {
-				verb = "would import"
-			}
-			fmt.Printf("\n%s %d loader(s); %d already present, %d skipped (unparseable or unreadable).\n",
-				verb, added, dup, skipped)
-			return nil
+			return importLoaders(dir, vendorFilter, dryRun, limit)
 		},
 	}
 	c.Flags().StringVar(&vendorFilter, "vendor", "", "filter by vendor id (e.g. motorola, xiaomi, samsung)")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "simulate import without modifying the library")
 	c.Flags().IntVar(&limit, "limit", 0, "max loaders to import (0 = all)")
 	return c
+}
+
+// importLoaders files a directory of bare loaders — a harvest's output, with
+// its manifest.json supplying each file's signer — into the library.
+func importLoaders(dir, vendorFilter string, dryRun bool, limit int) error {
+	lib := library.Open(libraryDir())
+
+	type workItem struct {
+		path   string
+		signer string
+		source string
+	}
+	var items []workItem
+
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if mBytes, err := os.ReadFile(manifestPath); err == nil {
+		var records []manifestLoaderRecord
+		if err := json.Unmarshal(mBytes, &records); err == nil {
+			for _, rec := range records {
+				target := filepath.Join(dir, rec.SavedFile)
+				items = append(items, workItem{
+					path:   target,
+					signer: rec.Signer,
+					source: filepath.Base(rec.SavedFile),
+				})
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				ext := strings.ToLower(filepath.Ext(p))
+				if ext == ".elf" || ext == ".bin" || ext == ".mbn" || ext == ".melf" {
+					items = append(items, workItem{
+						path:   p,
+						signer: filepath.Base(filepath.Dir(p)),
+						source: filepath.Base(p),
+					})
+				}
+			}
+			return nil
+		})
+	}
+
+	if len(items) == 0 {
+		return fmt.Errorf("no loader files found in %s", dir)
+	}
+
+	fmt.Printf("Scanning %d loader files in %s...\n", len(items), dir)
+	var added, dup, skipped int
+	rejected := map[string]int{}
+
+	stored := map[string]string{} // programmer sha256 → family it is filed under
+	for _, f := range lib.Loaders() {
+		for _, ref := range lib.Builds(f) {
+			stored[ref.Meta.SHA256] = f.String()
+		}
+	}
+	var elsewhere int
+	for i, item := range items {
+		if limit > 0 && i >= limit {
+			break
+		}
+		raw, err := os.ReadFile(item.path)
+		if err != nil {
+			skipped++
+			continue
+		}
+		adm := library.Admit(raw, item.source)
+		if adm.Reject != "" {
+			rejected[adm.Class]++
+			continue
+		}
+		blob := adm.Programmer
+		id, err := secboot.FromImage(blob)
+		if err != nil {
+			skipped++
+			continue
+		}
+		v := normalizeSignerVendor(item.signer, id.OEMID)
+		if vendorFilter != "" && v != strings.ToLower(vendorFilter) {
+			continue
+		}
+		orig, _ := library.OriginalName(item.source, raw)
+		jtag := library.FamilyJTAG(id.JTAGID, orig)
+		fam := catalog.Family{Vendor: v, JTAGID: jtag}
+		sum := sha256.Sum256(blob)
+		sha := hex.EncodeToString(sum[:])
+		// A loader is filed once: a copy already under another family (a signer
+		// that mapped differently last time) would otherwise be duplicated.
+		if where, ok := stored[sha]; ok {
+			if where == fam.String() {
+				dup++
+			} else {
+				elsewhere++
+				if dryRun {
+					fmt.Printf("  filed under %s, now resolves to %s: %s\n", where, fam, item.source)
+				}
+			}
+			continue
+		}
+		stored[sha] = fam.String()
+		if dryRun {
+			fmt.Printf("  would import %s  JTAG=%s OEM=%s SW_ID=%d (%dB)\n",
+				fam, id.JTAGID, id.OEMID, id.SWID, len(blob))
+			added++
+			continue
+		}
+
+		donor := &blankflash.Donor{
+			Programmer: blob,
+			Source:     item.source,
+		}
+		before := len(lib.Builds(fam))
+		ref, err := lib.AddLoader(fam, donor, item.source)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ! error storing %s: %v\n", item.path, err)
+			skipped++
+			continue
+		}
+		if len(lib.Builds(fam)) == before {
+			dup++
+			continue
+		}
+		added++
+		fmt.Printf("  + %s@%s  JTAG=%s OEM=%s SW_ID=%d (%dB)\n",
+			fam, ref.Build, id.JTAGID, id.OEMID, id.SWID, len(blob))
+	}
+
+	verb := "imported"
+	if dryRun {
+		verb = "would import"
+	}
+	fmt.Printf("\n%s %d loader(s); %d already present, %d already filed under another family, %d skipped (unparseable or unreadable), not loaders: %v.\n",
+		verb, added, dup, elsewhere, skipped, rejected)
+	return nil
 }

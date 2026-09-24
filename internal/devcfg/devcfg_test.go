@@ -2,6 +2,7 @@ package devcfg
 
 import (
 	"encoding/binary"
+	"os"
 	"testing"
 )
 
@@ -287,5 +288,42 @@ func TestPropTypeNaming(t *testing.T) {
 	}
 	if TypeUint32.String() != "uint32" || TypeStrPtr.String() != "str" {
 		t.Errorf("type names: %s %s", TypeUint32, TypeStrPtr)
+	}
+}
+
+// TestOEMPolicyFromSample decodes the /tz/oem secure-boot policy from a real
+// devcfg.mbn. The sample is gitignored, so this skips where it is absent.
+func TestOEMPolicyFromSample(t *testing.T) {
+	data, err := os.ReadFile("../../samples/devcfg_a_ZLTEST0001.bin")
+	if err != nil {
+		t.Skip("sample devcfg not present")
+	}
+	stores := FromELF(data)
+	if len(stores) == 0 {
+		t.Fatal("no devcfg store parsed from the ELF")
+	}
+	var p OEMPolicy
+	for _, c := range stores {
+		if q := c.OEM(); q.Found {
+			p = q
+			break
+		}
+	}
+	if !p.Found {
+		t.Fatal("no /tz/oem node found across stores")
+	}
+	// Fogona retail posture: SendROT off, RPMB keystore on, MRC lists empty,
+	// the OEM RSA pubkey and ROT PK-hash field both present.
+	if p.ROTTransferAPPS || p.ROTTransferMODEM {
+		t.Errorf("ROT transfer should be disabled: APPS=%v MODEM=%v", p.ROTTransferAPPS, p.ROTTransferMODEM)
+	}
+	if !p.RPMBKeystore || !p.RPMBCounter {
+		t.Errorf("RPMB keystore/counter should be enabled: %+v", p)
+	}
+	if p.MRCActivation != 0 || p.MRCRevocation != 0 {
+		t.Errorf("MRC lists should be empty: act=%d rev=%d", p.MRCActivation, p.MRCRevocation)
+	}
+	if !p.HasPubKey || !p.HasPKHashFuse {
+		t.Errorf("OEM pubkey / PK-hash field should be present: %+v", p)
 	}
 }

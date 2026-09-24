@@ -6,7 +6,9 @@ and a planner **chains** those derivations to reach a target fact, **cross-check
 a fact reached by more than one path, or computes the **cheapest path to every
 reachable fact**.
 
-Status: proposed. Not built. This captures the design agreed in discussion.
+Status: built. `internal/facts`, the neutral device providers, Motorola's
+providers and checks, both recons (`recon` and `fastboot recon`), `--why` and
+`--verify`. What is left is breadth — more facts and providers — not structure.
 
 ## Why
 
@@ -37,26 +39,55 @@ Formalizing gives: automatic cross-verification, a single authority order, a
   `ota_key`, `boot_cert_chain`, `lock_state`, `slot`, `build_fingerprint`.
 
 - **Source** — an input, expressed as a leaf fact you already hold, e.g.
-  `source:device.fastboot`, `source:stock.zip`, `source:cid.dump`,
-  `source:vbmeta.img`, `source:signing_info`. A source "resolves" to itself.
+  `source:stock.zip`, `source:vbmeta.img`, `source:catalog`,
+  `source:device.recon` (a bootloader's `getvar all`), `source:device.linux` (an
+  ssh-reachable install), `source:device.adb` (an Android userspace). Which
+  routes exist and what each can honestly answer is
+  [transports.md](transports.md); a source is what a route *deposits*. A source "resolves"
+  to itself. A source that is one OEM's *format* (`source:flashfile.xml`,
+  `source:signing-info.txt`, `source:slcf`, `source:cid.dump`) is declared behind
+  that vendor's seam, not in the core: the core names only the container, the
+  AOSP formats and the reference data. `facts.Key` binds a name to one type
+  wherever it is declared, and panics at init on a second binding.
+
+- **Recognizer** — how a source gets into the Bag. Nothing asks a package for a
+  member by name: ingestion walks what the file actually contains and offers
+  each one to the recognizers, which decide what it is by handing the bytes to
+  the parser that would claim them — a manifest is a manifest because the
+  manifest parser gets something out of it. Vendors contribute recognizers
+  through the same seam as providers, so a package that spells its members
+  differently still yields its facts.
+
+  ```go
+  type File struct{ Name string; Data []byte; From string; Top bool }
+  type Recognizer func(b *Bag, f File) []string // the sources it set
+  ```
+
+  `Top` marks the file the command was pointed at. A source a package holds many
+  of — every signed image — is a fact only when it *is* the thing being examined;
+  inside a container it is one of a crowd, and "the package's signing chain" is
+  not one chain.
 
 - **Fact key (typed)** — a fact name carrying its value type at compile time, so
   providers and consumers are type-safe while the graph core stays untyped:
 
   ```go
   type Fact[T any] struct {
-      name  string
-      equal func(a, b T) bool // optional; verification defaults to ==
+      name   string
+      equal  func(a, b T) bool // Eq:  optional; verification defaults to a deep compare
+      format func(T) string    // Fmt: optional; how a report and --why print it
   }
   func (f Fact[T]) Name() string { return f.name }
 
-  // Defined ONCE, in one file (facts_keys.go) — the single place name↔type is
-  // fixed. A duplicate key with a different T is the only footgun, and grep-obvious.
+  // Key declares a key and binds name↔type in a registry shared across the seam,
+  // so the duplicate-name-different-type footgun panics at init instead of
+  // silently making Get miss. The core declares the common set (keys.go); a
+  // vendor declares its own the same way.
   var (
-      CID             = Fact[uint16]{name: "cid"}
-      Carrier         = Fact[string]{name: "carrier"}
-      SecurityVersion = Fact[int]{name: "security_version"}
-      BootCertChain   = Fact[[]rsakey.Cert]{name: "boot_cert_chain", equal: certSetEqual}
+      CID             = Key[uint16]("cid", Fmt(hexCID))
+      Carrier         = Key[string]("carrier")
+      SecurityVersion = Key[int]("security_version")
+      BootCertChain   = Key[[]rsakey.Cert]("boot_cert_chain", Eq(certSetEqual))
   )
   ```
 
@@ -146,7 +177,11 @@ Two rules that fall out:
 - **Different facts that are *expected* to differ are not a conflict.** `signing_cid`
   (HAB base) vs `cid` (carrier) legitimately differ, which is exactly why they are
   separate facts, not one `cid` with a bogus disagreement. Only same-fact values
-  or explicit `Check`s produce findings.
+  or explicit `Check`s produce findings. The rule earns its keep the moment a
+  provider is careless: `soc` from the JTAG id ("Qualcomm SM6225") and `getvar
+  cpu` ("SM_DIVAR 1.0") are two namespaces for one part, and collapsing them into
+  one fact made a live recon report a disagreement between two correct answers.
+  They are now `soc` and `platform`.
 - **Agreement is not a finding** — it is corroboration carried on the winning
   value (its list of agreeing sources); confidence ≈ agreeing-source count ×
   authority.
@@ -157,9 +192,13 @@ Providers are contributed through the existing seam so all Motorola knowledge
 stays behind it:
 
 ```go
-// in internal/vendor
+// in internal/vendor — gathered from the optional FactDeriver / FactChecker /
+// FactRecognizer driver capabilities, the same way fastboot profiles and
+// commands are.
 func Providers() []facts.Provider
-func Checks() []facts.Check     // cross-fact invariants (salt==uid, foreign-cid)
+func Checks() []facts.Check           // cross-fact invariants (salt==uid, foreign-cid)
+func Recognizers() []facts.Recognizer // what this OEM's formats look like
+func FactGraph() *facts.Graph
 ```
 
 Motorola registers, e.g.:
@@ -206,29 +245,112 @@ A `--verify` flag opts into running redundant paths for cross-checking.
 ## Mapping onto existing code
 
 - New generic package `internal/facts`: `Fact`, `Value`, `Level`, `Bag`,
-  `Provider`, and the planner. No vendor knowledge.
-- Existing parsers stay and become the bodies of providers:
-  `vendor.ParseFlashfile`, `ParseSigningInfo`, `ParseSLCF`, `CIDParse/CIDVersion`,
-  `ParseHABMeta`, `rsakey.Scan`, `catalog.CarrierIDName`, `fastboot` getvar/oem.
-- `recon` and `fastboot recon` become: collect source facts → `facts.ResolveAll`
-  → render the `Bag` (+ findings). Current output is preserved; the hand-written
-  cross-checks delete in favor of the verify pass.
+  `Provider`, `Recognizer`, and the planner. No vendor knowledge.
+- Existing parsers stay and become the bodies of providers *and* of the
+  recognizers that decide what a file is: `vendor.ParseFlashfile`,
+  `ParseSigningInfo`, `ParseSLCF`, `CIDParse/CIDVersion`, `ParseHABMeta`,
+  `rsakey.Scan`, `catalog.CarrierIDName`, `fastboot` getvar/oem.
+- `internal/imgfacts` holds the cross-vendor half: `Ingest` (walk a file and its
+  members, recognize each) plus the derivations true of any OEM's image —
+  `boot_cert_chain`, `ota_certs`, `soc` from an ELF's build string.
+- `recon` is: ingest → `ResolveAll` → render the `Bag` → findings, for every file
+  kind, not just packages. `fastboot recon` keeps its own report and adds the
+  graph's judgments as a `Cross-checks:` section.
 
 ## Phasing
 
-1. **Core** — `internal/facts` (types + cost-ordered planner + the same-fact
-   verify pass + `Finding`/`Check`). Unit-test the planner with fake providers
-   (cheapest path, chaining, disagreement) and a fake check.
-2. **First providers** — wrap CID, carrier, codename, signing_cid,
-   security_version behind `vendor.Providers()`. Keep everything else as-is.
-3. **Adopt in recon** — feed the stock-zip path through the planner; register the
-   first `Check` (foreign-`cid`) via `vendor.Checks()`; diff output against today
-   to confirm parity, and confirm the hand-written cross-checks can be deleted.
-4. **`--why <fact>`** — print the derivation path plus every corroborating source
-   ("cid 0x0033 — flashfile.xml cid_value [attested]; getvar cid [attested,
-   agrees]; HAB_META says 0x0032 [signing/base, different fact]").
-5. **Fill out** — remaining facts/providers; wire `fastboot recon` too; add
-   `--verify` to force redundant paths.
+1. ~~**Core**~~ — `internal/facts`: types, cost-ordered planner, same-fact verify
+   pass, `Finding`/`Check`, tested with fake providers.
+2. ~~**First providers**~~ — cid, signing_cid, carrier, codename,
+   software_version, security_version, region, customer_signed, ota_key,
+   anti-rollback table, subsidy_lock, behind `vendor.Providers()`.
+3. ~~**Adopt in recon**~~ — the stock-zip path resolves through the planner and
+   renders the Bag. Output is unchanged but for one improvement: the carrier name
+   now resolves whether or not `vendor.Detect` claimed the file, because the rule
+   belongs to the driver whose table it reads. The first `Check` is the
+   region↔signing-CID binding, not foreign-`cid`: that one needs the live device
+   and the library, so it stays where it is until `fastboot recon` moves over.
+4. ~~**`--why <fact>`**~~ — `recon --why cid` prints the chain and every
+   corroborating or contradicting source.
+5. ~~**Fill out**~~ — `--verify`; `fastboot.FactProviders()` (the neutral
+   `getvar` facts) and Motorola's device rules over `source:device.recon`; the
+   salt==UID / foreign-`cid` invariant registered as a `Check`. The command layer
+   builds one graph from both halves, so a device fact and a package fact meet in
+   one Bag. `fastboot recon` gained a `Cross-checks:` section and `--why`; its
+   report is otherwise byte-identical on a live fogona.
+
+   The salt==UID logic is now *shared* rather than deleted: the report line still
+   renders the positive "✓ device-bound" annotation the findings channel has no
+   place for, but both it and the `Check` call one function, so they cannot drift.
+
+6. ~~**Content-driven ingestion**~~ — the member rules that asked a package for
+   "flashfile.xml" are gone; `imgfacts.Ingest` walks what is there and the
+   recognizers say what each thing is. Single-file recon goes through the graph
+   too, so `recon --why signing_cid vbmeta.img` answers. `boot_cert_chain`,
+   `ota_certs` and `soc`-from-an-ELF are the first cross-vendor providers.
+
+   `cid` from a *v2* (signed) cid record is now handled: `CIDCarrier` reads the
+   channel as a big-endian u16 at `header_base+2` (base `0x28` for v0/v1, `0x2a`
+   for v2), which is exactly what ABL's loader `FUN_0004b340` does — confirmed
+   against a real fogona v2 dump whose value `0x0032` matches its HAB_META CID
+   (see ../fogona-abl-notes). It is Derived, not Attested: the signature is not
+   checked offline, so a transplanted record still loses to a package manifest.
+   `readcid` uses the same reader, so it now works on secure-production units
+   (the old v0-template-only parser failed on every v2 device).
+
+   The Motorola `.info.txt` build sheet is now a source too: `build_fingerprint`
+   (the AOSP fingerprint in the clear — the same identity a device reports over
+   getvar, so package-vs-device is cross-checkable), plus `marketing_name`,
+   `modem_version` and `mbm_version`. `marketing_name` is deliberately its own
+   fact, not folded into `model` (the XT SKU) or `codename` — three names for one
+   device in three namespaces.
+
+   Package integrity is now a `Check`: the flashfile declares an MD5/SHA1 per
+   member, and `verifyPackageIntegrity` hashes each and compares. It is Heavy
+   (the new `VerifyGated` capability) — hashing a 4.4 GiB package takes ~45 s —
+   so it runs only under `--verify`; a clean pass is a single `Info` finding, a
+   mismatch or missing member an `Error`. The OTA update key (MAP5 OTA, RSA-4096
+   in recovery's otacerts.zip) is now `ota_certs`, extracted from any boot-image
+   member — ingestion gives boot images a larger read budget (128 MiB) than the
+   8 MiB default because recovery is where the key hides. And the build sheet's
+   `AB Update Enabled` and `Build Date` become `ab_enabled` / `build_date`.
+
+   Still open: `unlock_challenge ← source:cid.dump`. The wire fields (id, serial,
+   target, salt) all sit in a v2 record at fixed offsets (0x30 / 0x38 / 0x50 /
+   0x08 on the fogona dump), so reconstructing `id#serial#target#salt` is
+   feasible — but those offsets are corroborated by only one sample, so it is
+   left as future work rather than shipped on a single data point. And the other
+   vendors contribute no providers yet.
+
+7. ~~**More routes to a device**~~ — the graph now takes sources from a booted
+   phone as well as a bootloader and a package: `source:device.linux` (ssh to
+   postmarketOS and the like) and `source:device.adb` (an Android userspace),
+   both behind the transport seam in [transports.md](transports.md). Two things
+   fell out of that which are properly facts-layer decisions:
+
+   - **A booted userspace is Derived, not Attested.** It knows more than a
+     bootloader does, but everything it says passed through a mutable
+     filesystem and a kernel command line the installed system may have
+     replaced, so a package manifest or a `getvar` answer wins the display while
+     the disagreement still surfaces. The exception is the identity of the
+     install itself (`device_os`, `kernel_release`), where the running system is
+     the only authority there is.
+   - **Partition content is a source, not a special case.** With root, a booted
+     device hands over the identity and boot-chain partitions, and those bytes
+     go to the same recognizers a package's members do — so `cid`, `vbmeta`,
+     `xbl` and the rest derive `cid`, `avb_key`, `avb_rollback_index`,
+     `signing_cid` and `boot_cert_chain` through the rules that already existed.
+     Verified on a fogona running postmarketOS: sixteen partitions read over
+     ssh, and CID `0x0032`, HAB CID 50 and AVB rollback 18 resolved from their
+     content with no new derivations written.
+
+   Two namespace lessons repeated themselves here, which is why they are rules
+   rather than anecdotes: a mainline kernel puts the *board model* in
+   `/sys/devices/soc0/machine`, and a device tree lists the SoC families it also
+   binds to after the part it is — so SoC tokens are filtered to things that
+   look like part numbers and only the first compatible entry is a claim.
+   Feeding either of the others into `soc` manufactured a disagreement between
+   correct answers, exactly as collapsing `soc` and `platform` once did.
 
 ## Open questions
 

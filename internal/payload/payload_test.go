@@ -313,3 +313,61 @@ func TestPayloadZipStreaming(t *testing.T) {
 		t.Fatalf("extracted xbl from zip mismatch")
 	}
 }
+
+// TestPartitionReaderAtMatchesFullExtract checks that the lazy ReaderAt returns
+// byte-identical data to a full extraction — across operation boundaries,
+// scattered extents (an op whose two output blocks land in non-adjacent
+// partition blocks), a ZERO gap, and reads past the partition end (zeros).
+func TestPartitionReaderAtMatchesFullExtract(t *testing.T) {
+	blkA := bytes.Repeat([]byte{0xA1}, blockSize)   // block 0 (REPLACE)
+	blkB := bytes.Repeat([]byte{0xB2}, 2*blockSize) // blocks 1 & 4 (REPLACE_XZ, scattered)
+	blkC := bytes.Repeat([]byte{0xC3}, blockSize)   // block 5 (REPLACE)
+	const nblocks = 6
+
+	payloadBytes := buildTestPayload(t, []partSpec{{
+		name: "system",
+		size: nblocks * blockSize,
+		ops: []opSpec{
+			{typ: payload.InstallOperation_REPLACE, data: blkA, dst: []*payload.Extent{ext(0, 1)}},
+			// One op, two output blocks, landing in non-adjacent partition blocks:
+			// exercises the per-extent opOffset mapping.
+			{typ: payload.InstallOperation_REPLACE_XZ, data: compressXZ(t, blkB), dst: []*payload.Extent{ext(1, 1), ext(4, 1)}},
+			{typ: payload.InstallOperation_ZERO, dst: []*payload.Extent{ext(2, 2)}}, // blocks 2-3 zero
+			{typ: payload.InstallOperation_REPLACE, data: blkC, dst: []*payload.Extent{ext(5, 1)}},
+		},
+	}})
+
+	p, err := payload.NewFromReaderAt(bytes.NewReader(payloadBytes), int64(len(payloadBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := p.ExtractPartitionToBytes(context.Background(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, size, err := p.PartitionReaderAt("system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != int64(len(want)) {
+		t.Fatalf("reader size %d, want %d", size, len(want))
+	}
+
+	// Every offset/length combination must agree with the full extraction.
+	for off := 0; off <= len(want); off += 500 {
+		for _, l := range []int{1, blockSize - 1, blockSize + 7, 3 * blockSize} {
+			buf := make([]byte, l)
+			n, _ := ra.ReadAt(buf, int64(off))
+			if n != l {
+				t.Fatalf("ReadAt(off=%d,len=%d) n=%d", off, l, n)
+			}
+			exp := make([]byte, l)
+			if off < len(want) {
+				copy(exp, want[off:]) // past-end bytes stay zero
+			}
+			if !bytes.Equal(buf, exp) {
+				t.Fatalf("mismatch at off=%d len=%d", off, l)
+			}
+		}
+	}
+}

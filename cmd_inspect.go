@@ -13,6 +13,7 @@ import (
 	"go-unbrick/internal/bootelf"
 	"go-unbrick/internal/mediatek"
 	"go-unbrick/internal/qfil"
+	"go-unbrick/internal/secboot"
 	"go-unbrick/internal/vendor"
 )
 
@@ -33,6 +34,9 @@ func printBootELF(indent, label string, info *bootelf.Info) {
 		}
 		fmt.Printf("%s  secboot:      root=CA %-4s OEM_ID=%s HW_ID=%s (JTAG=%s) SW_ID=%d%s key=RSA-%d\n",
 			indent, info.Identity.Root, info.Identity.OEMID, info.Identity.HWID, info.Identity.JTAGID, info.Identity.SWID, swidExtra, info.Identity.KeyBits)
+	}
+	if info.Peek != secboot.PeekNone && info.Peek != secboot.PeekUnknown {
+		fmt.Printf("%s  peek/poke:    %s\n", indent, info.Peek)
 	}
 	if info.Topology.Region != "" {
 		breakdown := ""

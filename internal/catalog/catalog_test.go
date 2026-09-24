@@ -220,9 +220,19 @@ func TestCarrierIDName(t *testing.T) {
 		t.Fatalf("Default() failed: %v", err)
 	}
 	// fastboot reports hex, firmware filenames spell the same CID in decimal.
+	const want = "US retail (XT2413-2; seen on RETUS and CC packages)"
 	for _, in := range []string{"0x0032", "0X32", "50"} {
-		if got := c.CarrierIDName("motorola", in); got != "CC channel (subsidy lock CCAWS)" {
+		if got := c.CarrierIDName("motorola", in); got != want {
 			t.Errorf("CarrierIDName(%q): got %q", in, got)
+		}
+	}
+	// A CID names what every observation of it agrees on, and no more: 0x0032 is
+	// declared by both a retail package and a subsidy-locked one, so a label
+	// asserting a subsidy lock would contradict the subsidy_lock fact that the
+	// retail package's own manifest produces.
+	for _, no := range []string{"subsidy", "CCAWS"} {
+		if strings.Contains(c.CarrierIDName("motorola", "0x0032"), no) {
+			t.Errorf("0x0032 label claims %q, which is a per-package fact, not a per-CID one", no)
 		}
 	}
 	if got := c.CarrierIDName("motorola", "0xFFFF"); got != "" {
@@ -247,8 +257,8 @@ func TestCarrierIDReference(t *testing.T) {
 	}
 	// Attested wins for 0x0032: carrier_ids names it, and cid_reference omits it
 	// (dropped as redundant), so the reference lookup is empty there.
-	if got := c.CarrierIDName("motorola", "0x0032"); got != "CC channel (subsidy lock CCAWS)" {
-		t.Errorf("attested 0x0032 name changed: %q", got)
+	if got := c.CarrierIDName("motorola", "0x0032"); got == "" {
+		t.Error("attested 0x0032 lost its name")
 	}
 	if got := c.CarrierIDReference("motorola", "0x0032"); got != "" {
 		t.Errorf("0x0032 should be omitted from cid_reference, got %q", got)
@@ -527,5 +537,38 @@ func TestSoftwareChannelAndSoC(t *testing.T) {
 	// The getvar cpu token resolves to its marketing SoC (Hardware line).
 	if got := c.ResolveVariant("SM_DIVAR", ""); !strings.Contains(got, "Snapdragon 680") {
 		t.Errorf("ResolveVariant(SM_DIVAR) = %q, want it to name Snapdragon 680", got)
+	}
+}
+
+func TestHarvestSourcesMerge(t *testing.T) {
+	c, err := Load(writeCatalog(t, map[string]string{
+		"a.yaml": "harvest:\n  repos: [o/r]\n  sites:\n    - {wp: https://x.test, category: c}\n",
+		"b.yaml": "harvest:\n  repos: [gitlab.com/g/p]\n  discover_fingerprints:\n    - {term: patch0.xml, filename: true}\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := c.Harvest()
+	if len(h.Repos) != 2 || len(h.Sites) != 1 || h.Sites[0].Category != "c" ||
+		len(h.DiscoverFingerprints) != 1 || !h.DiscoverFingerprints[0].Filename {
+		t.Fatalf("merged sources: %+v", h)
+	}
+}
+
+// The shipped catalog must parse into a usable harvest configuration.
+func TestShippedHarvestCatalog(t *testing.T) {
+	c, err := Load("../../catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := c.Harvest()
+	if len(h.Repos) == 0 || len(h.Orgs) == 0 || len(h.Pages) == 0 || len(h.Sites) == 0 ||
+		len(h.Archives) == 0 || len(h.DiscoverFingerprints) == 0 || len(h.DiscoverDenylist) == 0 {
+		t.Fatalf("catalog/harvest.yaml incomplete: %+v", h)
+	}
+	for _, s := range h.Sites {
+		if s.Index == "" && s.WP == "" && s.AFH == "" {
+			t.Errorf("site with no kind: %+v", s)
+		}
 	}
 }

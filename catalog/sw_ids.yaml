@@ -1,25 +1,28 @@
 # Qualcomm Secboot Software ID (SW_ID) Stage Dictionary
-# Maps numeric SW_ID anti-rollback tokens to human-readable firmware stages and execution targets.
+# Maps the image-type half of SW_ID (bits 31:0) to a firmware stage.
+#
+# On MBN v6+ images the authoritative value is the signed metadata's sw_id; the
+# leaf cert's "SW_ID" OU is not per-image there (Motorola signs a whole boot
+# chain with one leaf carrying 2). Entries marked (v6) are confirmed from the
+# metadata of a Motorola SM6225 boot chain (fogona U1TFS34.100-35-14-1-4) and a
+# Firehose programmer; the rest are unconfirmed.
 
 sw_ids:
-  0: "PBL / Primary Boot Loader"
+  0: "XBL / SBL1"                          # (v6) xbl.elf
   1: "SBL1 / Secondary Boot Loader"
   2: "SBL2"
-  3: "Emergency Firehose Programmer"
+  3: "Emergency Firehose Programmer"      # (v6) programmer.elf
   4: "TrustZone / QSEE Monitor"
-  5: "DEVCFG / Device Configuration"
-  6: "RPM / AOP Power Manager"
-  7: "TrustZone OS (TZ)"
+  5: "DEVCFG / Device Configuration"      # (v6) devcfg.mbn
+  7: "TrustZone OS (TZ)"                  # (v6) tz.mbn
   8: "WCNSS / Wireless Subsystem"
   9: "Secure Execution Environment (QSEE)"
-  10: "Sensor / Low-Power Processor (SLPI)"
-  11: "HYP / Hypervisor"
-  12: "Modem Firmware (MPSS)"
+  10: "RPM / Power Manager"               # (v6) rpm.mbn
+  12: "TrustZone App (QSEE TA)"           # (v6) keymaster, storsec, uefi_sec, prov64
   13: "Firehose Flash Programmer"
   14: "Multi-Image Boot Container"
-  18: "QUPFW / Universal Peripheral FW"
-  21: "TrustZone Executable"
-  27: "XBL_CONFIG / Multi-Image"
-  28: "ABL / Android Bootloader"
+  21: "HYP / Hypervisor"                  # (v6) hyp.mbn
+  28: "ABL / Android Bootloader"          # (v6) abl.elf
   33: "TME / Trust Management Engine"
-  36: "QUPFW (Hexagon DSP)"
+  36: "QUPFW / Universal Peripheral FW"   # (v6) qupfw.elf
+  37: "XBL_CONFIG"                        # (v6) xbl_config.elf

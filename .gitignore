@@ -37,3 +37,8 @@ samples/
 
 # Third-party reference tooling (large binaries); analysis folded into TODO.md.
 recon/
+
+# Per-device command outputs and local runtime config (scratch)
+/debloat-*.json
+/provision-*.json
+/edl_config.json

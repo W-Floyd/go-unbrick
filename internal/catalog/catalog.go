@@ -20,6 +20,11 @@ import (
 	"sync"
 
 	yaml "go.yaml.in/yaml/v4"
+
+	"go-unbrick/internal/bloat"
+	"go-unbrick/internal/distro"
+	"go-unbrick/internal/harvest"
+	"go-unbrick/internal/provision"
 )
 
 type Device struct {
@@ -75,6 +80,19 @@ type catalogFile struct {
 	SWIDs      map[uint64]string        `yaml:"sw_ids,omitempty"`
 	EFIGUIDs   map[string]string        `yaml:"efi_guids,omitempty"`
 	Partitions map[string]PartitionRule `yaml:"partitions,omitempty"`
+	// Distros is how an ssh recon reads a Linux-on-phone distribution: where its
+	// own device definition lives and how it is spelled. Reference data like
+	// everything else here, interpreted by internal/distro.
+	Distros []*distro.Distro `yaml:"distros,omitempty"`
+	// Bloat is which preloaded packages a phone can lose, read by
+	// `adb debloat` and interpreted by internal/bloat.
+	Bloat []bloat.Rule `yaml:"bloat,omitempty"`
+	// Provision are the device-setup recipes `adb provision` runs, interpreted
+	// by internal/provision.
+	Provision []*provision.Profile `yaml:"provision,omitempty"`
+	// Harvest is where `library harvest` looks for loaders, interpreted by
+	// internal/harvest.
+	Harvest *harvest.Sources `yaml:"harvest,omitempty"`
 	// VendorData namespaces vendor-specific reference tables (CID, carrier, OTA
 	// channel) by OEM id, since these schemes are not shared across vendors — a
 	// CID means nothing outside Motorola. Keyed by Driver.ID() ("motorola").
@@ -104,7 +122,45 @@ type Catalog struct {
 	swIDs      map[uint64]string
 	efiGUIDs   map[string]string
 	partitions map[string]PartitionRule
+	distros    []*distro.Distro          // Linux-on-phone distribution profiles
+	bloat      []bloat.Rule              // removable-preload rules
+	provision  []*provision.Profile      // device-setup recipes
+	harvest    harvest.Sources           // loader harvest sources
 	vendorRef  map[string]*vendorRefData // per-vendor CID/carrier/channel tables
+}
+
+// Harvest returns the loader sources the catalog declares.
+func (c *Catalog) Harvest() harvest.Sources {
+	if c == nil {
+		return harvest.Sources{}
+	}
+	return c.harvest
+}
+
+// Provision returns the device-setup recipes the catalog declares.
+func (c *Catalog) Provision() []*provision.Profile {
+	if c == nil {
+		return nil
+	}
+	return c.provision
+}
+
+// Bloat returns the removable-preload rules the catalog declares, for
+// internal/bloat to merge with the protections it holds in code.
+func (c *Catalog) Bloat() []bloat.Rule {
+	if c == nil {
+		return nil
+	}
+	return c.bloat
+}
+
+// Distros returns the distribution profiles the catalog declares, for
+// internal/distro to merge with the built-in and code-backed ones.
+func (c *Catalog) Distros() []*distro.Distro {
+	if c == nil {
+		return nil
+	}
+	return c.distros
 }
 
 // vendorRefData is one vendor's resolved reference tables (see VendorData).
@@ -200,6 +256,24 @@ func Load(dir string) (*Catalog, error) {
 			if kClean != "" {
 				c.partitions[kClean] = v
 			}
+		}
+		for _, d := range cf.Distros {
+			if d != nil && d.Ident != "" {
+				c.distros = append(c.distros, d)
+			}
+		}
+		for _, b := range cf.Bloat {
+			if b.Name != "" || b.Prefix != "" {
+				c.bloat = append(c.bloat, b)
+			}
+		}
+		for _, p := range cf.Provision {
+			if p != nil && p.ID != "" {
+				c.provision = append(c.provision, p)
+			}
+		}
+		if cf.Harvest != nil {
+			c.harvest.Merge(*cf.Harvest)
 		}
 		for vendorID, ref := range cf.VendorData {
 			vClean := strings.ToLower(strings.TrimSpace(vendorID))

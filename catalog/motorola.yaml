@@ -11,16 +11,31 @@ vendor_data:
     # was built for. It is the package-matching key: a retail package declares its
     # target in flashfile.xml as `<cid_value value="0x0032"/>`, and a package whose
     # cid_value does not match the device's CID is refused. Every carrier_ids entry is
-    # read off an observed package; unattested CIDs stay absent rather than guessed.
+    # read off an observed package; unattested CIDs stay absent rather than guessed,
+    # and an entry says only what every observation of that CID agrees on (below).
     # Keys are decimal, matching the `cidNN` filename token (0x0032 -> 50). Ingest
     # harvests cid_value into each stock build's meta.json, so library.CarrierIDs() is
     # the standing evidence; recon falls back to it for a CID this file does not name.
+    # A CID is NOT a channel name, and an entry here must not read as one. Two
+    # observed fogona packages both declare cid_value 0x0032 and disagree about
+    # everything else: XT2413-2_FOGONA_RETUS_..._subsidy-DEFAULT (manifest:
+    # subsidy none, retail) and XT2413-2_FOGONA_CC_..._subsidy-CCAWS (manifest:
+    # subsidy LOCKED to T-Mobile/AT&T). So the CID is the package-matching key
+    # the bootloader compares — per model and region — while the channel and the
+    # subsidy lock are per *package*. Name only what the observations share, and
+    # leave the lock to the subsidy_lock fact, which is read from the slcf the
+    # package actually carries. Labelling 0x0032 with a subsidy lock made recon
+    # print "subsidy lock CCAWS" over a RETUS package whose own manifest said
+    # "Subsidy: none (retail)" — a contradiction inside one report.
     carrier_ids:
-      # XT2413-2_FOGONA_CC_14_U1TF34.100-35_subsidy-CCAWS_..._cid50_R4_CFC
-      # flashfile.xml: cid_value 0x0032, subsidy_lock_config slcf_rev_d_ccaws_v5.0.nvm
-      50: "CC channel (subsidy lock CCAWS)"
-      # XT2413V_FOGONA_TRACFONE_14_U1TFS34.100-35-14-1-4_subsidy-TRAC_VISIBLE_RSU_..._cid51
-      51: "TracFone / Visible (subsidy TRAC_VISIBLE_RSU)"
+      # cid_value 0x0032, observed on two XT2413-2 (Retail region) packages:
+      #   XT2413-2_FOGONA_RETUS_14_U1TFS34.100-35-14-1-4_subsidy-DEFAULT_...
+      #   XT2413-2_FOGONA_CC_14_U1TF34.100-35_subsidy-CCAWS_..._R4_CFC
+      50: "US retail (XT2413-2; seen on RETUS and CC packages)"
+      # cid_value 0x0033, observed on two TracFone/Visible packages:
+      #   XT2413V_FOGONA_TRACFONE_14_U1TFS34.100-35-14-1-4_subsidy-TRAC_VISIBLE_RSU_...
+      #   FOGONA_G_U1TFS34.100-35-14-1-21_subsidy-TRAC_VISIBLE_RSU_...
+      51: "TracFone / Visible (XT2413V)"
 
     # Motorola's own list of the CIDs whose devices the unlock portal will serve,
     # posted by Motorola support on the Lenovo developer forum:

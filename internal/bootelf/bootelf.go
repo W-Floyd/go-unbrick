@@ -117,6 +117,11 @@ type Info struct {
 	// Storage capabilities detected from programmer code
 	Storage []string // ["ufs"], ["emmc"], or ["ufs", "emmc"]
 
+	// Peek reports the loader's peek/poke memory-command support — the
+	// capability behind "signed but exploitable" repair loaders. Only
+	// meaningful for a firehose programmer.
+	Peek secboot.PeekSupport
+
 	// Secboot signing identity (if signed)
 	Identity *secboot.Identity
 
@@ -239,6 +244,9 @@ func Analyze(b []byte) (*Info, error) {
 
 	// Detect Storage Capabilities (UFS, eMMC)
 	info.Storage = detectStorage(b, info)
+
+	// Peek/poke support — the "signed but exploitable" capability.
+	info.Peek = secboot.ScanPeek(b)
 
 	// Parse SecBoot Identity (if signed image)
 	if id, err := secboot.FromELF(b); err == nil {
@@ -394,7 +402,7 @@ func computeTopology(info *Info) ExecutionTopology {
 	switch {
 	case info.Machine == MachineQDSP6:
 		top.Region = "Hexagon DSP (Low-Power Core)"
-	case strings.Contains(info.QCVersion, "TZ.") || (info.Identity != nil && info.Identity.SWID == 7) || (refAddr >= 0x14680000 && refAddr < 0x14700000):
+	case strings.Contains(info.QCVersion, "TZ.") || info.Identity.SWType() == 7 || (refAddr >= 0x14680000 && refAddr < 0x14700000):
 		top.Region = "EL3 Secure Monitor (TrustZone)"
 	case refAddr >= 0x80000000:
 		top.Region = "DRAM (High Memory / Post-Training)"
@@ -516,7 +524,7 @@ func fingerprintSubsystems(b []byte, info *Info) Subsystems {
 	}
 
 	// 6. Fastboot / ABL UI
-	if (info.Identity != nil && info.Identity.SWID == 28) || bytes.Contains(data, []byte("fastboot_publish")) || bytes.Contains(b, []byte("fastboot_publish")) {
+	if info.Identity.SWType() == 28 || bytes.Contains(data, []byte("fastboot_publish")) || bytes.Contains(b, []byte("fastboot_publish")) {
 		sub.FastbootUI = true
 		sub.Details = append(sub.Details, "Fastboot / ABL UI")
 	}

@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -66,7 +67,36 @@ type Entry struct {
 	Size uint64
 }
 
+// ext4 superblock s_feature_incompat is a u32 LE at offset 0x60; INCOMPAT_FLEX_BG
+// is bit 0x200.
+const (
+	ext4FeatIncompatOff = 1024 + 0x60
+	ext4FlexBG          = 0x200
+)
+
+// ensureFlexBg works around go-ext4's refusal to read a filesystem without the
+// flex_bg incompat flag. The reader never actually depends on flex_bg — it locates
+// each block group's inode table from that group's descriptor, which is correct
+// with or without the flag; flex_bg only changes where those tables physically
+// sit. Some Motorola partitions (dspso, a small single-group image) are built
+// without it. Set the flag on a copy so the reader accepts them; nothing reads it
+// back. Only a non-flex_bg image is copied, and those are the small ones.
+func ensureFlexBg(raw []byte) []byte {
+	if len(raw) < ext4FeatIncompatOff+4 {
+		return raw
+	}
+	feat := binary.LittleEndian.Uint32(raw[ext4FeatIncompatOff:])
+	if feat&ext4FlexBG != 0 {
+		return raw
+	}
+	out := make([]byte, len(raw))
+	copy(out, raw)
+	binary.LittleEndian.PutUint32(out[ext4FeatIncompatOff:], feat|ext4FlexBG)
+	return out
+}
+
 func openExt4(raw []byte) (*ext4.BlockGroupDescriptorList, *bytes.Reader, error) {
+	raw = ensureFlexBg(raw)
 	r := bytes.NewReader(raw)
 	if _, err := r.Seek(ext4.Superblock0Offset, io.SeekStart); err != nil {
 		return nil, nil, err
@@ -175,4 +205,22 @@ func Extract(img []byte, name string) ([]byte, error) {
 	}
 	en := ext4.NewExtentNavigatorWithReadSeeker(r, in)
 	return io.ReadAll(ext4.NewInodeReader(en))
+}
+
+// mpssRe finds the modem's QC_IMAGE_VERSION_STRING (baseband/MPSS build), the
+// authoritative firmware version stamped into the modem images.
+var mpssRe = regexp.MustCompile(`QC_IMAGE_VERSION_STRING=(MPSS\.[!-~]+)`)
+
+// Baseband returns the MPSS baseband version stamped in the modem image, or ""
+// if none is present. It resolves the image to its ext4 bytes and scans them —
+// the modem firmware ELFs inside carry the version string in the clear.
+func Baseband(img []byte) string {
+	raw, err := Resolve(img)
+	if err != nil {
+		return ""
+	}
+	if m := mpssRe.FindSubmatch(raw); m != nil {
+		return string(m[1])
+	}
+	return ""
 }

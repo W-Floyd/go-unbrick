@@ -126,6 +126,11 @@ type LoaderMeta struct {
 	SWID   uint64   `json:"sw_id"` // anti-rollback counter; derive prefers the lowest
 	Root   string   `json:"root,omitempty"`
 	Qboot  []string `json:"qboot,omitempty"`
+	// Peek is the loader's peek/poke memory-command support, as
+	// secboot.PeekSupport.String() spells it ("enabled", "gated…", "none",
+	// "n/a…", "unknown…"). Empty in meta written before this field existed;
+	// reindex backfills it.
+	Peek string `json:"peek,omitempty"`
 }
 
 type StockMeta struct {
@@ -231,9 +236,10 @@ func (l *Library) AddLoader(f catalog.Family, d *blankflash.Donor, source string
 		Added:   time.Now().UTC().Format(time.RFC3339),
 		Qboot:   qbootNames,
 	}
-	if id, err := secboot.FromELF(d.Programmer); err == nil {
+	if id, err := secboot.FromImage(d.Programmer); err == nil {
 		meta.OEMID, meta.HWID, meta.JTAGID, meta.SWID, meta.Root = id.OEMID, id.HWID, id.JTAGID, id.SWID, id.Root
 	}
+	meta.Peek = secboot.ScanPeek(d.Programmer).String()
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return nil, err
 	}
@@ -300,6 +306,139 @@ func (l *Library) Builds(f catalog.Family) []LoaderRef {
 		return out[i].Build < out[j].Build
 	})
 	return out
+}
+
+// ReindexChange is one stored loader whose secboot fields re-derive differently.
+type ReindexChange struct {
+	Ref          LoaderRef
+	OldSWID      uint64
+	NewSWID      uint64
+	FieldChanged []string
+	// MovedTo is the family the loader belongs in when it was filed under
+	// another; Duplicate means that family already holds the same programmer.
+	MovedTo   *catalog.Family
+	Duplicate bool
+}
+
+// Reindex re-derives every stored loader's secboot fields from its
+// programmer.elf, for a library filed before the derivation changed (MBN v6
+// metadata SW_IDs replaced the leaf cert's), and moves loaders whose family
+// JTAG no longer matches — chiefly those filed under their own harvest hash
+// prefix, which the old filename fallback mistook for a HW_ID. Donor-zip
+// loaders are left where they are: their family comes from the catalog. With
+// write false it only reports.
+func (l *Library) Reindex(write bool) ([]ReindexChange, error) {
+	var out []ReindexChange
+	shas := map[string]map[string]bool{} // family → programmer shas it holds
+	for _, f := range l.Loaders() {
+		set := map[string]bool{}
+		for _, ref := range l.Builds(f) {
+			set[ref.Meta.SHA256] = true
+		}
+		shas[f.String()] = set
+	}
+	for _, f := range l.Loaders() {
+		for _, ref := range l.Builds(f) {
+			data, err := os.ReadFile(l.LoaderPath(ref))
+			if err != nil {
+				continue
+			}
+			m := ref.Meta
+			var changed []string
+			// Peek is backfilled for every loader, signed or not — the
+			// streaming loaders that FromImage rejects are exactly the PeekNA
+			// ones, so it is computed before the signature guard.
+			if peek := secboot.ScanPeek(data).String(); peek != m.Peek {
+				m.Peek = peek
+				changed = append(changed, "peek")
+			}
+			id, err := secboot.FromImage(data)
+			if err != nil {
+				if len(changed) == 0 {
+					continue
+				}
+				out = append(out, ReindexChange{Ref: ref, OldSWID: m.SWID, NewSWID: m.SWID, FieldChanged: changed})
+				if write {
+					if werr := writeJSON(filepath.Join(l.buildDir(f, ref.Build), "meta.json"), m); werr != nil {
+						return out, werr
+					}
+				}
+				continue
+			}
+			for _, c := range []struct {
+				name     string
+				old, new string
+			}{
+				{"oem_id", m.OEMID, id.OEMID}, {"hw_id", m.HWID, id.HWID},
+				{"jtag_id", m.JTAGID, id.JTAGID}, {"root", m.Root, id.Root},
+				{"sw_id", fmt.Sprint(m.SWID), fmt.Sprint(id.SWID)},
+			} {
+				if c.old != c.new {
+					changed = append(changed, c.name)
+				}
+			}
+			var move *catalog.Family
+			if !strings.HasSuffix(strings.ToLower(m.Source), ".zip") {
+				orig, _ := OriginalName(m.Source, data)
+				if want := FamilyJTAG(id.JTAGID, orig); want != f.JTAGID {
+					move = &catalog.Family{Vendor: f.Vendor, JTAGID: want}
+				}
+			}
+			if len(changed) == 0 && move == nil {
+				continue
+			}
+			ch := ReindexChange{Ref: ref, OldSWID: m.SWID, NewSWID: id.SWID, FieldChanged: changed, MovedTo: move}
+			if move != nil {
+				dest := shas[move.String()]
+				if dest == nil {
+					dest = map[string]bool{}
+					shas[move.String()] = dest
+				}
+				ch.Duplicate = dest[m.SHA256]
+				dest[m.SHA256] = true
+			}
+			out = append(out, ch)
+			if !write {
+				continue
+			}
+			m.OEMID, m.HWID, m.JTAGID, m.SWID, m.Root = id.OEMID, id.HWID, id.JTAGID, id.SWID, id.Root
+			dir := l.buildDir(f, ref.Build)
+			if err := writeJSON(filepath.Join(dir, "meta.json"), m); err != nil {
+				return out, err
+			}
+			if move == nil {
+				continue
+			}
+			if ch.Duplicate {
+				if err := os.RemoveAll(dir); err != nil {
+					return out, err
+				}
+				continue
+			}
+			dst := l.buildDir(*move, ref.Build)
+			if _, err := os.Stat(dst); err == nil {
+				dst += "_" + m.SHA256[:8] // same build name, different programmer
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return out, err
+			}
+			if err := os.Rename(dir, dst); err != nil {
+				return out, err
+			}
+		}
+		// A family emptied by the moves goes too.
+		if write {
+			if left, err := os.ReadDir(l.familyLoaderDir(f)); err == nil && len(left) == 0 {
+				_ = os.Remove(l.familyLoaderDir(f))
+			}
+		}
+	}
+	return out, nil
+}
+
+// LoaderPath is where a stored build's programmer lives on disk.
+func (l *Library) LoaderPath(ref LoaderRef) string {
+	return filepath.Join(l.buildDir(ref.Family, ref.Build), "programmer.elf")
 }
 
 // FindLoader rebuilds a Donor from a family's loader. build selects a specific

@@ -44,7 +44,7 @@ func newEDLCmd() *cobra.Command {
 		Use:   "edl",
 		Short: "provision and drive bkerler/edl to flash a qfil bundle over 9008",
 	}
-	c.AddCommand(newEDLInstallCmd(), newEDLVerifyCmd(), newEDLBackupCmd(), newEDLFlashCmd(), newEDLSetCIDCmd(), newEDLReadCIDCmd())
+	c.AddCommand(newEDLInstallCmd(), newEDLReconCmd(), newEDLVerifyCmd(), newEDLBackupCmd(), newEDLFlashCmd(), newEDLSetCIDCmd(), newEDLReadCIDCmd())
 	return c
 }
 
@@ -378,16 +378,15 @@ func newEDLReadCIDCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The loader returns the whole (sector-padded) partition; the image is
-			// its first 44 bytes.
-			if len(raw) < vendor.CIDSize {
-				return fmt.Errorf("cid read-back is %d bytes, want at least %d", len(raw), vendor.CIDSize)
+			// The loader returns the whole (sector-padded) partition. The channel is
+			// a big-endian u16 in the record header, at an offset that depends on the
+			// record version — a secure-production unit ships a v2 record, not the v0
+			// template — so read it version-aware rather than assuming the template.
+			value, ok := vendor.CIDCarrier(raw)
+			if !ok {
+				return fmt.Errorf("cid read-back is %s; no channel value (corrupt, 0xDEAD, or unrecognized)", cidVersionDesc(raw))
 			}
-			value, err := vendor.CIDParse(raw[:vendor.CIDSize])
-			if err != nil {
-				return err
-			}
-			fmt.Printf("cid = 0x%04X\n", value)
+			fmt.Printf("cid = 0x%04X (%s)\n", value, cidVersionDesc(raw))
 			return nil
 		},
 	}

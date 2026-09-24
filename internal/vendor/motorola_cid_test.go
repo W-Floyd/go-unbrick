@@ -62,6 +62,29 @@ func TestVersionAndCIDIsSigned(t *testing.T) {
 	}
 }
 
+func TestCIDCarrier(t *testing.T) {
+	// v0 template: value at base 0x28 + 2 = 0x2a, the same offset CIDBuild writes.
+	if v, ok := CIDCarrier(CIDBuild(0x0033)); !ok || v != 0x0033 {
+		t.Errorf("v0 template: got 0x%04X ok=%v", v, ok)
+	}
+	// v2 signed record, header + the carrier u16 at base 0x2a + 2 = 0x2c, exactly
+	// as ABL's FUN_0004b340 reads it. Bytes lifted from the real fogona dump.
+	v2 := make([]byte, 0x40)
+	copy(v2, []byte{0x00, 0xf0, 0x00, 0x02, 0x00, 0x00, 0x00, 0x70})
+	v2[0x2c], v2[0x2d] = 0x00, 0x32
+	if v, ok := CIDCarrier(v2); !ok || v != 0x0032 {
+		t.Errorf("v2 record: got 0x%04X ok=%v, want 0x0032", v, ok)
+	}
+	// The 0xDEAD sentinel (corrupt/unprovisioned) is not a channel.
+	v2[0x2c], v2[0x2d] = 0xff, 0xff
+	if _, ok := CIDCarrier(v2); ok {
+		t.Error("0xDEAD cid must not be reported as a carrier value")
+	}
+	if _, ok := CIDCarrier([]byte{0xde, 0xad}); ok {
+		t.Error("non-0x00F0 data must not parse")
+	}
+}
+
 func TestParseHABMeta(t *testing.T) {
 	cases := []struct {
 		name     string
