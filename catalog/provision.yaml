@@ -1,0 +1,262 @@
+# Device provisioning recipes, as `unbrick adb provision` runs them.
+#
+# A recipe is a sequence of verbs this tool implements — install, device_owner,
+# grant, appop, start, settings, disable, enable, verify — with values filled in
+# from --var. It deliberately cannot name a shell command to run: a table that
+# can run anything on a phone is a script with fewer safeguards, and this one is
+# meant to be readable by whoever is about to trust it.
+#
+# `unbrick adb provision <id>` prints every command it would send, in order,
+# with the irreversible ones marked, plus the exact release asset it would
+# fetch — and stops. --apply downloads and runs.
+#
+# An `apk.source` of github:owner/repo is resolved against that project's latest
+# release (or `tag:`), taking the asset named by `asset:`. Add `sha256:` to pin
+# a build: a run prints the digest of whatever it installed, so pinning is a
+# copy-paste away. Unpinned, a fetch takes whatever that release currently
+# holds, which the plan says out loud.
+#
+# `doc` is not decoration: a recipe that cannot be checked against upstream
+# documentation should not be run. Each entry below cites the page its steps
+# came from, and the steps are that page's, not an interpretation of it.
+
+provision:
+  - id: freekiosk
+    name: FreeKiosk — kiosk / locked-down single-purpose device
+    doc: https://github.com/RushB-fr/freekiosk/blob/main/docs/adb-configuration.md
+    package: com.freekiosk
+    apk:
+      # Fetched from the project's latest release. Add `sha256:` here — the run
+      # prints the digest of whatever it installed — and every later run then
+      # installs that exact build or refuses.
+      source: github:RushB-fr/freekiosk
+      asset: "*.apk"
+    requires:
+      min_sdk: 26 # the project states Android 8.0 or later
+      no_accounts: true # dpm set-device-owner refuses with any account configured
+      no_device_owner: true # and refuses again if an owner is already set
+    vars:
+      - name: pin
+        required: true
+        secret: true
+        note: >
+          the PIN that unlocks kiosk mode. Always required — on a fresh device
+          it sets the PIN, on a configured one it must match the existing PIN,
+          which is what stops adb reconfiguring a deployed device.
+      - name: url
+        note: URL to show in WebView kiosk mode (use this or lock_package, not both)
+      - name: lock_package
+        note: package to lock the device to (use this or url, not both)
+      - name: auto_start
+        default: "true"
+        note: launch the locked app immediately after configuring
+      - name: status_bar
+        note: '"false" hides the status bar over the kiosk'
+      - name: owner_component
+        default: com.freekiosk/.DeviceAdminReceiver
+        note: the device-admin component; override only if upstream renames it
+    notes:
+      - >
+        Device Owner is what makes app locking hold on a production device. It
+        cannot be removed by this tool or any other on most builds — a factory
+        reset is the way out — so the plan marks it and asks separately.
+      - >
+        The PIN travels as an intent extra, which means it appears on a command
+        line on the device and in logcat while the activity starts. Fine for a
+        kiosk being provisioned on a bench; not a secret to reuse elsewhere.
+      - >
+        Skip the device_owner step (--skip device_owner) for a WebView kiosk:
+        upstream documents URL mode as working without Device Owner or overlay
+        permissions.
+    steps:
+      - install:
+          reinstall: true
+          grant_runtime_permissions: true
+        note: >
+          fetched from the latest release (or --apk to use a file you have),
+          with its manifest permissions granted
+      - device_owner:
+          component: "{{owner_component}}"
+        note: required for locking the device to another app; irreversible
+      - appop:
+          op: "android:get_usage_stats"
+          mode: allow
+        note: lets it see which app is in the foreground, for lock enforcement
+      - grant:
+          permission: android.permission.WRITE_SECURE_SETTINGS
+        note: lets it enable its own accessibility service without a manual tap
+      # One of the two configuration launches runs, decided by which var was
+      # given — `when` gates a step on a var being non-empty.
+      - when: lock_package
+        start:
+          component: com.freekiosk/.MainActivity
+          strings:
+            lock_package: "{{lock_package}}"
+            pin: "{{pin}}"
+            status_bar: "{{status_bar}}"
+          bools:
+            auto_start: "{{auto_start}}"
+        note: lock the device to an installed app
+      - when: url
+        start:
+          component: com.freekiosk/.MainActivity
+          strings:
+            url: "{{url}}"
+            pin: "{{pin}}"
+            status_bar: "{{status_bar}}"
+        note: show a URL in the built-in WebView
+      - verify:
+          what: owners
+          contains: com.freekiosk
+        note: confirm the device owner took, which upstream's own check is
+
+  # The combination that is usually what someone actually wants: the Home
+  # Assistant Companion app doing what it is good at (native dashboard, push
+  # notifications, the companion sensors that feed automations), with FreeKiosk
+  # as the enforcement shell around it (lock-task so the screen cannot be left,
+  # PIN-gated exit, relaunch on crash, launch on boot).
+  #
+  # Deliberately NOT vendor-scoped: neither app cares who built the phone. The
+  # one vendor-specific thing a run may need — removing whatever preload owns a
+  # configured account, since Device Owner refuses while any account exists — is
+  # discovered from the device (the preflight names the owning package) and
+  # passed as a var, rather than being hardcoded per OEM here.
+  - id: ha-kiosk
+    name: Home Assistant kiosk — HA Companion app, locked down by FreeKiosk
+    doc: https://github.com/RushB-fr/freekiosk/blob/main/docs/adb-configuration.md
+    package: com.freekiosk
+    apks:
+      freekiosk:
+        source: github:RushB-fr/freekiosk
+        asset: "*.apk"
+      ha:
+        source: github:home-assistant/android
+        # The release ships several APKs, so the asset is named rather than
+        # guessed: app-full-release.apk needs Play services, and
+        # app-minimal-release.apk is the build for a device without them —
+        # which installs under a different package name, so pair it with
+        # --var ha_package=io.homeassistant.companion.android.minimal
+        # (--asset ha=app-minimal-release.apk selects it).
+        asset: app-full-release.apk
+    requires:
+      min_sdk: 26
+      no_accounts: true
+      no_device_owner: true
+    vars:
+      - name: pin
+        required: true
+        secret: true
+        note: the PIN that unlocks kiosk mode on the device
+      - name: ha_package
+        default: io.homeassistant.companion.android
+        note: >
+          the HA Companion package. The minimal (no-Play-services) build is
+          io.homeassistant.companion.android.minimal — use that if you installed
+          app-minimal-release.apk.
+      - name: account_holder
+        note: >
+          a package to remove because it owns a configured account, which Device
+          Owner refuses to coexist with. The preflight prints the owner of every
+          account it finds; on the observed Moto G Play (TracFone) the only
+          account was owned by com.motorola.contacts.preloadcontacts, a
+          removable preload. Leave empty if the accounts are Google ones —
+          those belong to Play services, which is not removable.
+      - name: owner_component
+        default: com.freekiosk/.DeviceAdminReceiver
+    notes:
+      - >
+        Order matters. Install both APKs over adb first, clear accounts second,
+        set Device Owner third: signing into the Play Store to get HA would add
+        an account and block Device Owner, and the accounts-free requirement
+        applies only to *setting* it — once set, you may sign in again and take
+        updates from Play as normal.
+      - >
+        Signing into Home Assistant cannot be automated: the app needs a server
+        URL and credentials typed on the device. That is a `manual` step in this
+        recipe rather than an omission, and the run pauses on it.
+      - >
+        Device Owner needs a factory reset to clear on most builds. The plan
+        marks that step and asks for its own confirmation.
+    steps:
+      - install:
+          apk: ha
+          reinstall: true
+          grant_runtime_permissions: true
+        note: the HA Companion app, with its manifest permissions granted
+      - install:
+          apk: freekiosk
+          reinstall: true
+          grant_runtime_permissions: true
+        note: the kiosk shell
+      - manual:
+          do: >
+            open Home Assistant on the device, add your server and sign in, then
+            come back here
+          why: >
+            the companion app needs a server URL and credentials, which no adb
+            command can supply — and locking the device to an unconfigured app
+            leaves a kiosk showing a login screen nobody can escape
+      - when: account_holder
+        uninstall:
+          package: "{{account_holder}}"
+        note: >
+          removes the preload that owns a configured account, which is what
+          Device Owner refuses to coexist with
+      - device_owner:
+          component: "{{owner_component}}"
+        note: what makes the lock hold — without it, a swipe leaves the kiosk
+      - appop:
+          op: "android:get_usage_stats"
+          mode: allow
+        note: lets FreeKiosk see which app is in the foreground
+      - grant:
+          permission: android.permission.WRITE_SECURE_SETTINGS
+        note: lets FreeKiosk enable its own accessibility service
+      - battery_unrestricted:
+          package: "{{ha_package}}"
+        note: >
+          keeps Android from dozing the dashboard app on a device that sits on
+          a charger all day
+      - start:
+          component: com.freekiosk/.MainActivity
+          strings:
+            lock_package: "{{ha_package}}"
+            pin: "{{pin}}"
+          bools:
+            auto_start: "true"
+            keep_screen_on: "true"
+        note: lock the device to the HA app and bring it up now
+      - verify:
+          what: owners
+          contains: com.freekiosk
+        note: confirm the lock will hold across a reboot
+      - verify:
+          what: packages
+          contains: "{{ha_package}}"
+        note: confirm the app being locked to is actually installed
+
+  # The inverse, for a bench device being handed back. Device Owner removal
+  # works where the build allows it; where it does not, a factory reset is the
+  # only route, and this recipe says so rather than pretending otherwise.
+  - id: freekiosk-undo
+    name: FreeKiosk — release a provisioned device
+    doc: https://github.com/RushB-fr/freekiosk/blob/main/docs/adb-configuration.md
+    package: com.freekiosk
+    vars:
+      - name: owner_component
+        default: com.freekiosk/.DeviceAdminReceiver
+    notes:
+      - >
+        `dpm remove-active-admin` is what upstream documents for releasing the
+        device. If the build refuses it, a factory reset is the remaining route
+        — this tool will not trigger one, since a data-destructive step is the
+        owner's decision to take deliberately, not a flag on a provisioning run.
+    steps:
+      - device_owner:
+          component: "{{owner_component}}"
+          remove: true
+        note: give up device-owner privileges
+      - verify:
+          what: owners
+          absent: com.freekiosk
+        note: confirm nothing owns the device any more

@@ -1,0 +1,74 @@
+# Linux-on-phone distributions, as an ssh recon reads them.
+#
+# Each entry says how to recognise a distribution from its os-release, where its
+# own device definition lives, how that file is spelled, and what an install is
+# missing when the definition is not there. Adding a distribution is an entry
+# here; a distribution whose identity needs logic a table cannot state (a layout
+# that depends on its version, a precondition with more than one input) is a Go
+# profile registered with distro.Register instead — see internal/distro.
+#
+# An entry overrides the built-in of the same id. The keys map what the recon
+# wants onto what the file calls it, and each defaults to the obvious spelling,
+# so an entry only names what differs.
+#
+# `notes` says what is known first-hand and what is inference. A recon that
+# reads nothing is a recon that says so, which is better than one that reports a
+# guess: everything that does not depend on the distribution (the partition
+# table, the device tree, /proc/cmdline, the SoC) is collected regardless.
+
+distros:
+  # Verified first-hand against a Moto G Play 2024 (fogona) on postmarketOS edge.
+  - id: postmarketos
+    name: postmarketOS
+    device_files:
+      - path: /usr/share/deviceinfo/deviceinfo
+      - path: /etc/deviceinfo
+      - path: /usr/share/misc/deviceinfo
+    format: shell
+    key_prefix: deviceinfo_
+    codename_style: vendor-dash
+    needs:
+      - what: no deviceinfo file
+        why: it is what names the device by the OEM codename the catalog and the bootloader both use
+        fix: install this device's device package (apk add device-<vendor>-<codename>)
+        when_no_device_files: true
+    notes: >
+      Device packages are named <vendor>-<codename> (motorola-fogona), and the
+      part after the dash is the OEM's own codename — the same string the
+      bootloader answers `getvar product` with, which is what makes a pmOS
+      install resolvable against the device catalog. deviceinfo moved out of
+      /etc as the device packages were restructured; both paths are read.
+
+  # Mobian: Debian for phones. os-release identification is certain; the device
+  # definition is not — Mobian leans on the device tree and per-device packages
+  # rather than a deviceinfo file, so the codename here comes from
+  # /proc/device-tree/compatible and this entry exists to name the distribution
+  # and say so.
+  - id: mobian
+    name: Mobian
+    id_like: [debian]
+    notes: >
+      No deviceinfo-equivalent file is read: Mobian identifies devices by device
+      tree and package, so the codename comes from the device tree's own
+      "<oem>,<codename>" compatible entry. Add device_files here if a Mobian
+      install turns out to ship a definition worth parsing.
+
+  # Droidian: Debian over an Android vendor HAL (halium). Its device identity
+  # lives in the Android property system that the container exposes, not in a
+  # Linux-native file, so a recon over ssh reads the device tree and the same
+  # androidboot.* cmdline any halium device carries.
+  - id: droidian
+    name: Droidian
+    id_like: [debian]
+    notes: >
+      Unverified. Droidian keeps device identity in Android properties inside
+      its halium container; if a `getprop` is present on PATH, the adb-side
+      property rules are the better reading of this device.
+
+  # Ubuntu Touch. Identified by os-release; device identity is again the Android
+  # side, and its own device tarball naming is not a file this recon parses yet.
+  - id: ubuntu-touch
+    name: Ubuntu Touch
+    aliases: [ubports]
+    id_like: [ubuntu, debian]
+    notes: Unverified. Device identity comes from the device tree for now.

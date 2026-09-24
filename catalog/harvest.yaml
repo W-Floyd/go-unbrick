@@ -1,0 +1,117 @@
+# Where `unbrick library harvest` looks for Firehose loaders.
+#
+# Each list is the default for its flag (--repo, --org, --archive, --page); a
+# flag replaces its list for that run. Naming --repo narrows the run to those
+# repos, dropping the default orgs, pages, sites, Temblast repos and discovery.
+# Lists from several catalog files are concatenated.
+
+harvest:
+  repos:
+    - thantoeaungat/firehose
+    # Temblast indexes this one (site O); the cross-dedupe reduces it to the
+    # delta its crawl missed.
+    - OneLabsTools/Programmers
+    - zenlty/Qualcomm-Firehose
+    - zenlty/firehose_generalmobile
+    # Temblast site A; kept so its post-crawl additions land.
+    - Alephgsm/SAMSUNG-EDL-Loaders
+    # Found via `gh search repos`; none are forks, so overlap is duplication the
+    # MD5 dedupe sorts out.
+    - CE1CECL/EDL-Loaders
+    - aaronstarstaff/edl-loaders
+    - se7enf98/Xperia-Loaders
+    # Found by code-searching text sidecars (.mbn.der.info, rawprogram0.xml):
+    # GitHub does not index the binaries themselves.
+    - openpst/assets
+    - ele7enxxh/msm8909w-law-2-0_amss_standard_oem
+    # Found via --discover, tree-verified to carry real loaders.
+    - HadiKhoirudin/Qualcomm-Tool
+    - HadiKhoirudin/Qualcomm-Tool-GUI
+    - Alephgsm/SAM-unbrick-debrick
+    # A GUI loader-DB tool bundling ~356 loaders. As of 2026-09 it is 100%
+    # overlap with what we already hold (bkerler/Loaders + Temblast); kept so a
+    # future update to its DB is picked up on the next harvest.
+    - hoplik/Firehose-Finder
+
+  # Expanded at run time, so new vendor repos are picked up.
+  orgs:
+    - programmer-collection
+
+  # Community dumps outside git. Disroot shares 303 to a DAV endpoint.
+  archives:
+    - https://cloud.disroot.org/s/HzxB6YM2wRFPpWT/download # loaders-8909-2019-07-18.zip, MSM8909
+
+
+    # droidwin.com "patched firehose" packs (extracted from a browser HAR;
+    # the site is Cloudflare-gated so it cannot be scraped as a --site). These
+    # are bundles of seller loaders: mostly patched code (rejected by Admit) or
+    # unsigned, with one flipped magic byte that repairMagic undoes. A test
+    # import of two of them yielded 431 loaders, 0 usable (371 patched, 38
+    # unsigned, rest already held). Kept for research; they contribute nothing
+    # to the signed library.
+    - https://drive.google.com/file/d/1PRa6w-Q5RYrmjZfV_GbnrRWt6mZ8AbYM/view # droidwin pack 1 (~436 devices)
+    - https://drive.google.com/file/d/0ByQqd_psFzvxcTNNQm1CVnlCSTA/view # droidwin pack 2 (~128 devices)
+    - https://www.mediafire.com/file/wm0drh0dwa1esi3/no_need_Authorized_Firehose_Channel_TTA.rar/file # droidwin pack 3 (~5 devices)
+    - https://drive.google.com/file/d/15OM3gzIgkfuNngdRzyGyz0Dph6HOtbyS/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/13taMhIzFtYjlt1_mC0dPNsonkgElxOiK/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1Xp8eolIK9Sgcd3YLjLdnjb-KfQw1bZ_n/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/10q418OgZ-YnGXGNy4QOer03JLyPmtnS1/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1Z23kZbK0IQgEbCCKmEdItmiO61uFBLdH/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1u36FgNQR-v7Bl2pXWExgkENO-dpBF4Zu/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1dagoQJmAFxxecID34-uvbZTYnIQKmrVb/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/19-FDc1IdG5T-9BBn6gM1Lb_IG4MnnesI/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/19M4pSgiS2oajAxvFB_OEdh8HaVVRiMbH/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1VXUrJiLJm4JI94L-7bBKyODzDKzqeymT/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1CJRjOpVFh1HbJF5Qi4PI4edN0O7UEjFP/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1Ewh4CePR9WOGfuFBamLFG8pgX__uajeD/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/12aIoRbuujReLBFX_ZT_BgYecOWuxtCfZ/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1q2mZp5H-SkKsTPS2c1HSgdLR2MJpjUWr/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1Zy61sdTSxJZXSl49XSGotKWuscZePttR/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1ISHTHzaPYexer9JcxvZXL_2TAyWVy0pV/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1gYjF5qESVAeNoXEosXOAyydOEOv9xGSb/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1SjRERfuqS6PI6ucc_uwRSCwVc3EPubSX/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1kPbDeMyXVzoUBsk8HUvU3mUpVEO8v9sm/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1cJToe2J4H4W0dVB8NHj_LsZ8Ev_Qp-oT/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1-ZOpKTfbh-aeG72qdX2KQAa45O7B-hPO/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1bEnP36g1dTeZEoWZqqJOxYIz1bN1Lw_q/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1WDiglWvXarUo8LuYTNOFqW1Oc0ipRfdf/view # droidwin patched-firehose pack
+    - https://drive.google.com/file/d/1-xVpEMStW4zdCXBhpWzTzUhbLsh1w1oZ/view # droidwin patched-firehose pack
+    - https://www.mediafire.com/file/22pjsndnfsqvttq/collection_prog_emmc_ufs_firehose.rar/file # droidwin SM-89xx firehose collection
+
+  # HTML indexes that link loader files, walked recursively.
+  pages:
+    - https://edl.bananahackers.net/
+    # h5ai autoindex; the only non-GitHub source in the Temblast catalog.
+    - https://archive.diablosat.cc/firmwares/amt-dumps/FirehoseLoaders/
+
+  # Sites whose pages link off-site archives. One kind per entry:
+  #   index + page_pattern   index page → device pages matching the pattern → archive links
+  #   wp + category          WordPress category, via the REST API
+  #   wp + search            WordPress search (the on-site `site:host <query>`)
+  #   afh                    AndroidFileHost search
+  sites:
+    - index: https://therxtx.com/motorola-repair-center/motorola-blankflash/
+      page_pattern: therxtx\.com/motorola-[^"']*blankflash
+    - {wp: https://www.gadgetsdr.com, category: emmc-files}
+    - {wp: https://bypassfrpfiles.com, category: qcom-firehose}
+    - {wp: https://romprovider.com, search: firehose}
+    - {afh: firehose}
+    - {afh: blankflash}
+
+  # --discover: indexed text that sits next to Qualcomm loaders. The binaries
+  # are not indexed, so a repo carrying them is found by its recipes, the vendor
+  # source, or text sidecar paths. `filename` searches file names; otherwise the
+  # term is matched against paths.
+  discover_fingerprints:
+    - {term: rawprogram0.xml, filename: true}
+    - {term: patch0.xml, filename: true}
+    - {term: deviceprogrammer_firehose.c, filename: true}
+    - {term: prog_emmc_firehose}
+    - {term: prog_ufs_firehose}
+
+  # --discover finds these but they are not worth cloning: a 1.2 GB re-copy of
+  # bkerler/Loaders, and firmware source trees with no compiled firehose.
+  discover_denylist:
+    - GhostwheeI/TheBatchCompendium
+    - David112x/android-firmware-qti-sdm660
+    - me-cafebabe-backyard/android-firmware-qti-sdm660

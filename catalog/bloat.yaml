@@ -1,0 +1,799 @@
+# Preloaded packages a phone can lose, as `unbrick adb debloat` reads them.
+#
+# Every removal this drives is `pm uninstall --user 0`: a per-user state change
+# that touches no partition, leaves dm-verity and the bootloader lock alone, and
+# is undone by `unbrick adb debloat --restore` or by a factory reset. Nothing
+# here is a flash, and nothing here needs root or an unlocked bootloader.
+#
+# Entries were read off a real device, not a forum list: a Moto G Play 2024
+# (fogona, XT2413V) on the TracFone channel, Android 14 U1TF34.100-35-14. A
+# package this file does not name is reported as *unknown* and never proposed —
+# guessing across 461 packages is how a phone loses its modem. `--list` prints
+# the unknowns so this table can grow from evidence.
+#
+# `category` decides whether a package is offered and under which flag:
+#   ads             - the delivery machinery that installs sponsored apps
+#   preload         - third-party apps the channel shipped
+#   carrier-foreign - another carrier's client on this unit
+#   oem-extra       - the manufacturer's optional software
+#   updates         - the OTA machinery; removing it stops security updates
+#   protected       - never offered, whatever the flags
+# `risk` is what a removal costs: safe (nothing a stock phone relies on),
+# caution (a named feature goes away), invasive (activation, updates or a
+# carrier feature may be affected).
+#
+# `vendor` scopes an entry to one OEM's devices, as a catalog vendor id. Every
+# com.motorola.* entry below carries `vendor: motorola`, because a rule about a
+# package the maintainer has only ever seen on a Motorola cannot vouch for
+# anything on a Samsung: out of scope, it is dropped and the package falls to
+# "unknown", which is the honest answer. Entries with no `vendor` are the ones
+# that are genuinely everyone's — the Android platform, Google's packages, the
+# delivery agents, the games, and a carrier's own apps (a carrier ships those
+# across OEMs, so they are scoped by carrier in practice, not by vendor).
+#
+# Telephony, IMS, provisioning, setup and the carrier-unlock client are
+# protected in code (internal/bloat), not here, so editing this file cannot
+# unprotect them. This file may add protections and name bloat.
+#
+# NOTE on this unit's network: TracFone is a Verizon MVNO, so the Verizon APN and
+# provisioning packages on it are plausibly *live* rather than foreign. They are
+# protected below for that reason; the myVerizon app itself is not.
+
+bloat:
+  # ── ads: the delivery agents ───────────────────────────────────────────────
+  # Worth more than what they deliver: removing the agent stops re-delivery
+  # after a reset, which is why the games come back otherwise.
+  - prefix: com.aura.
+    category: ads
+    risk: safe
+    note: >
+      Aura/ironSource preload delivery (oobe.motorola, oobe.solutions, jet.att,
+      appadvisor.*): installs sponsored apps during setup and recommends more
+      afterwards. Nothing on the phone depends on it.
+  - name: com.dti.tracfone
+    category: ads
+    risk: safe
+    note: Digital Turbine Ignite for TracFone — the sponsored-app installer behind the preloaded games.
+  - name: com.motorola.appforecast
+    vendor: motorola
+    category: ads
+    risk: safe
+    note: App recommendation/prediction service that feeds preload suggestions.
+  - name: com.motorola.discovery
+    vendor: motorola
+    category: ads
+    risk: safe
+    note: Motorola content/app discovery feed.
+  - prefix: com.motorola.paks
+    vendor: motorola
+    category: ads
+    risk: safe
+    blocked: true
+    note: >
+      Motorola preload delivery ("paks") and its notifications. This build lists
+      them as protected packages: `pm uninstall --user 0` answers
+      DELETE_FAILED_INTERNAL_ERROR and `pm disable-user` answers
+      "SecurityException: Cannot disable a protected package", so nothing short
+      of root or a modified image removes them. Reported, not proposed.
+  - name: com.motorola.brapps
+    vendor: motorola
+    category: ads
+    risk: safe
+    note: Motorola preload app bundle installer.
+  - name: com.amazon.appmanager
+    category: ads
+    risk: safe
+    note: >
+      Amazon's preload installer stub. Ships disabled on the observed unit, and
+      a disabled privileged package refuses uninstall ("package is
+      non-disable") — already-disabled packages are reported, not proposed.
+  - name: com.swishme.tracfone
+    category: ads
+    risk: safe
+    note: '"Swish Deals" — a TracFone offers/deals app that notifies for sponsored content.'
+  - prefix: com.facebook.appmanager
+    category: ads
+    risk: safe
+    note: Facebook's preload installer; keeps the Facebook stubs up to date whether or not the app is used.
+  - name: com.facebook.services
+    category: ads
+    risk: safe
+    note: Facebook background services stub — runs without the Facebook app installed.
+  - name: com.facebook.system
+    category: ads
+    risk: safe
+    note: Facebook system stub — runs without the Facebook app installed.
+
+  # ── Google's apps ────────────────────────────────────────────────────────
+  # Unscoped by vendor: these ship on every Android device with Play services,
+  # so they are nobody's OEM extras. Google's *platform* half — WebView, the
+  # permission controller, the media provider, the mainline modules, emergency
+  # alerts, carrier services — is protected in code (internal/bloat), not here:
+  # removing one of those is removing a piece of the operating system.
+  #
+  # The `caution` entries below were decided by asking the device what else
+  # handles the same intent, not by taste. On the observed unit: one SMS
+  # handler, one dialer, one browser, one alarm handler, and one real keyboard
+  # (Gboard — the second IME is the TTS voice input, which cannot type). Those
+  # are capabilities nothing else exposes, so they are held back from a default
+  # run even though every one of them is reinstallable from Play.
+  - prefix: com.google.android.apps.youtube.music
+    category: preload
+    risk: safe
+    note: YouTube Music, and its setup-wizard hook. Reinstallable from the Play Store.
+  - name: com.google.android.youtube
+    category: preload
+    risk: safe
+    note: YouTube. Reinstallable from the Play Store.
+  - name: com.google.android.videos
+    category: preload
+    risk: safe
+    note: Google TV / Play Movies. Reinstallable from the Play Store.
+  - name: com.google.android.apps.docs
+    category: preload
+    risk: safe
+    note: Google Drive. Reinstallable from the Play Store.
+  - name: com.google.android.gm
+    category: preload
+    risk: safe
+    note: Gmail. Reinstallable from the Play Store.
+  - name: com.google.android.calendar
+    category: preload
+    risk: safe
+    note: Google Calendar. Calendar *data* lives in the provider and the account, not in this app.
+  - name: com.google.android.apps.tachyon
+    category: preload
+    risk: safe
+    note: Google Meet (formerly Duo). Reinstallable from the Play Store.
+  - name: com.google.android.apps.nbu.files
+    category: preload
+    risk: safe
+    note: Files by Google. The system file picker (DocumentsUI) is a protected package and stays.
+  - name: com.google.android.apps.chromecast.app
+    category: preload
+    risk: safe
+    note: Google Home. Reinstallable from the Play Store.
+  - name: com.google.android.apps.maps
+    category: preload
+    risk: safe
+    note: Google Maps. Reinstallable from the Play Store — but check you have another way to navigate before a trip.
+  - name: com.google.android.apps.photos
+    category: preload
+    risk: safe
+    note: >
+      Google Photos. Safe here because the device reports two handlers for
+      viewing an image, so a gallery remains; photos themselves live in shared
+      storage and in the account, not in this app. On a device where it is the
+      only gallery this would be `caution`.
+  - name: com.google.android.apps.wellbeing
+    category: preload
+    risk: safe
+    note: Digital Wellbeing — screen-time reporting and its parental-control hooks.
+  - name: com.google.android.projection.gearhead
+    category: preload
+    risk: safe
+    note: Android Auto. Useless without a head unit, and reinstallable if one appears.
+  - name: com.google.android.printservice.recommendation
+    category: preload
+    risk: safe
+    note: Suggests printer plugins to install. Printing itself is a framework service and stays.
+  - name: com.google.android.feedback
+    category: preload
+    risk: safe
+    note: The "send feedback to Google" hook.
+  - name: com.google.android.apps.restore
+    category: preload
+    risk: safe
+    note: Restores data from another device during setup. Does nothing after setup, and comes back with a reset.
+  - name: com.google.android.onetimeinitializer
+    category: preload
+    risk: safe
+    note: A one-shot first-boot initialiser. Already done its work on a device that is running.
+  - name: com.google.android.calculator
+    category: preload
+    risk: safe
+    note: Google Calculator.
+  - name: com.google.android.tag
+    category: preload
+    risk: safe
+    note: The NFC tag viewer app. NFC itself is a framework service and stays.
+  - name: com.google.android.apps.wallpaper
+    category: preload
+    risk: safe
+    note: The wallpaper picker. Wallpaper can still be set from an image in a gallery.
+
+  # Held back from a default run: on this build each of these is the only thing
+  # that handles what it handles.
+  - name: com.google.android.apps.messaging
+    category: preload
+    risk: caution
+    note: >
+      Google Messages — and the device reports exactly one SMS handler, so this
+      is it. Removing it leaves no way to read or send a text, which on a phone
+      also means no SMS two-factor codes. Install another SMS app first if you
+      want it gone.
+  - name: com.google.android.dialer
+    category: preload
+    risk: caution
+    note: >
+      Google Phone — the only DIAL handler on this build (the AOSP dialer ships
+      disabled). Removing it leaves no dialler UI; calls still work from a
+      contact or an intent, but nothing puts a keypad on the screen.
+  - name: com.google.android.contacts
+    category: preload
+    risk: caution
+    note: >
+      Google Contacts — the only contacts app here (the AOSP one ships
+      disabled). Contact *data* is in the provider and the account and survives,
+      but nothing displays or edits it afterwards.
+  - name: com.android.chrome
+    category: preload
+    risk: caution
+    note: >
+      Chrome — the only browser on this build, so removing it leaves nothing to
+      open a link with. Apps that render HTML inside themselves are unaffected:
+      that is WebView, which is protected.
+  - name: com.google.android.deskclock
+    category: preload
+    risk: caution
+    note: Google Clock — the only alarm handler on this build. Alarms set in it go with it.
+  - name: com.google.android.inputmethod.latin
+    category: preload
+    risk: caution
+    note: >
+      Gboard — effectively the only keyboard: the device lists a second IME, but
+      it is the TTS voice input, which cannot type. Remove this without
+      installing another keyboard first and the device has no way to enter text,
+      including the text needed to install a keyboard.
+  - prefix: com.google.android.googlequicksearchbox
+    category: preload
+    risk: caution
+    note: The Google app — search, the search widget and Assistant. Removing it takes the assistant with it.
+  - name: com.google.android.apps.googleassistant
+    category: preload
+    risk: caution
+    note: Google Assistant. Voice control and any routine built on it stop working.
+  - prefix: com.google.android.tts
+    category: preload
+    risk: caution
+    note: >
+      Google's text-to-speech engine. Accessibility tools, navigation prompts
+      and read-aloud features depend on a TTS engine being present.
+  - name: com.google.android.marvin.talkback
+    category: preload
+    risk: caution
+    note: >
+      TalkBack, the screen reader. It is the device's accessibility path for
+      anyone who cannot see the screen — worth leaving unless you know nobody
+      using this device needs it.
+  - name: com.google.android.accessibility.switchaccess
+    category: preload
+    risk: caution
+    note: Switch Access — accessibility input for users who cannot use a touchscreen directly.
+  - name: com.google.android.apps.safetyhub
+    category: preload
+    risk: caution
+    note: >
+      Personal Safety — emergency SOS, car-crash detection and emergency
+      contacts. A safety feature rather than a convenience.
+  - prefix: com.google.android.as
+    category: preload
+    risk: caution
+    note: >
+      Android System Intelligence (and its OSS half): on-device smarts that
+      Live Caption, smart reply, notification ranking and screen attention are
+      built on. Not an app you open; things quietly stop working.
+  - name: com.google.android.apps.turbo
+    category: preload
+    risk: caution
+    note: Device Health Services — adaptive battery and charging. Removing it makes battery behaviour dumber, not broken.
+
+  # ── preload: third-party apps the channel shipped ─────────────────────────
+  # All reinstallable from the Play Store, so removal costs nothing permanent.
+  - name: com.einnovation.temu
+    category: preload
+    risk: safe
+    note: Temu (shopping). Reinstallable from the Play Store.
+  - name: com.facebook.katana
+    category: preload
+    risk: safe
+    note: Facebook. Reinstallable from the Play Store.
+  - name: com.instagram.android
+    category: preload
+    risk: safe
+    note: Instagram. Reinstallable from the Play Store.
+  - name: com.zhiliaoapp.musically
+    category: preload
+    risk: safe
+    note: TikTok. Reinstallable from the Play Store.
+  - name: com.whatsapp
+    category: preload
+    risk: safe
+    note: WhatsApp. Reinstallable from the Play Store.
+  - name: com.walmart.android
+    category: preload
+    risk: safe
+    note: Walmart. Reinstallable from the Play Store.
+  - name: com.squareup.cash
+    category: preload
+    risk: safe
+    note: Cash App. Reinstallable from the Play Store.
+  - name: com.onedebit.chime
+    category: preload
+    risk: safe
+    note: Chime (banking). Reinstallable from the Play Store.
+  - name: com.handmark.expressweather
+    category: preload
+    risk: safe
+    note: 1Weather. Reinstallable from the Play Store.
+  - name: com.meta.attribution
+    category: preload
+    risk: safe
+    note: Meta install-attribution helper.
+  - name: com.king.candycrushsaga
+    category: preload
+    risk: safe
+    note: Candy Crush Saga.
+  - name: com.king.candycrushsodasaga
+    category: preload
+    risk: safe
+    note: Candy Crush Soda Saga.
+  - name: ball.sort.puzzle.color.sorting.bubble.games
+    category: preload
+    risk: safe
+    note: Preloaded puzzle game.
+  - name: com.block.juggle
+    category: preload
+    risk: safe
+    note: Preloaded puzzle game (Block Blast).
+  - name: com.huub.tiger
+    category: preload
+    risk: safe
+    note: Preloaded game.
+  - name: com.oakever.arrows
+    category: preload
+    risk: safe
+    note: Preloaded game.
+  - name: com.puzzlegames.puzzlebrickslegend
+    category: preload
+    risk: safe
+    note: Preloaded game.
+  - name: com.tripledot.solitaire
+    category: preload
+    risk: safe
+    note: Preloaded solitaire game.
+  - name: com.vitastudio.mahjong
+    category: preload
+    risk: safe
+    note: Preloaded mahjong game.
+  - name: all.documentreader.filereader.office.viewer
+    category: preload
+    risk: safe
+    note: Third-party document viewer preload.
+  - name: pdf.pdfreader.viewer.editor.free
+    category: preload
+    risk: safe
+    note: Third-party PDF reader preload.
+  - name: com.tracfone.generic.mysites
+    category: preload
+    risk: safe
+    note: TracFone web shortcuts.
+  - name: com.vzw.hss.myverizon
+    category: preload
+    risk: safe
+    note: My Verizon app. The account app, not provisioning — reinstallable.
+  - name: com.lenovo.lsf.user
+    vendor: motorola
+    category: preload
+    risk: safe
+    note: Lenovo ID sign-in service (Lenovo owns Motorola; it ships on their phones).
+  - name: android.autoinstalls.config.motorola.layout
+    vendor: motorola
+    category: preload
+    risk: safe
+    note: Preload layout configuration — which preloads land on the home screen.
+
+  # ── carrier-foreign: another carrier's software on this unit ──────────────
+  # Not selected by default: harmless where it is, and one of them matters if
+  # the SIM ever changes. Removing them is tidying, not repair.
+  - prefix: com.att.
+    category: carrier-foreign
+    risk: safe
+    note: AT&T client software on a TracFone unit (most already disabled by the image).
+  - name: com.motorola.omadm.att
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: AT&T device-management client.
+  - name: com.motorola.omadm.dish
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: DISH device-management client.
+  - name: com.dish.wireless.carrierapp
+    category: carrier-foreign
+    risk: safe
+    note: DISH carrier app.
+  - prefix: com.motorola.att.
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: AT&T phone/SIM extensions.
+  - name: com.motorola.attvowifi
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: AT&T VoWiFi extension.
+  - prefix: com.motorola.comcast
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: Comcast/Xfinity Mobile extensions.
+  - name: com.motorola.spectrum.setup.extensions
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: Spectrum Mobile setup extension.
+  - name: com.motorola.sprint.setupext
+    vendor: motorola
+    category: carrier-foreign
+    risk: safe
+    note: Sprint setup extension.
+  - name: cci.usage
+    category: carrier-foreign
+    risk: safe
+    note: Consumer Cellular usage app (already disabled on the observed unit).
+
+  # ── oem-extra: Motorola's optional software ──────────────────────────────
+  # Each note says what stops working, because that is the whole decision.
+  - name: com.motorola.android.fmradio
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: FM radio service — the FM radio stops working (this hardware has one).
+  - name: com.motorola.fmplayer
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: FM radio app — pair with com.motorola.android.fmradio.
+  - name: com.motorola.demo
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Retail demo mode.
+  - name: com.motorola.mototour
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: The "tips and tour" walkthrough.
+  - prefix: com.motorola.help
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: '"Device Help" and its log uploader — the built-in support/troubleshooting app.'
+  - name: com.motorola.motocare
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: '"Device Care" — the support/diagnostics app.'
+  - name: com.motorola.genie
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: >
+      Motorola "genie" helper. Unverified: the APK's application label did not
+      resolve and its components include a fingerprint factory test, so what it
+      actually carries on this build is not established.
+  - name: com.motorola.bug2go
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Motorola bug reporting tool.
+  - name: com.motorola.timeweatherwidget
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Clock/weather home-screen widget.
+  - name: com.motorola.audiorecorder
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Voice recorder app.
+  - name: com.motorola.gamemode
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: '"Moto Gametime" — the in-game overlay and its settings.'
+  - name: com.motorola.personalize
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Moto personalisation (themes, fonts, wallpapers).
+  - name: com.motorola.spaces
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: >
+      "Family Space" — Motorola's parental controls / kids space. Label read off
+      the APK on the observed unit. An optional app: nothing else depends on it
+      and no device capability goes with it, so it is `safe` under the narrow
+      reading of that label. It was first marked `caution` on the grounds that
+      "a feature goes away", which turned out to describe every optional app
+      and so said nothing. If Family Space profiles were configured, they go
+      with the app's data as with any uninstall — restoring the package brings
+      back the app, not its contents.
+  - name: com.motorola.om
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: '"Moto Unplugged" — the focus/digital-wellbeing mode.'
+  - name: com.motorola.moto
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: >
+      The "Moto" app: the launcher-visible hub for Motorola's own features.
+      Checked on the observed unit rather than assumed — com.motorola.actions
+      and com.motorola.gesture each expose their own launcher entry, so Moto
+      Actions and Gestures survive without the hub, but com.motorola.personalize
+      exposes none, so Motorola's themes/fonts UI becomes unreachable while its
+      package sits there. That is the `caution`: not an app you might miss, but
+      the only remaining route to a settings surface. If you do not use
+      Motorola personalisation, remove both —
+      --only com.motorola.moto,com.motorola.personalize.
+  - name: com.motorola.lifetimedata
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Lifetime data-usage statistics collection.
+  - prefix: com.motorola.motosignature
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Moto signature/branding assets.
+  - name: com.motorola.contacts.preloadcontacts
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: >
+      "PreloadContacts" (/product/priv-app, v3.0 on the observed unit): it
+      serves two contacts accounts and nothing else. One holds the carrier's
+      preloaded entries — on this device exactly one contact, "Customer
+      Support", under an account named TracFone — and the other exposes the
+      SIM's Service Dialling Numbers (EF_SDN, the operator service numbers).
+      Its permissions are accounts, contacts, phone state and boot-completed;
+      it serves no part of calling, so removing it costs those contact entries
+      and nothing more.
+
+      Worth knowing before removing it: the account it owns is what makes
+      `dpm set-device-owner` refuse, so removing this package is also how
+      `unbrick adb provision` clears that precondition over adb rather than
+      through Settings. The account disappears with the package.
+  - name: com.motorola.android.providers.chromehomepage
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Sets the carrier home page in Chrome.
+  - name: com.motorola.android.buacloudcontactadapter
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Carrier cloud-contacts backup adapter.
+  - name: com.motorola.android.nativedropboxagent
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Uploads native crash logs (Android's "dropbox", not the storage service).
+  - name: com.motorola.wifi.motowifimetrics
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Wi-Fi telemetry.
+  - name: com.motorola.nfwlocationattribution
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Location-attribution telemetry.
+  - name: com.motorola.bach.modemstats
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Modem statistics telemetry.
+  - prefix: com.motorola.enterprise
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: Enterprise/MDM adapters, unused on a consumer unit.
+  - name: com.motorola.faceunlock
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: Face unlock — the feature goes away (fingerprint and PIN are unaffected).
+  - name: com.motorola.dolby.dolbyui
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: Dolby audio settings UI — tuning controls go away.
+  - prefix: com.motorola.securityhub
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: Moto Secure dashboard — the UI, not the security itself.
+  - name: com.motorola.visualvoicemail
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: Visual voicemail — voicemail falls back to dialling in.
+  - name: com.motorola.hce
+    vendor: motorola
+    category: oem-extra
+    risk: caution
+    note: NFC host card emulation — tap-to-pay stops working.
+  - prefix: com.motorola.ccc.notification
+    vendor: motorola
+    category: oem-extra
+    risk: safe
+    note: >
+      "ECI-MotoEngage" (label read off the APK): Motorola's engagement client —
+      the promotional and informational cards it posts as notifications. It has
+      no launcher entry and nothing depends on it. Distinct from
+      com.motorola.ccc.ota, which is the update check-in and is categorised
+      under `updates`; removing this one costs Motorola's marketing
+      notifications and nothing else, which is why it is `safe` rather than the
+      `caution` it was first guessed at.
+  - name: com.motorola.ccc.devicemanagement
+    vendor: motorola
+    category: oem-extra
+    risk: invasive
+    note: Motorola device management — may participate in activation and update checks.
+  - name: com.motorola.ccc.mainplm
+    vendor: motorola
+    category: oem-extra
+    risk: invasive
+    note: Motorola product lifecycle client — checks in with Motorola; may be tied to OTA.
+
+  # ── updates: the OTA machinery ───────────────────────────────────────────
+  # Its own category, never selected unless asked for by name, because the cost
+  # is not a feature but every future security patch.
+  - name: com.motorola.android.fota
+    vendor: motorola
+    category: updates
+    risk: invasive
+    note: The OTA updater. Removing it stops firmware and security updates arriving.
+  - name: com.motorola.ccc.ota
+    vendor: motorola
+    category: updates
+    risk: invasive
+    note: Motorola's OTA check-in client. Removing it stops update notifications.
+
+  # ── protected by evidence about *this* unit ──────────────────────────────
+  # TracFone runs on Verizon, so Verizon APN and provisioning packages here are
+  # plausibly in use. Protected rather than merely risky: data and activation
+  # are not worth a tidy app drawer.
+  - prefix: com.vzw.apn
+    category: protected
+    note: Verizon APN library/service — TracFone is a Verizon MVNO, so this unit's data may depend on it.
+  - name: com.vzw.ecid
+    category: protected
+    note: Verizon device identity service, plausibly live on a Verizon MVNO.
+  - name: com.motorola.vzw.provider
+    vendor: motorola
+    category: protected
+    note: Verizon provider data, plausibly live on a Verizon MVNO.
+  - prefix: com.motorola.vzw.phone
+    vendor: motorola
+    category: protected
+    note: Verizon phone extensions, plausibly live on a Verizon MVNO.
+  - prefix: com.motorola.vzw.pco
+    vendor: motorola
+    category: protected
+    note: Verizon PCO receiver — carrier protocol configuration options.
+  - name: com.motorola.omadm.service
+    vendor: motorola
+    category: protected
+    note: The generic device-management service, which carrier activation and updates use.https://github.com/RushB-fr/freekiosk/blob/main/docs/installation.md
+  # Identified by pulling the APK and reading its label: "Device Pulse", the
+  # Smith Micro diagnostics and self-service agent, not the activation plumbing
+  # the package name suggests. It was protected on that guess; a label is worth
+  # more than a package name, so it is now offered — in its own category, never
+  # by default, because a self-service agent may still be part of how TracFone
+  # support reaches the device.
+  - prefix: com.tracfone.preload.accountservices
+    category: carrier
+    risk: invasive
+    blocked: true
+    note: >
+      "Device Pulse" — TracFone/Smith Micro device diagnostics and self-service
+      agent. It reports device state to the carrier and backs in-app support
+      flows.
+
+      This build will not part with it: both `pm uninstall --user 0` and
+      `pm disable-user` answer "package is non-disable", the same
+      protected-packages refusal com.motorola.paks gives. It is a PRIVILEGED
+      PRODUCT app and an UPDATED_SYSTEM_APP, so an OTA has replaced it at least
+      once. Reported rather than proposed; root or a modified image is the only
+      route, and on a device kept for its carrier service that is a poor trade.
+  - name: com.motorola.extensions.tracfone
+    vendor: motorola
+    category: protected
+    note: TracFone device extensions for this unit's own carrier.
+  - prefix: com.motorola.android.providers.settings.tracfone
+    vendor: motorola
+    category: protected
+    note: TracFone settings defaults (APNs and carrier configuration for this unit).
+  - name: com.motorola.entitlement
+    vendor: motorola
+    category: protected
+    note: Carrier entitlement — what gates VoLTE, VoWiFi and hotspot.
+  - name: com.motorola.rcsConfigService
+    vendor: motorola
+    category: protected
+    note: RCS configuration for messaging.
+  - name: com.motorola.callredirectionservice
+    vendor: motorola
+    category: protected
+    note: Call redirection — part of the dialling path.
+  - name: com.motorola.appdirectedsmsproxy
+    vendor: motorola
+    category: protected
+    note: App-directed SMS, which carrier provisioning messages use.
+  - name: com.motorola.thermalservice
+    vendor: motorola
+    category: protected
+    note: Thermal management. Removing it risks the hardware, not a feature.
+  - name: com.motorola.systemserver
+    vendor: motorola
+    category: protected
+    note: Motorola's system-server extensions.
+  - prefix: com.motorola.coresettingsext
+    vendor: motorola
+    category: protected
+    note: Settings extensions the Settings app depends on.
+  - name: com.motorola.settings
+    vendor: motorola
+    category: protected
+    note: Motorola's settings provider.
+  - prefix: com.motorola.camera3
+    vendor: motorola
+    category: protected
+    note: The camera app and its AI content provider — there is no other camera on this image.
+  - name: com.motorola.imagertuning_u
+    vendor: motorola
+    category: protected
+    note: Camera sensor tuning data.
+  - name: com.motorola.securevault
+    vendor: motorola
+    category: protected
+    note: Secure credential storage.
+  - name: com.motorola.dciservice
+    vendor: motorola
+    category: protected
+    note: Device configuration interface service, unverified but system-adjacent.
+  - name: com.motorola.sstservice
+    vendor: motorola
+    category: protected
+    note: Motorola system service, unverified but system-adjacent.
+  - name: com.motorola.slpc_sys
+    vendor: motorola
+    category: protected
+    note: System performance controller.
+  - name: com.motorola.nfc
+    vendor: motorola
+    category: protected
+    note: Motorola's NFC extension — removing it can take NFC with it.
+  - name: com.motorola.hiddenmenuapp
+    vendor: motorola
+    category: protected
+    note: Dialler-code service menus, which diagnostics and carrier tooling use.
+  - name: com.motorola.motocit
+    vendor: motorola
+    category: protected
+    note: Factory/field test application, used by service tooling.
+  - name: com.motorola.obdmapi.service
+    vendor: motorola
+    category: protected
+    note: OMA-DM API service used by device management.
+  - name: com.motorola.revoker.services
+    vendor: motorola
+    category: protected
+    note: Certificate/permission revocation service, unverified but security-adjacent.
