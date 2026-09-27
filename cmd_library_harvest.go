@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/harvest"
+	"github.com/W-Floyd/go-unbrick/internal/harvest"
 )
 
 func newLibraryHarvestCmd() *cobra.Command {

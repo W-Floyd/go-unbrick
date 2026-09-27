@@ -21,10 +21,10 @@ import (
 
 	yaml "go.yaml.in/yaml/v4"
 
-	"go-unbrick/internal/bloat"
-	"go-unbrick/internal/distro"
-	"go-unbrick/internal/harvest"
-	"go-unbrick/internal/provision"
+	"github.com/W-Floyd/go-unbrick/internal/bloat"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/harvest"
+	"github.com/W-Floyd/go-unbrick/internal/provision"
 )
 
 type Device struct {

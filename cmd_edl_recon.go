@@ -9,11 +9,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/edl"
-	"go-unbrick/internal/library"
-	"go-unbrick/internal/secboot"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/edl"
+	"github.com/W-Floyd/go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // loaderFromLibrary is the --loader value that picks a stored loader by the

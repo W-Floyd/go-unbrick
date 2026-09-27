@@ -17,8 +17,8 @@ package linuxdev
 // registered here over this route's own source key.
 
 import (
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // SourceLinux is one collected ssh recon. It costs a round trip to obtain,

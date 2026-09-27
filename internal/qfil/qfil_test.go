@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 // makeMockGPT creates a minimal valid 17408-byte GPT structure (MBR + Header + 128 entries).
@@ -20,19 +20,19 @@ func makeMockGPT(t *testing.T) []byte {
 	hdr := buf[512:1024]
 	copy(hdr[0:8], "EFI PART")
 	binary.LittleEndian.PutUint32(hdr[8:12], 0x00010000) // Revision
-	binary.LittleEndian.PutUint32(hdr[12:16], 92)         // Header size
-	binary.LittleEndian.PutUint64(hdr[24:32], 1)          // Current LBA
-	binary.LittleEndian.PutUint64(hdr[32:40], 100000)     // Backup LBA
-	binary.LittleEndian.PutUint64(hdr[40:48], 34)         // First usable LBA
-	binary.LittleEndian.PutUint64(hdr[48:56], 99966)      // Last usable LBA
-	binary.LittleEndian.PutUint64(hdr[72:80], 2)          // Part entry LBA
-	binary.LittleEndian.PutUint32(hdr[80:84], 128)        // Num part entries
-	binary.LittleEndian.PutUint32(hdr[84:88], 128)        // Part entry size
+	binary.LittleEndian.PutUint32(hdr[12:16], 92)        // Header size
+	binary.LittleEndian.PutUint64(hdr[24:32], 1)         // Current LBA
+	binary.LittleEndian.PutUint64(hdr[32:40], 100000)    // Backup LBA
+	binary.LittleEndian.PutUint64(hdr[40:48], 34)        // First usable LBA
+	binary.LittleEndian.PutUint64(hdr[48:56], 99966)     // Last usable LBA
+	binary.LittleEndian.PutUint64(hdr[72:80], 2)         // Part entry LBA
+	binary.LittleEndian.PutUint32(hdr[80:84], 128)       // Num part entries
+	binary.LittleEndian.PutUint32(hdr[84:88], 128)       // Part entry size
 
 	// Helper to write partition entry at index idx
 	writeEntry := func(idx int, name string, startLBA, endLBA uint64) {
 		ent := buf[1024+idx*128 : 1024+(idx+1)*128]
-		ent[0] = 0xAA // non-zero type GUID
+		ent[0] = 0xAA  // non-zero type GUID
 		ent[16] = 0xBB // unique GUID
 		binary.LittleEndian.PutUint64(ent[32:40], startLBA)
 		binary.LittleEndian.PutUint64(ent[40:48], endLBA)
@@ -393,8 +393,6 @@ func TestAssembleGeneratesReadProgramAndBackupScripts(t *testing.T) {
 		t.Error("Assemble missing backup.bat in Aux")
 	}
 }
-
-
 
 // buildLUNGPT builds one flashable per-LUN primary-GPT image with a 4096-byte
 // sector: protective MBR (LBA0) + header (LBA1) + entries (LBA2), matching the

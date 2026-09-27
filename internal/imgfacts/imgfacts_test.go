@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/rsakey"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/rsakey"
 )
 
 // signedBlob is a stand-in for a signed boot image: arbitrary bytes with a cert

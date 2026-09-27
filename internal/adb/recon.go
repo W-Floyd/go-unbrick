@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Recon is one collection round trip.

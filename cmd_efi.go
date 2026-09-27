@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/efi"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/efi"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // ---- efi ----

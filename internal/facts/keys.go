@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 )
 
 // Leaf sources that are not any one vendor's: a container every OEM ships a zip

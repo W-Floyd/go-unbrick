@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/payload"
-	"go-unbrick/internal/qfil"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/qfil"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // qualcomm: standard Qualcomm Firehose EDL recovery driver (QFIL / rawprogram0.xml).

@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/fastboot"
-	"go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/library"
 )
 
 // Motorola's contributed fastboot subcommands, stacked onto the neutral tree via

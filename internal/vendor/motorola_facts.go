@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"strings"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/fastboot"
-	"go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 )
 
 // Motorola's own leaf sources and vendor-typed facts. They are declared here,

@@ -12,8 +12,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"go-unbrick/internal/payload"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 func TestXiaomiDriverRegistration(t *testing.T) {

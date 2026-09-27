@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 )
 
 // ---- Android boot image / ramdisk dissection ----
@@ -219,4 +219,3 @@ func entryLabel(e bootimg.CpioEntry) string {
 	}
 	return e.Name
 }
-

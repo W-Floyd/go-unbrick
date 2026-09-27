@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/unlock"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/unlock"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // newUnlockCmd groups offline bootloader-unlock-code tooling. It only *verifies*

@@ -11,9 +11,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/modem"
-	"go-unbrick/internal/payload"
-	"go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/modem"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 )
 
 // modemImage reads the modem image from a stock zip (finds radio.img), an OTA

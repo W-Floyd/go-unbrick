@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
 )
 
 // google: Google Pixel / Tensor firmware driver.

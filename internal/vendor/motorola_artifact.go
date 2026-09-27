@@ -8,7 +8,7 @@ package vendor
 import (
 	"fmt"
 
-	"go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 )
 
 // ArtifactInfo is a vendor-recognized file: a short type label and optional detail.

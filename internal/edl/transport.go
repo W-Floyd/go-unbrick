@@ -25,8 +25,8 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Session is what one EDL recon collected: the Sahara chip identity (nil when

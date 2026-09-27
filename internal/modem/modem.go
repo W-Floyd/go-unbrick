@@ -21,11 +21,11 @@ import (
 	"sort"
 	"strings"
 
-	ext4 "github.com/dsoprea/go-ext4"
+	ext4 "github.com/W-Floyd/go-ext4"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/bootelf"
-	"go-unbrick/internal/sparse"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/sparse"
 )
 
 // ErrNotFound is returned (wrapped) by Extract when no file matches.

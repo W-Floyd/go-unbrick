@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/adb"
-	"go-unbrick/internal/bloat"
+	"github.com/W-Floyd/go-unbrick/internal/adb"
+	"github.com/W-Floyd/go-unbrick/internal/bloat"
 )
 
 // Debloating over adb. The whole feature rests on one property: `pm uninstall

@@ -3,7 +3,7 @@ package imgfacts
 import (
 	"testing"
 
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 const pixelOTAMetadata = `ota-property-files=payload.bin:4437:3755445803

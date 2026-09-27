@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
 )
 
 // Options tune how the device is reached. Everything here has a working

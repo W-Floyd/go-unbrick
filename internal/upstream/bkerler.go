@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 )
 
 // VendorDir maps a catalog vendor id to its directory in bkerler/Loaders (default fallback).
@@ -40,7 +40,7 @@ func ResolveVendorDir(vendorID string) string {
 
 const (
 	apiBase   = "https://api.github.com/repos/bkerler/Loaders/contents/"
-	userAgent = "go-unbrick/library-sync"
+	userAgent = "github.com/W-Floyd/go-unbrick/library-sync"
 )
 
 // Entry is one loader file in the database, with its name decoded.

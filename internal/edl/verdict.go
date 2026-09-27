@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // Verdict is whether the PBL will authenticate a loader, judged against the

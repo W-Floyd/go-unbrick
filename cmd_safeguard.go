@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/qfil"
-	"go-unbrick/internal/safeguard"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/qfil"
+	"github.com/W-Floyd/go-unbrick/internal/safeguard"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 func newSafeguardCmd() *cobra.Command {

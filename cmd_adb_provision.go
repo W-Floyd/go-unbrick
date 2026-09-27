@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/adb"
-	"go-unbrick/internal/provision"
+	"github.com/W-Floyd/go-unbrick/internal/adb"
+	"github.com/W-Floyd/go-unbrick/internal/provision"
 )
 
 // Provisioning a device over adb: install an app, give it the privileges it

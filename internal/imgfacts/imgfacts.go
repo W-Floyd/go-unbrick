@@ -19,14 +19,14 @@ import (
 
 	"os"
 
-	"go-unbrick/internal/avb"
-	"go-unbrick/internal/bootelf"
-	"go-unbrick/internal/bootimg"
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/filetype"
-	"go-unbrick/internal/rsakey"
-	"go-unbrick/internal/secboot"
-	"go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/avb"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/rsakey"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 )
 
 // SourceBootImage is any Android boot/recovery/vendor_boot image — the form

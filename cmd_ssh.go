@@ -7,10 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/distro"
-	"go-unbrick/internal/library"
-	"go-unbrick/internal/linuxdev"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/linuxdev"
 )
 
 // The ssh route: a phone booted into a Linux distribution (postmarketOS,

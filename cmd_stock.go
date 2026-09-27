@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // ---- stock package ----

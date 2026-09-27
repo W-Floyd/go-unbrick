@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/qcdt"
-	"go-unbrick/internal/secboot"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/qcdt"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // targetFlags holds the shared target-source flags (harvest/forge/derive/add-stock).

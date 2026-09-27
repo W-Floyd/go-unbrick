@@ -7,11 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/library"
-	"go-unbrick/internal/secboot"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // ---- derive ----

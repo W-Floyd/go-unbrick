@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/library"
 )
 
 // SlotInfo describes the status of a specific A/B slot.

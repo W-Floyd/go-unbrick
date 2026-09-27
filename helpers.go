@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 )
 
 // readImage reads path, joining a PIL split image (.mdt with sibling .bNN

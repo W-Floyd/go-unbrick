@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"strings"
 
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // An AOSP OTA package states its own identity in the clear, in

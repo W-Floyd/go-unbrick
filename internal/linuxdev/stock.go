@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"go-unbrick/internal/lp"
+	"github.com/W-Floyd/go-unbrick/internal/lp"
 )
 
 // Recovering the stock firmware's identity from a device whose booted OS is not

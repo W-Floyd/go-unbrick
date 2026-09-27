@@ -8,7 +8,7 @@ package fastboot
 import (
 	"strings"
 
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // SourceRecon is the collected result of one `getvar all` (plus whatever vendor

@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/bootelf"
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/library"
 )
 
 // ---- catalog ----

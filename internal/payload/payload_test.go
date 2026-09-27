@@ -14,7 +14,7 @@ import (
 	"github.com/ulikunitz/xz"
 	"google.golang.org/protobuf/proto"
 
-	"go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
 )
 
 const blockSize = 4096

@@ -11,11 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/payload"
-	"go-unbrick/internal/qfil"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/qfil"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // xiaomi: Xiaomi / Redmi / POCO Qualcomm Firehose EDL recovery driver.

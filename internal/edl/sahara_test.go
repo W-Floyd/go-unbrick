@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 var pk = strings.Repeat("ab", 32)

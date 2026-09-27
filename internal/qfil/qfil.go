@@ -3,7 +3,7 @@ package qfil
 import (
 	"fmt"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 const (

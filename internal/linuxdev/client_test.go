@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/distro"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // fakeSSH is an ssh stand-in for the exec transport: it answers the connection

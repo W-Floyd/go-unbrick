@@ -4,8 +4,8 @@ package linuxdev
 // partition bytes on request.
 
 import (
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Device is a phone booted into a Linux distribution, reached over ssh. It

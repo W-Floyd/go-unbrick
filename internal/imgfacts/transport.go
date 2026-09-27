@@ -17,8 +17,8 @@ package imgfacts
 import (
 	"path/filepath"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // File is a package, image or dump on disk, offered to the recognizers.

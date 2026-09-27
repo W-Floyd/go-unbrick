@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/fastboot"
 )
 
 // This file is Motorola's fastboot personality: the OEM-command structs and

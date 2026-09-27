@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // ReadTimeout is the budget for one partition read. Generous: the transfer is

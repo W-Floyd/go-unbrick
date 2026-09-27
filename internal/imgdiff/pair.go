@@ -1,6 +1,6 @@
 package imgdiff
 
-import "go-unbrick/internal/secboot"
+import "github.com/W-Floyd/go-unbrick/internal/secboot"
 
 // Segments are paired by load address, not by position in the program-header
 // table. A rebuild can insert, drop, resize or reorder segments -- keymaster

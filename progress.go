@@ -8,7 +8,7 @@ import (
 
 	"github.com/schollz/progressbar/v3"
 
-	"go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/fastboot"
 )
 
 // What a recon draws on stderr while it works: a step bar where the work is

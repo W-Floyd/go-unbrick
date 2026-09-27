@@ -13,8 +13,8 @@ package adb
 import (
 	"strings"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // SourceADB is one collected adb recon.

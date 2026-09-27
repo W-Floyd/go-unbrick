@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/imgdiff"
+	"github.com/W-Floyd/go-unbrick/internal/imgdiff"
 )
 
 // ---- diff ----

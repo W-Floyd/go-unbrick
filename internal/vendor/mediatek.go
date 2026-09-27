@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 // mediatek: a different recovery platform entirely — BROM/Preloader + a Download

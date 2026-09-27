@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 var loaderExts = map[string]bool{".elf": true, ".mbn": true, ".bin": true, ".melf": true, ".hex": true}

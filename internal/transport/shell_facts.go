@@ -14,8 +14,8 @@ package transport
 import (
 	"strings"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // ShellProviders returns the common derivations over one transport's shell

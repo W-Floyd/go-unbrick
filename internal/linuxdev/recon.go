@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"go-unbrick/internal/distro"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Recon is everything one collection round trip learned about a booted device:

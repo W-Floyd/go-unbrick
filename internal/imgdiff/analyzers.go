@@ -1,8 +1,8 @@
 package imgdiff
 
 import (
-	"go-unbrick/internal/devcfg"
-	"go-unbrick/internal/efi"
+	"github.com/W-Floyd/go-unbrick/internal/devcfg"
+	"github.com/W-Floyd/go-unbrick/internal/efi"
 )
 
 // devCfgAnalyzer compares a Qualcomm DAL device-configuration payload property

@@ -9,24 +9,24 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 const (
-	gptSignature = "EFI PART"
+	gptSignature      = "EFI PART"
 	defaultSectorSize = 512
 )
 
 // Partition represents one entry in a GPT partition table.
 type Partition struct {
-	Name        string
-	StartLBA    uint64
-	EndLBA      uint64
-	NumSectors  uint64
-	LUN         int
-	TypeGUID    [16]byte
-	UniqueGUID  [16]byte
-	Attributes  uint64
+	Name       string
+	StartLBA   uint64
+	EndLBA     uint64
+	NumSectors uint64
+	LUN        int
+	TypeGUID   [16]byte
+	UniqueGUID [16]byte
+	Attributes uint64
 }
 
 // Table holds the parsed GPT partitions and disk metadata.
@@ -247,4 +247,3 @@ func ParseGPTWithLUN(data []byte, lun int) (*Table, error) {
 		Raw:        data,
 	}, nil
 }
-

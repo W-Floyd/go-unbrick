@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/library"
 )
 
 const sampleMotorolaGetVarAll = `

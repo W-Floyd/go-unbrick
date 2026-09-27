@@ -18,7 +18,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Package is one installed package as the package manager reports it.

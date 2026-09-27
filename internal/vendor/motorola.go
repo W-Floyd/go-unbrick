@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 // motorola: Qualcomm/qboot blankflash — a SINGLE_N_LONELY singleimage.bin plus

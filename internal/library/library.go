@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 type Library struct {
@@ -139,7 +139,7 @@ type StockMeta struct {
 	// in. Without it a forged package falls back to a fixed list and silently
 	// omits whatever that list lacks.
 	FlashOrder []string          `json:"flash_order,omitempty"`
-	FlashMap map[string]string `json:"flash_map"`
+	FlashMap   map[string]string `json:"flash_map"`
 	// CID and SubsidyLock are the channel identity the package's flashfile.xml
 	// declares: the CID a device must report for the bootloader to accept this
 	// build, and the subsidy-lock config that names that channel. Harvesting them

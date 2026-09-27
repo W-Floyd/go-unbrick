@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // collected is one real-shaped collection from a device booted into stock

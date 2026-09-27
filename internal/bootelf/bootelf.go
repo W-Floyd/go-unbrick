@@ -17,9 +17,9 @@ import (
 
 	yaml "go.yaml.in/yaml/v4"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/efi"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/efi"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // ELF machine architecture codes (e_machine), mapped to debug/elf.
@@ -28,7 +28,7 @@ const (
 	Machine386     uint16 = uint16(elf.EM_386)
 	MachineARM     uint16 = uint16(elf.EM_ARM)
 	MachineX86_64  uint16 = uint16(elf.EM_X86_64)
-	MachineQDSP6   uint16 = uint16(elf.EM_QDSP6) // Qualcomm Hexagon DSP
+	MachineQDSP6   uint16 = uint16(elf.EM_QDSP6)   // Qualcomm Hexagon DSP
 	MachineAArch64 uint16 = uint16(elf.EM_AARCH64) // ARM 64-bit
 	MachineRISCV   uint16 = uint16(elf.EM_RISCV)
 )

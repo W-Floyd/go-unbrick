@@ -1,7 +1,7 @@
 package edl
 
 import (
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // FactProviders returns the derivations over an EDL session. The chip identity

@@ -3,8 +3,8 @@ package transport
 import (
 	"testing"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // testSourceKey stands in for a transport's own source key, which is how the

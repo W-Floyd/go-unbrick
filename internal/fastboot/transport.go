@@ -12,8 +12,8 @@ package fastboot
 import (
 	"sort"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Transport is a device in fastboot mode, already reconned.

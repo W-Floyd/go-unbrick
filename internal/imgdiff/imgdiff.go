@@ -17,7 +17,7 @@ import (
 	"regexp"
 	"sort"
 
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // entropyOpaque is the bits/byte above which a run is treated as key material

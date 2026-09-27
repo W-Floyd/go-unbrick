@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/adb"
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/adb"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/library"
 )
 
 // The adb route: a phone booted into Android. It is the state a phone is most

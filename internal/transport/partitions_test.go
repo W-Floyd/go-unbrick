@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // fakeReader is a transport that hands back whatever was staged for a

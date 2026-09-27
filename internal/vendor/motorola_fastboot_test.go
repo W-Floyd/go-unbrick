@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/fastboot"
 )
 
 // sampleOEMHw exercises the utag parser beyond the sensor bits: the value line,

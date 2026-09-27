@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/srcfile"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // newCIDCmd groups offline CID (carrier/customer ID) inspection of firmware.

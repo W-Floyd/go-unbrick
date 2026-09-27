@@ -8,13 +8,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Xe/erofs"
+	"github.com/W-Floyd/erofs"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/lp"
-	"go-unbrick/internal/payload"
-	"go-unbrick/internal/sparse"
-	"go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/lp"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/sparse"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 )
 
 // padReaderAt presents a byte slice as an io.ReaderAt that zero-fills any read

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"go-unbrick/internal/unlock"
+	"github.com/W-Floyd/go-unbrick/internal/unlock"
 )
 
 // Motorola's DBVAL bootloader-unlock scheme (FUN_0004bec0 in MotoBootModule.efi),

@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 )
 
 // v holds global config, resolved from flags, env (UNBRICK_*), and an optional

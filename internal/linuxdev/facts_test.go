@@ -3,9 +3,9 @@ package linuxdev
 import (
 	"testing"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/distro"
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // resolve runs this route's providers over one collected recon, with a catalog

@@ -3,11 +3,11 @@ package imgfacts
 import (
 	"fmt"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/filetype"
-	"go-unbrick/internal/qfil"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/qfil"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // SourceGPT is the partition names a package's own partition table declares —

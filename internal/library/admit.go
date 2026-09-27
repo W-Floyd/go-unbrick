@@ -9,9 +9,9 @@ import (
 	"regexp"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/filetype"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // Admission is the ingest verdict on a file offered as a loader. Scraped

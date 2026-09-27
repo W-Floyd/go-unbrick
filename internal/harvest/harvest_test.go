@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 func TestRepairMagic(t *testing.T) {

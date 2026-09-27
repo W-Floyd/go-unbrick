@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 )
 
 // ---- container: unpack / pack ----

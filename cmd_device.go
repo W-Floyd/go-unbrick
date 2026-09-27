@@ -10,11 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/imgfacts"
-	"go-unbrick/internal/library"
-	"go-unbrick/internal/transport"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
+	"github.com/W-Floyd/go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // The half of a device recon that does not care how the device was reached.

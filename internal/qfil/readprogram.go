@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/safeguard"
+	"github.com/W-Floyd/go-unbrick/internal/safeguard"
 )
 
 // ReadEntry models a single <read .../> directive in a Qualcomm readprogram*.xml.
@@ -156,4 +156,3 @@ func formatReadProgramXML(entries []ReadEntry) ([]byte, error) {
 	buf.WriteString("</data>\n")
 	return buf.Bytes(), nil
 }
-

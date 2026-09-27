@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 )
 
 func TestLoaderRoundtrip(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 func lower(s string) string { return strings.ToLower(s) }

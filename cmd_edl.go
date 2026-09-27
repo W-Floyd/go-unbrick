@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/edl"
-	"go-unbrick/internal/qfil"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/edl"
+	"github.com/W-Floyd/go-unbrick/internal/qfil"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // Bundle filenames the qfil driver emits (internal/qfil).

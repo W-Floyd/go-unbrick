@@ -9,12 +9,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/bootelf"
-	"go-unbrick/internal/mediatek"
-	"go-unbrick/internal/qfil"
-	"go-unbrick/internal/secboot"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/mediatek"
+	"github.com/W-Floyd/go-unbrick/internal/qfil"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // ---- inspect ----

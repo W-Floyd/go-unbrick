@@ -4,8 +4,8 @@ package adb
 // and — with root — the partition bytes.
 
 import (
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/transport"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/transport"
 )
 
 // Device is a phone booted into Android, reached over adb.

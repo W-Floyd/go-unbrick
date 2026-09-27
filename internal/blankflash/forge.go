@@ -28,7 +28,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-unbrick/internal/safeguard"
+	"github.com/W-Floyd/go-unbrick/internal/safeguard"
 )
 
 // bootOrder is the fallback flash order, used only when the target's own

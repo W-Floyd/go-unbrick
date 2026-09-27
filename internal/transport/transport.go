@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 // The routes. A transport's name is what a report calls it and what a --via

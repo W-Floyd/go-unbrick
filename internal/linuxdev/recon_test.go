@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-unbrick/internal/distro"
+	"github.com/W-Floyd/go-unbrick/internal/distro"
 )
 
 // collected is one real-shaped collection from a Motorola fogona running

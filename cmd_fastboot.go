@@ -10,12 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go-unbrick/internal/catalog"
-	"go-unbrick/internal/facts"
-	"go-unbrick/internal/fastboot"
-	"go-unbrick/internal/library"
-	"go-unbrick/internal/safeguard"
-	"go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/library"
+	"github.com/W-Floyd/go-unbrick/internal/safeguard"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 func newFastbootCmd() *cobra.Command {

@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-unbrick/internal/blankflash"
-	"go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
 // samsung: Qualcomm-SoC Samsung devices share the secboot identity core (so
