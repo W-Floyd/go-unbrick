@@ -6,7 +6,6 @@ import (
 	"io"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/ulikunitz/xz"
 )
 
 type readCloser struct {
@@ -23,14 +22,6 @@ func (rc readCloser) Close() error {
 
 func newBzip2Reader(r io.Reader) io.ReadCloser {
 	return readCloser{Reader: bzip2.NewReader(r)}
-}
-
-func newXZReader(r io.Reader) (io.ReadCloser, error) {
-	xr, err := xz.NewReader(r)
-	if err != nil {
-		return nil, fmt.Errorf("creating xz reader: %w", err)
-	}
-	return readCloser{Reader: xr}, nil
 }
 
 func newZstdReader(r io.Reader) (io.ReadCloser, error) {
