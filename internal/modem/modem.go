@@ -5,15 +5,18 @@
 //	NON-HLOS.bin  Android sparse image
 //	(decoded)     ext4 filesystem — the modem's /image directory (mcfg_hw.mbn, …)
 //
-// Resolve accepts an image at any layer and peels down to the ext4 bytes; List
-// and Extract then read it in pure Go (no mount, no privilege).
+// Resolve accepts an image at any layer and peels down to the ext4 bytes (or
+// FAT, the layout Qualcomm reference builds ship); List and Extract then read it
+// in pure Go (no mount, no privilege).
 package modem
 
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -21,8 +24,31 @@ import (
 	ext4 "github.com/dsoprea/go-ext4"
 
 	"go-unbrick/internal/blankflash"
+	"go-unbrick/internal/bootelf"
 	"go-unbrick/internal/sparse"
 )
+
+// ErrNotFound is returned (wrapped) by Extract when no file matches.
+var ErrNotFound = errors.New("not found")
+
+// JoinSplit joins the PIL split image named by mdt (a path or suffix, as for
+// Extract) with the .bNN files beside it into one ELF. missing lists segments
+// with no .bNN, zero-filled in the result.
+func JoinSplit(img []byte, mdt string) (joined []byte, missing []int, err error) {
+	raw, err := Resolve(img) // once, not per segment
+	if err != nil {
+		return nil, nil, err
+	}
+	head, err := Extract(raw, mdt)
+	if err != nil {
+		return nil, nil, err
+	}
+	stem := strings.TrimSuffix(mdt, path.Ext(mdt))
+	return bootelf.JoinSplit(head, func(i int) []byte {
+		b, _ := Extract(raw, fmt.Sprintf("%s.b%02d", stem, i))
+		return b
+	})
+}
 
 // ext4 superblock magic 0xEF53, at byte 0x38 of the superblock (which is at 1024).
 const ext4MagicOff = 1024 + 0x38
@@ -55,8 +81,8 @@ func Resolve(img []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !isExt4(raw) {
-		return nil, fmt.Errorf("modem: resolved image is not ext4 (unsupported modem filesystem)")
+	if !isExt4(raw) && !isFAT(raw) {
+		return nil, fmt.Errorf("modem: resolved image is neither ext4 nor FAT (unsupported modem filesystem)")
 	}
 	return raw, nil
 }
@@ -118,6 +144,9 @@ func List(img []byte) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isFAT(raw) {
+		return fatList(raw)
+	}
 	bgdl, r, err := openExt4(raw)
 	if err != nil {
 		return nil, err
@@ -161,6 +190,9 @@ func Extract(img []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isFAT(raw) {
+		return fatExtract(raw, name)
+	}
 	bgdl, r, err := openExt4(raw)
 	if err != nil {
 		return nil, err
@@ -193,7 +225,7 @@ func Extract(img []byte, name string) ([]byte, error) {
 		}
 	}
 	if match == "" {
-		return nil, fmt.Errorf("modem: %q not found", name)
+		return nil, fmt.Errorf("modem: %q: %w", name, ErrNotFound)
 	}
 	bgd, err := bgdl.GetWithAbsoluteInode(inode)
 	if err != nil {

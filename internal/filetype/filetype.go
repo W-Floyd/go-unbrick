@@ -26,6 +26,8 @@ const (
 	DeviceTree        Kind = "device-tree"
 	QDB               Kind = "qualcomm-qdb"
 	SingleNLonely     Kind = "single_n_lonely"
+	OTAPayload        Kind = "android-ota-payload"
+	FAT               Kind = "fat"
 	Unknown           Kind = "unknown"
 )
 
@@ -50,6 +52,8 @@ func Detect(head []byte) Kind {
 		return VBMeta
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("\x7fQDB")):
 		return QDB
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte("CrAU")):
+		return OTAPayload
 	case len(head) >= 4 && be.Uint32(head[:4]) == 0xd7b7ab1e:
 		return DTBOTable
 	case len(head) >= 4 && be.Uint32(head[:4]) == 0xd00dfeed:
@@ -62,6 +66,9 @@ func Detect(head []byte) Kind {
 		return GPT
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("EFI PART")): // header with no protective MBR
 		return GPT
+	case len(head) >= 512 && head[510] == 0x55 && head[511] == 0xaa &&
+		(bytes.Equal(head[0x36:0x39], []byte("FAT")) || bytes.Equal(head[0x52:0x57], []byte("FAT32"))):
+		return FAT
 	case len(head) >= 0x43a && le.Uint16(head[0x438:0x43a]) == 0xEF53:
 		return Ext4
 	case len(head) >= 1028 && le.Uint32(head[1024:1028]) == 0xe0f5e1e2:

@@ -4,15 +4,15 @@
 # On MBN v6+ images the authoritative value is the signed metadata's sw_id; the
 # leaf cert's "SW_ID" OU is not per-image there (Motorola signs a whole boot
 # chain with one leaf carrying 2). Entries marked (v6) are confirmed from the
-# metadata of a Motorola SM6225 boot chain (fogona U1TFS34.100-35-14-1-4) and a
-# Firehose programmer; the rest are unconfirmed.
+# metadata of a Motorola SM6225 boot chain and NON-HLOS subsystem images (fogona
+# U1TFS34.100-35-14-1-4) and a Firehose programmer; the rest are unconfirmed.
 
 sw_ids:
   0: "XBL / SBL1"                          # (v6) xbl.elf
   1: "SBL1 / Secondary Boot Loader"
-  2: "SBL2"
+  2: "MPSS / Modem"                        # (v6) modem.mdt
   3: "Emergency Firehose Programmer"      # (v6) programmer.elf
-  4: "TrustZone / QSEE Monitor"
+  4: "ADSP / Audio DSP"                    # (v6) adsp.mdt
   5: "DEVCFG / Device Configuration"      # (v6) devcfg.mbn
   7: "TrustZone OS (TZ)"                  # (v6) tz.mbn
   8: "WCNSS / Wireless Subsystem"
@@ -20,9 +20,12 @@ sw_ids:
   10: "RPM / Power Manager"               # (v6) rpm.mbn
   12: "TrustZone App (QSEE TA)"           # (v6) keymaster, storsec, uefi_sec, prov64
   13: "Firehose Flash Programmer"
-  14: "Multi-Image Boot Container"
+  14: "VENUS / Video"                     # (v6) venus.mdt
+  20: "GPU ZAP shader"                    # (v6) a610_zap.mdt
   21: "HYP / Hypervisor"                  # (v6) hyp.mbn
+  23: "CDSP / Compute DSP"                # (v6) cdsp.mdt
   28: "ABL / Android Bootloader"          # (v6) abl.elf
+  29: "IPA firmware"                      # (v6) ipa_fws.mdt
   33: "TME / Trust Management Engine"
   36: "QUPFW / Universal Peripheral FW"   # (v6) qupfw.elf
   37: "XBL_CONFIG"                        # (v6) xbl_config.elf

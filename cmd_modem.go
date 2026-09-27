@@ -2,20 +2,73 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"go-unbrick/internal/modem"
+	"go-unbrick/internal/payload"
 	"go-unbrick/internal/srcfile"
 )
 
-// modemImage reads the modem image from a stock zip (finds radio.img) or a
-// radio.img / NON-HLOS.bin passed directly.
+// modemImage reads the modem image from a stock zip (finds radio.img), an OTA
+// zip or payload.bin (its modem partition), or a radio.img / NON-HLOS.bin /
+// modem partition image passed directly.
 func modemImage(path string) ([]byte, error) {
-	_, data, err := srcfile.Open(path, "radio.img", "NON-HLOS.bin")
-	return data, err
+	if srcfile.IsZip(path) {
+		_, data, err := srcfile.Open(path, "radio.img", "NON-HLOS.bin")
+		if err == nil {
+			return data, nil
+		}
+		p, closer, perr := payload.OpenZip(path)
+		if perr != nil {
+			return nil, err // no payload either: the stock-zip error says more
+		}
+		defer closer.Close()
+		return payloadModem(p, path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	magic := make([]byte, len(payload.HeaderMagic))
+	if _, err := io.ReadFull(f, magic); err == nil && string(magic) == payload.HeaderMagic {
+		fi, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		p, err := payload.NewFromReaderAt(f, fi.Size())
+		if err != nil {
+			return nil, err
+		}
+		return payloadModem(p, path)
+	}
+	return os.ReadFile(path)
+}
+
+// payloadModem materializes an OTA payload's modem partition.
+func payloadModem(p *payload.Payload, path string) ([]byte, error) {
+	for _, name := range []string{"modem", "modem_a"} {
+		if p.Partition(name) == nil {
+			continue
+		}
+		ra, size, err := p.PartitionReaderAt(name)
+		if err != nil {
+			return nil, err
+		}
+		img := make([]byte, size)
+		if _, err := ra.ReadAt(img, 0); err != nil {
+			return nil, err
+		}
+		return img, nil
+	}
+	return nil, fmt.Errorf("%s: OTA payload has no modem partition", path)
 }
 
 // newModemCmd groups offline inspection of a Motorola modem image (radio.img /
@@ -23,7 +76,7 @@ func modemImage(path string) ([]byte, error) {
 func newModemCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "modem",
-		Short: "inspect a Motorola modem image (radio.img / NON-HLOS.bin)",
+		Short: "inspect a modem image (radio.img / NON-HLOS.bin / OTA modem partition)",
 	}
 	c.AddCommand(newModemLsCmd(), newModemExtractCmd(), newModemRawCmd())
 	return c
@@ -31,7 +84,7 @@ func newModemCmd() *cobra.Command {
 
 func newModemLsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls <stock.zip | radio.img | NON-HLOS.bin>",
+		Use:   "ls <stock.zip | ota.zip | payload.bin | radio.img | NON-HLOS.bin>",
 		Short: "list the files in a modem image",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,8 +108,8 @@ func newModemLsCmd() *cobra.Command {
 func newModemExtractCmd() *cobra.Command {
 	var out string
 	c := &cobra.Command{
-		Use:   "extract <stock.zip | radio.img | NON-HLOS.bin> <file>",
-		Short: "extract one file (e.g. image/mcfg_hw.mbn, or just mcfg_hw.mbn)",
+		Use:   "extract <stock.zip | ota.zip | payload.bin | radio.img | NON-HLOS.bin> <file>",
+		Short: "extract one file (e.g. image/mcfg_hw.mbn, or just mcfg_hw.mbn); a missing X.mbn is joined from X.mdt + X.bNN",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			img, err := modemImage(args[0])
@@ -64,6 +117,18 @@ func newModemExtractCmd() *cobra.Command {
 				return err
 			}
 			data, err := modem.Extract(img, args[1])
+			if errors.Is(err, modem.ErrNotFound) && strings.EqualFold(path.Ext(args[1]), ".mbn") {
+				// No such .mbn: build it from the PIL split the loader actually reads.
+				mdt := strings.TrimSuffix(args[1], path.Ext(args[1])) + ".mdt"
+				var missing []int
+				if data, missing, err = modem.JoinSplit(img, mdt); err != nil {
+					return fmt.Errorf("%s not in image, and joining %s failed: %w", args[1], mdt, err)
+				}
+				if len(missing) > 0 {
+					return fmt.Errorf("joining %s: segment file(s) %v missing", mdt, missing)
+				}
+				fmt.Printf("joined %s from %s and its .bNN segments\n", args[1], mdt)
+			}
 			if err != nil {
 				return err
 			}
@@ -85,8 +150,8 @@ func newModemExtractCmd() *cobra.Command {
 func newModemRawCmd() *cobra.Command {
 	var out string
 	c := &cobra.Command{
-		Use:   "raw <stock.zip | radio.img | NON-HLOS.bin>",
-		Short: "write the resolved raw ext4 image (for external tools)",
+		Use:   "raw <stock.zip | ota.zip | payload.bin | radio.img | NON-HLOS.bin>",
+		Short: "write the resolved raw ext4 or FAT image (for external tools)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			img, err := modemImage(args[0])

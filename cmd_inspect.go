@@ -102,6 +102,9 @@ func printBootELF(indent, label string, info *bootelf.Info) {
 	if info.QCVersion != "" {
 		fmt.Printf("%s  qc_version:   %s\n", indent, info.QCVersion)
 	}
+	if info.QCBuildTime != "" {
+		fmt.Printf("%s  qc_built:     %s\n", indent, info.QCBuildTime)
+	}
 	if info.OEMBuild != "" {
 		fmt.Printf("%s  oem_build:    %s\n", indent, info.OEMBuild)
 	}
@@ -193,9 +196,12 @@ func newInspectCmd() *cobra.Command {
 				printBootELF("  ", "programmer.elf", info)
 				return nil
 			}
-			b, err := os.ReadFile(path)
+			b, missing, err := readImage(path)
 			if err != nil {
 				return err
+			}
+			if n := splitNote(missing); n != "" {
+				fmt.Printf("%s: split image, %s\n", path, n)
 			}
 			if blankflash.IsContainer(b) {
 				if recs, err := blankflash.Parse(b); err == nil {

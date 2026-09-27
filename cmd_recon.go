@@ -32,6 +32,7 @@ import (
 	"go-unbrick/internal/lp"
 	"go-unbrick/internal/mcfg"
 	"go-unbrick/internal/modem"
+	"go-unbrick/internal/payload"
 	"go-unbrick/internal/qfil"
 	"go-unbrick/internal/rsakey"
 	"go-unbrick/internal/secboot"
@@ -544,7 +545,7 @@ func runFileRecon(path string) error {
 		rerr = reconDTBO(path)
 	case filetype.SparseImage:
 		rerr = reconSparse(path)
-	case filetype.Ext4:
+	case filetype.Ext4, filetype.FAT:
 		rerr = reconExt4(path)
 	default:
 		// Vendor-specific content with no neutral magic: Motorola CID image or SLCF.
@@ -605,7 +606,7 @@ func reconBootImage(path string) error {
 }
 
 func reconELF(path string) error {
-	data, err := os.ReadFile(path)
+	data, missing, err := readImage(path)
 	if err != nil {
 		return err
 	}
@@ -614,12 +615,25 @@ func reconELF(path string) error {
 		return err
 	}
 	fmt.Printf("  ELF:     %d-bit %s %s, %d segments\n", info.Class, info.Endian, info.Arch, len(info.Segments))
+	if n := splitNote(missing); n != "" {
+		fmt.Printf("  Split:   %s\n", n)
+	}
 	if info.QCVersion != "" {
 		fmt.Printf("  Build:   %s", info.QCVersion)
 		if info.TargetSoC != "" {
 			fmt.Printf("  (%s)", info.TargetSoC)
 		}
 		fmt.Println()
+	}
+	var built []string
+	if info.QCBuildTime != "" {
+		built = append(built, "Qualcomm "+info.QCBuildTime)
+	}
+	if d := info.Provenance.BuildDate; d != "" {
+		built = append(built, "OEM "+d)
+	}
+	if len(built) > 0 {
+		fmt.Printf("  Built:   %s\n", strings.Join(built, ", "))
 	}
 	if id := info.Identity; id != nil {
 		fmt.Printf("  Secboot: %s HW_ID=%s key=RSA-%d\n", secbootAnnotate(id), id.HWID, id.KeyBits)
@@ -724,7 +738,7 @@ func reconExt4(path string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("  ext4:    %d files\n", len(entries))
+	fmt.Printf("  %-8s %d files\n", typeLabel(path, data)+":", len(entries))
 	for i, e := range entries {
 		if i >= 6 {
 			fmt.Printf("    … (+%d more; try `modem ls`)\n", len(entries)-6)
@@ -803,6 +817,9 @@ func reconZip(path string, bag *facts.Bag) error {
 		kind := filetype.Detect(m.Head)
 		bar.Describe("reading " + base)
 		switch {
+		case kind == filetype.OTAPayload:
+			bar.Clear()
+			printPayload(path, base, int64(m.Size), "    ")
 		case int64(m.Size) > maxCascadeRead:
 			// Don't expand anything too big; label it and move on.
 			bar.Clear()
@@ -827,6 +844,53 @@ func reconZip(path string, bag *facts.Bag) error {
 		printSuperMap(path, "      ")
 	}
 	return nil
+}
+
+// printPayload lists an OTA payload's partitions, cascading into each one small
+// enough to materialize. Reads are lazy per operation, so the multi-GB dynamic
+// partitions cost only their first block (for the type label).
+func printPayload(zipPath, name string, size int64, indent string) {
+	p, closer, err := payload.OpenZip(zipPath)
+	if err != nil {
+		fmt.Printf("%s%-26s [OTA payload]  %s (unreadable: %v)\n", indent, name, humanBytes(size), err)
+		return
+	}
+	defer closer.Close()
+	kind := "full"
+	if p.IsDelta() {
+		kind = "delta"
+	}
+	parts := p.Partitions()
+	fmt.Printf("%s%-26s [OTA payload]  %s, %s, %d partition(s)\n", indent, name, humanBytes(size), kind, len(parts))
+	bar := newBar()
+	bar.Begin(len(parts))
+	for _, pn := range parts {
+		bar.Describe("reading " + pn)
+		ra, psize, err := p.PartitionReaderAt(pn)
+		if err != nil {
+			bar.Clear()
+			fmt.Printf("%s  %-24s (not readable: %v)\n", indent, pn, err)
+			bar.Advance()
+			continue
+		}
+		if psize > maxCascadeRead {
+			head := make([]byte, 8192)
+			ra.ReadAt(head, 0)
+			bar.Clear()
+			fmt.Printf("%s  %-24s [%s]  %s (not expanded)\n", indent, pn, typeLabel(pn, head), humanBytes(psize))
+			bar.Advance()
+			continue
+		}
+		data := make([]byte, psize)
+		_, err = ra.ReadAt(data, 0)
+		bar.Clear()
+		if err != nil {
+			fmt.Printf("%s  %-24s (unreadable: %v)\n", indent, pn, err)
+		} else {
+			cascade(pn, data, indent+"  ", reconDepth-1)
+		}
+		bar.Advance()
+	}
 }
 
 // printSuperMap reads super's logical-partition map from just the first chunk
@@ -885,7 +949,7 @@ func secbootAnnotate(id *secboot.Identity) string {
 // isContainer reports whether a kind holds nested artifacts worth recursing into.
 func isContainer(k filetype.Kind) bool {
 	switch k {
-	case filetype.SingleNLonely, filetype.SparseImage, filetype.Ext4,
+	case filetype.SingleNLonely, filetype.SparseImage, filetype.Ext4, filetype.FAT,
 		filetype.AndroidBoot, filetype.AndroidVendorBoot:
 		return true
 	}
@@ -950,12 +1014,29 @@ func cascade(name string, data []byte, indent string, depth int) {
 		if raw, err := sparse.Decode(data); err == nil {
 			cascade("(unsparsed)", raw, indent+"  ", depth-1)
 		}
-	case filetype.Ext4:
+	case filetype.Ext4, filetype.FAT:
 		if entries, err := modem.List(data); err == nil {
+			// Subsystem firmware (adsp, cdsp, modem, …) ships as PIL splits; each
+			// is shown joined, so its build and secboot identity read through.
+			for _, e := range entries {
+				if !strings.EqualFold(filepath.Ext(e.Path), ".mdt") {
+					continue
+				}
+				img, missing, err := modem.JoinSplit(data, e.Path)
+				if err != nil {
+					continue
+				}
+				collectKeys(img)
+				line := fmt.Sprintf("%s  %-24s %s%s", indent, filepath.Base(e.Path), humanBytes(int64(len(img))), summarize(img, img))
+				if n := splitNote(missing); n != "" {
+					line += " (" + n + ")"
+				}
+				fmt.Println(line)
+			}
 			shown := 0
 			for _, e := range entries {
 				// Only surface the interesting leaves (signed images, PD maps, configs).
-				if !ext4Notable(e.Path) {
+				if !ext4Notable(e.Path) || strings.EqualFold(filepath.Ext(e.Path), ".mdt") {
 					continue
 				}
 				if shown >= 8 {
@@ -1021,6 +1102,8 @@ func typeLabel(name string, head []byte) string {
 		return "android-sparse"
 	case filetype.Ext4:
 		return "ext4"
+	case filetype.FAT:
+		return "FAT"
 	case filetype.EROFS:
 		return "erofs"
 	case filetype.GPT:
@@ -1031,6 +1114,8 @@ func typeLabel(name string, head []byte) string {
 		return "Qualcomm Q6 db"
 	case filetype.ELF:
 		return "ELF"
+	case filetype.OTAPayload:
+		return "OTA payload"
 	}
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
 		return info.Label
@@ -1099,7 +1184,7 @@ func summarize(head, data []byte) string {
 		if raw, err := sparse.Decode(data); err == nil {
 			return fmt.Sprintf(" — expands to %s (%s)", humanBytes(int64(len(raw))), filetype.Detect(raw))
 		}
-	case filetype.Ext4:
+	case filetype.Ext4, filetype.FAT:
 		if data == nil {
 			return ""
 		}

@@ -113,6 +113,7 @@ type Info struct {
 	OEMBuild     string // e.g. "android-build nobody 2023.09.07-05:18 e5db4d5b4"
 	TMEVersion   string // e.g. "ssg.tmefw.1.0-01433-release"
 	TMEBuildTime string // e.g. "September 06 2022 at 12:38:43"
+	QCBuildTime  string // e.g. "2023.12.14-00:23:26", from the CRM build path of QCVersion
 
 	// Storage capabilities detected from programmer code
 	Storage []string // ["ufs"], ["emmc"], or ["ufs", "emmc"]
@@ -143,7 +144,9 @@ var (
 	reOEMBuild     = regexp.MustCompile(`OEM_IMAGE_VERSION_STRING=([^\x00\r\n]+)`)
 	reTMEVersion   = regexp.MustCompile(`TME_FW_VERSION_STRING=([^\x00\r\n]+)`)
 	reTMEBuildTime = regexp.MustCompile(`TME_FW_BUILD_TIME_STRING=([^\x00\r\n]+)`)
-	reAndroidBoot  = regexp.MustCompile(`\bandroidboot\.([a-zA-Z0-9_.-]+(?:=[^\s\x00"]+)?)`)
+	// The OEM rebuild stamps its time into the image UUID: Q_SENTINEL_{…}_YYYYMMDD_HHMM.
+	reOEMUUIDTime = regexp.MustCompile(`OEM_IMAGE_UUID_STRING=[^\x00\r\n]*_([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})\b`)
+	reAndroidBoot = regexp.MustCompile(`\bandroidboot\.([a-zA-Z0-9_.-]+(?:=[^\s\x00"]+)?)`)
 
 	variantMu  sync.RWMutex
 	customVars map[string]string
@@ -292,6 +295,11 @@ func Analyze(b []byte) (*Info, error) {
 
 	// Parse Build Provenance
 	info.Provenance = parseProvenance(info.OEMBuild)
+	if info.Provenance.BuildDate == "" {
+		if m := reOEMUUIDTime.FindSubmatch(b); m != nil {
+			info.Provenance.BuildDate = fmt.Sprintf("%s.%s.%s-%s:%s", m[1], m[2], m[3], m[4], m[5])
+		}
+	}
 
 	// Fingerprint Subsystems
 	info.Subsystems = fingerprintSubsystems(b, info)
@@ -565,6 +573,16 @@ func extractQCStrings(b []byte, info *Info) {
 	scan(data)
 	if (info.QCVersion == "" || info.Variant == "") && len(data) != len(b) {
 		scan(b)
+	}
+
+	// Qualcomm's CRM build directory is named <QCVersion>_YYYYMMDD_HHMMSS and
+	// survives in __FILE__ paths. Anchoring on this image's own version skips
+	// paths from prebuilt libraries of other builds.
+	if info.QCVersion != "" {
+		re := regexp.MustCompile(`CRMBuilds/` + regexp.QuoteMeta(info.QCVersion) + `_([0-9]{4})([0-9]{2})([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})/`)
+		if m := re.FindSubmatch(b); m != nil {
+			info.QCBuildTime = fmt.Sprintf("%s.%s.%s-%s:%s:%s", m[1], m[2], m[3], m[4], m[5], m[6])
+		}
 	}
 
 	// Resolve target SoC
