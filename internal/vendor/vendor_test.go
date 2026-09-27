@@ -22,6 +22,11 @@ func TestRegistryLookup(t *testing.T) {
 	if d, ok := ForOEMID("0020"); !ok || d.ID() != "samsung" {
 		t.Errorf("ForOEMID(0020) should be samsung: %v %v", d, ok)
 	}
+	for range 20 { // claimed by several vendors; must not depend on map order
+		if d, ok := ForOEMID("0000"); !ok || d.ID() != "qualcomm" {
+			t.Fatalf("ForOEMID(0000) should be qualcomm: %v %v", d, ok)
+		}
+	}
 	if _, ok := ForOEMID("FFFF"); ok {
 		t.Error("unknown OEM_ID should not resolve")
 	}

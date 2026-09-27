@@ -8,6 +8,7 @@ package vendor
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -378,11 +379,20 @@ func For(id string) (Driver, bool) {
 
 // ForOEMID returns the driver that signs with a given secboot OEM_ID.
 func ForOEMID(oem string) (Driver, bool) {
-	for _, d := range registry {
-		for _, o := range d.OEMIDs() {
-			if o == oem {
-				return d, true
-			}
+	var matches []Driver
+	for _, id := range ids() {
+		if slices.Contains(registry[id].OEMIDs(), oem) {
+			matches = append(matches, registry[id])
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	// An OEM_ID several vendors ship (0000, QTI's unassigned default) names no
+	// OEM; it is Qualcomm's own signing identity.
+	for _, d := range matches {
+		if d.ID() == "qualcomm" {
+			return d, true
 		}
 	}
 	return nil, false
