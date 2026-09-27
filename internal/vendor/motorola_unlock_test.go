@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// Real Motorola get_unlock_data vectors captured from fogona units
-// (fogona-abl-notes: sample.yaml, potential.yaml).
+// Synthetic get_unlock_data vectors in the layout of real fogona captures;
+// target = SHA-256(salt || SHA-256(code)) with salt = UID + zero pad.
 var motoUnlockVectors = []struct {
 	name, wire, code string
 }{
@@ -16,7 +16,7 @@ var motoUnlockVectors = []struct {
 		code: "TESTCODE00000000000A",
 	},
 	{
-		name: "potential-usc",
+		name: "potential-usc", // mixed-case hex, as some captures print it
 		wire: "FEDCBA9876543210#5A595445535430303032006D6F746F2067200000#AF54081889373E1F0BB8A4919C811660ACC7dc1E9AD531393DCBCA66A4C36864#0BADF00D001B80E10000000000000000",
 		code: "TESTCODE00000000000B",
 	},
