@@ -28,6 +28,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/fastboot"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/linuxdev"
 	"github.com/W-Floyd/go-unbrick/internal/lp"
 	"github.com/W-Floyd/go-unbrick/internal/mcfg"
@@ -50,7 +51,7 @@ func newReconCmd() *cobra.Command {
 	var carve, why string
 	var verify, learn bool
 	c := &cobra.Command{
-		Use:   "recon <file>",
+		Use:   "recon <file | http(s) url>",
 		Short: "identify any file (stock zip, image, container, config) and report what it is",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -118,7 +119,7 @@ func reconIngest(path string) (*facts.Bag, []facts.Finding) {
 	bar := newBar()
 	defer bar.Clear()
 	if err := imgfacts.Ingest(bag, reconRecognizers(), path, bar); err != nil {
-		return bag, []facts.Finding{{Severity: facts.Warn, Message: "reading " + filepath.Base(path) + ": " + err.Error()}}
+		return bag, []facts.Finding{{Severity: facts.Warn, Message: "reading " + infile.Base(path) + ": " + err.Error()}}
 	}
 	res := reconGraph().ResolveAll(bag, facts.Options{Verify: reconVerify})
 	return bag, res.Findings
@@ -506,21 +507,24 @@ func short(hexstr string) string {
 const maxCascadeRead = 200 << 20
 
 func runFileRecon(path string) error {
-	f, err := os.Open(path)
+	f, err := infile.Open(path)
 	if err != nil {
 		return err
 	}
 	head := make([]byte, 8192) // enough for a 4K-sector GPT header at offset 4096
 	n, _ := io.ReadFull(f, head)
 	head = head[:n]
-	fi, _ := f.Stat()
+	size := f.Size()
 	f.Close()
 
 	kind := filetype.Detect(head)
-	fmt.Printf("%s\n", filepath.Base(path))
-	if fi != nil {
-		fmt.Printf("  Size:  %s\n", humanBytes(fi.Size()))
+	// Every non-zip branch reads the input whole; over HTTP that is the full
+	// download this route exists to avoid, so only a modest file is accepted.
+	if infile.IsRemote(path) && kind != filetype.Zip && size > maxCascadeRead {
+		return fmt.Errorf("%s is %s and not a zip; download it to recon it", infile.Base(path), humanBytes(size))
 	}
+	fmt.Printf("%s\n", infile.Base(path))
+	fmt.Printf("  Size:  %s\n", humanBytes(size))
 	fmt.Printf("  Type:  %s\n", kind)
 
 	resetCerts() // keys/certs are gathered during the walk, printed deduped after
@@ -576,7 +580,7 @@ func runFileRecon(path string) error {
 }
 
 func reconBootImage(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -677,7 +681,7 @@ func printDevcfgPolicy(data []byte) {
 }
 
 func reconGPT(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -697,7 +701,7 @@ func reconGPT(path string) error {
 }
 
 func reconDTBO(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -717,7 +721,7 @@ func reconDTBO(path string) error {
 }
 
 func reconSparse(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -730,7 +734,7 @@ func reconSparse(path string) error {
 }
 
 func reconExt4(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -1214,7 +1218,7 @@ func summarize(head, data []byte) string {
 }
 
 func reconVBMeta(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -1313,7 +1317,7 @@ func partitionsByValue(m map[string]string) string {
 }
 
 func reconContainer(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return err
 	}

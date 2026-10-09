@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // motorola: Qualcomm/qboot blankflash — a SINGLE_N_LONELY singleimage.bin plus
@@ -35,7 +36,7 @@ func (motorola) EDLCommands() [][]string {
 }
 
 func (motorola) CanIngest(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := infile.Stat(path)
 	if err != nil {
 		return false
 	}
@@ -50,7 +51,7 @@ func (motorola) CanIngest(path string) bool {
 		return found
 	}
 	if strings.HasSuffix(strings.ToLower(path), ".zip") {
-		zr, err := zip.OpenReader(path)
+		zr, err := infile.OpenZip(path)
 		if err != nil {
 			return false
 		}
@@ -76,7 +77,7 @@ func (motorola) CanIngest(path string) bool {
 }
 
 func isContainerHead(path string) bool {
-	f, err := os.Open(path)
+	f, err := infile.Open(path)
 	if err != nil {
 		return false
 	}
@@ -157,7 +158,7 @@ func (motorola) CanIngestStock(path string) bool {
 	if !strings.HasSuffix(strings.ToLower(path), ".zip") {
 		return false
 	}
-	zr, err := zip.OpenReader(path)
+	zr, err := infile.OpenZip(path)
 	if err != nil {
 		return false
 	}

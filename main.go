@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // v holds global config, resolved from flags, env (UNBRICK_*), and an optional
@@ -52,7 +53,15 @@ func newRootCmd() *cobra.Command {
 	v.AutomaticEnv()
 	_ = v.BindPFlag("catalog", root.PersistentFlags().Lookup("catalog"))
 	_ = v.BindPFlag("library", root.PersistentFlags().Lookup("library"))
+	root.PersistentFlags().String("http-cache", "", "cache for http(s) inputs (env UNBRICK_HTTP_CACHE; default <user cache>/go-unbrick/http)")
+	root.PersistentFlags().Bool("debug-http", false, "log every range request made for an http(s) input")
+	_ = v.BindPFlag("http-cache", root.PersistentFlags().Lookup("http-cache"))
+	_ = v.BindPFlag("debug-http", root.PersistentFlags().Lookup("debug-http"))
 	cobra.OnInitialize(func() {
+		infile.CacheDir = v.GetString("http-cache")
+		if v.GetBool("debug-http") {
+			infile.Log = func(format string, args ...any) { fmt.Fprintf(os.Stderr, "[http] "+format+"\n", args...) }
+		}
 		v.SetConfigName(".unbrick")
 		v.AddConfigPath(".")
 		if home, err := os.UserHomeDir(); err == nil {

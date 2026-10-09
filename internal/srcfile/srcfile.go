@@ -7,12 +7,12 @@
 package srcfile
 
 import (
-	"archive/zip"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // zipMagic is the local-file-header signature "PK\x03\x04".
@@ -20,7 +20,7 @@ var zipMagic = []byte{'P', 'K', 0x03, 0x04}
 
 // IsZip reports whether path begins with the zip signature.
 func IsZip(path string) bool {
-	f, err := os.Open(path)
+	f, err := infile.Open(path)
 	if err != nil {
 		return false
 	}
@@ -46,7 +46,7 @@ func Members(path string, headLen int) ([]Member, error) {
 	if !IsZip(path) {
 		return nil, nil
 	}
-	zr, err := zip.OpenReader(path)
+	zr, err := infile.OpenZip(path)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func Glob(path, pattern string) ([]string, error) {
 	if !IsZip(path) {
 		return nil, nil
 	}
-	zr, err := zip.OpenReader(path)
+	zr, err := infile.OpenZip(path)
 	if err != nil {
 		return nil, err
 	}
@@ -94,10 +94,10 @@ func Glob(path, pattern string) ([]string, error) {
 // directly) and names are ignored. member is the chosen base name.
 func Open(path string, names ...string) (member string, data []byte, err error) {
 	if !IsZip(path) {
-		data, err = os.ReadFile(path)
-		return filepath.Base(path), data, err
+		data, err = infile.ReadFile(path)
+		return infile.Base(path), data, err
 	}
-	zr, err := zip.OpenReader(path)
+	zr, err := infile.OpenZip(path)
 	if err != nil {
 		return "", nil, err
 	}
@@ -116,5 +116,5 @@ func Open(path string, names ...string) (member string, data []byte, err error) 
 			}
 		}
 	}
-	return "", nil, fmt.Errorf("%s: none of %v found in the zip", filepath.Base(path), names)
+	return "", nil, fmt.Errorf("%s: none of %v found in the zip", infile.Base(path), names)
 }

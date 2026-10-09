@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/payload"
 )
 
@@ -42,7 +43,7 @@ func (g google) CanIngest(path string) bool {
 
 func (google) CanIngestStock(path string) bool {
 	// 1. Content check on zip files
-	if zr, err := zip.OpenReader(path); err == nil {
+	if zr, err := infile.OpenZip(path); err == nil {
 		defer zr.Close()
 		for _, f := range zr.File {
 			if f.Name == "META-INF/com/android/metadata" {

@@ -77,7 +77,7 @@ go test ./...                   # unit + parity tests
 | `unbrick adb recon [--read-partitions]` | recon a phone booted into Android over adb |
 | `unbrick adb debloat [--apply]` | list, and optionally remove, preloaded carrier/OEM packages (per-user, reversible, no root) |
 | `unbrick adb provision <recipe> [--apply]` | set a device up from a recipe: install, grant, configure headlessly, verify |
-| `unbrick recon <file>` | identify any file (stock zip, image, container, config) and report what it is |
+| `unbrick recon <file \| url>` | identify any file (stock zip, image, container, config) and report what it is; an http(s) URL is read with range requests into a local cache (`--http-cache`), never downloaded whole |
 | `unbrick fastboot edl` | drop a fastboot device into EDL (9008) |
 | `unbrick edl setcid <bundle> <value>` | write a software channel to the `cid` partition (verified by read-back; see *CID provisioning*) |
 | `unbrick edl readcid <bundle>` | read the `cid` partition and print its channel |

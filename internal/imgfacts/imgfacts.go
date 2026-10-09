@@ -17,13 +17,12 @@ import (
 	"sort"
 	"strings"
 
-	"os"
-
 	"github.com/W-Floyd/go-unbrick/internal/avb"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/rsakey"
 	"github.com/W-Floyd/go-unbrick/internal/secboot"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
@@ -83,9 +82,9 @@ var (
 // skipped — nothing that names a device fits in a few kilobytes anyway.
 // p, if non-nil, is stepped once per member read.
 func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error {
-	base := filepath.Base(path)
-	if fi, err := os.Stat(path); err == nil && fi.Size() <= maxTopRead && !fi.IsDir() {
-		if data, err := os.ReadFile(path); err == nil {
+	base := infile.Base(path)
+	if fi, err := infile.Stat(path); err == nil && fi.Size() <= maxTopRead && !fi.IsDir() {
+		if data, err := infile.ReadFile(path); err == nil {
 			facts.Recognize(b, rs, facts.File{Name: base, Data: data, From: base, Top: true})
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 type payloadCloser struct {
@@ -32,7 +34,7 @@ func (c *payloadCloser) Close() error {
 // If payload.bin was stored uncompressed in the zip, it streams directly via io.ReaderAt
 // without writing anything to disk. If deflated, it unpacks payload.bin to a temp file.
 func OpenZip(zipPath string) (*Payload, io.Closer, error) {
-	zr, err := zip.OpenReader(zipPath)
+	zr, err := infile.OpenZip(zipPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening zip %s: %w", zipPath, err)
 	}
@@ -71,7 +73,7 @@ func OpenZip(zipPath string) (*Payload, io.Closer, error) {
 
 	// Case 1: Stored uncompressed (standard for OTA zips)
 	if targetFile.Method == zip.Store {
-		rawFile, err := os.Open(zipPath)
+		rawFile, err := infile.Open(zipPath)
 		if err != nil {
 			zr.Close()
 			return nil, nil, err
@@ -97,6 +99,10 @@ func OpenZip(zipPath string) (*Payload, io.Closer, error) {
 	}
 
 	// Case 2: Deflated in zip (rare, but supported via temp file)
+	if infile.IsRemote(zipPath) {
+		zr.Close()
+		return nil, nil, fmt.Errorf("payload.bin in %s is compressed; reading it would mean fetching all of it", infile.Base(zipPath))
+	}
 	rc, err := targetFile.Open()
 	if err != nil {
 		zr.Close()

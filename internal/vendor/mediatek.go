@@ -1,7 +1,6 @@
 package vendor
 
 import (
-	"archive/zip"
 	"bytes"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // mediatek: a different recovery platform entirely — BROM/Preloader + a Download
@@ -73,14 +73,14 @@ func isMTKContent(data []byte) bool {
 }
 
 func (mediatek) CanIngest(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := infile.Stat(path)
 	if err != nil {
 		return false
 	}
 
 	// 1. Content inspection on standalone files
 	if !fi.IsDir() && !strings.HasSuffix(strings.ToLower(path), ".zip") {
-		if data, err := os.ReadFile(path); err == nil {
+		if data, err := infile.ReadFile(path); err == nil {
 			if isMTKContent(data) {
 				return true
 			}
@@ -89,7 +89,7 @@ func (mediatek) CanIngest(path string) bool {
 
 	// 2. Content inspection on Zip archives
 	if strings.HasSuffix(strings.ToLower(path), ".zip") {
-		if zr, err := zip.OpenReader(path); err == nil {
+		if zr, err := infile.OpenZip(path); err == nil {
 			defer zr.Close()
 			for _, f := range zr.File {
 				if f.FileInfo().IsDir() {
