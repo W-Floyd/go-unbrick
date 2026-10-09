@@ -51,6 +51,14 @@ GOOS=windows GOARCH=amd64 go build -o unbrick.exe .   # cross-compile
 go test ./...                   # unit + parity tests
 ```
 
+`internal/rapidgzip` (cgo bindings to librapidarchive's parallel gzip reader)
+needs the submodule, a C++17 compiler and zlib; its nested submodules are not
+used. It is not linked into the binary yet, so the build above stays pure Go.
+
+```sh
+git submodule update --init third_party/librapidarchive
+```
+
 ## Commands
 
 | | |
