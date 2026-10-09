@@ -10,6 +10,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/diskfs/go-diskfs/backend"
@@ -92,27 +93,59 @@ func fatList(raw []byte) ([]Entry, error) {
 }
 
 // fatExtract matches like Extract, but case-insensitively, as FAT itself does.
-func fatExtract(raw []byte, name string) ([]byte, error) {
+// fatIndex is a FAT image opened and walked once. A split firmware image is one
+// lookup per .bNN segment, and go-diskfs parses directories slowly enough that
+// re-walking the tree per lookup dominated a recon of a 600-file NON-HLOS.
+type fatIndex struct {
+	fs    fatFS
+	paths []string
+}
+
+// fatCache holds the last image indexed, keyed by its backing array: callers
+// extract many members from one image before moving on to the next.
+var fatCache struct {
+	mu  sync.Mutex
+	key *byte
+	n   int
+	idx *fatIndex
+}
+
+func indexFAT(raw []byte) (*fatIndex, error) {
+	fatCache.mu.Lock()
+	defer fatCache.mu.Unlock()
+	if len(raw) > 0 && fatCache.key == &raw[0] && fatCache.n == len(raw) {
+		return fatCache.idx, nil
+	}
 	fs, err := openFAT(raw)
+	if err != nil {
+		return nil, err
+	}
+	idx := &fatIndex{fs: fs}
+	if err := fatWalk(fs, ".", 0, func(p string, _ iofs.DirEntry) { idx.paths = append(idx.paths, p) }); err != nil {
+		return nil, err
+	}
+	fatCache.key, fatCache.n, fatCache.idx = &raw[0], len(raw), idx
+	return idx, nil
+}
+
+func fatExtract(raw []byte, name string) ([]byte, error) {
+	idx, err := indexFAT(raw)
 	if err != nil {
 		return nil, err
 	}
 	n := strings.ToLower(strings.TrimPrefix(name, "/"))
 	var matches []string
-	err = fatWalk(fs, ".", 0, func(p string, _ iofs.DirEntry) {
+	for _, p := range idx.paths {
 		lp := strings.ToLower(p)
 		if lp == n || strings.HasSuffix(lp, "/"+n) {
 			matches = append(matches, p)
 		}
-	})
-	if err != nil {
-		return nil, err
 	}
 	switch len(matches) {
 	case 0:
 		return nil, fmt.Errorf("modem: %q: %w", name, ErrNotFound)
 	case 1:
-		return fatReadFile(fs, matches[0])
+		return fatReadFile(idx.fs, matches[0])
 	}
 	return nil, fmt.Errorf("modem: %q is ambiguous (%s and %s); use a full path", name, matches[0], matches[1])
 }

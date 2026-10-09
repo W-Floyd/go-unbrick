@@ -1,8 +1,11 @@
 package payload
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"sort"
 	"sync"
 )
@@ -94,24 +97,88 @@ func (r *partitionReaderAt) ReadAt(dst []byte, off int64) (int, error) {
 	i := sort.Search(len(r.segs), func(i int) bool {
 		return r.segs[i].startByte+r.segs[i].length > off
 	})
-	for ; i < len(r.segs); i++ {
-		s := r.segs[i]
-		if s.startByte >= end {
-			break
-		}
-		from, to := max64(off, s.startByte), min64(end, s.startByte+s.length)
-		if to <= from {
-			continue
-		}
-		opData, err := r.opData(s.opIndex)
+	var segs []opSegment
+	for ; i < len(r.segs) && r.segs[i].startByte < end; i++ {
+		segs = append(segs, r.segs[i])
+	}
+	// A read spanning many operations — a whole small partition — decompresses
+	// them a window at a time across cores; memory stays bounded by the window.
+	window := 2 * runtime.GOMAXPROCS(0)
+	for len(segs) > 0 {
+		n := min(window, len(segs))
+		data, err := r.decompressAll(segs[:n])
 		if err != nil {
 			return 0, err
 		}
-		src := s.opOffset + (from - s.startByte)
-		copy(dst[from-off:to-off], opData[src:src+(to-from)])
+		for j, s := range segs[:n] {
+			from, to := max64(off, s.startByte), min64(end, s.startByte+s.length)
+			if to <= from {
+				continue
+			}
+			src := s.opOffset + (from - s.startByte)
+			copy(dst[from-off:to-off], data[j][src:src+(to-from)])
+		}
+		segs = segs[n:]
 	}
 	return len(dst), nil
 }
+
+// decompressAll returns each segment's operation output, decompressing the
+// uncached ones concurrently. Only a single-operation read goes through the
+// cache: a wide read would just evict it.
+func (r *partitionReaderAt) decompressAll(segs []opSegment) ([][]byte, error) {
+	out := make([][]byte, len(segs))
+	if len(segs) == 1 {
+		d, err := r.opData(segs[0].opIndex)
+		out[0] = d
+		return out, err
+	}
+	ops := r.part.GetOperations()
+	var todo []int
+	lo, hi := int64(-1), int64(0)
+	for j, s := range segs {
+		r.mu.Lock()
+		d, ok := r.cache[s.opIndex]
+		r.mu.Unlock()
+		if ok {
+			out[j] = d
+			continue
+		}
+		todo = append(todo, j)
+		if op := ops[s.opIndex]; op.GetDataLength() > 0 {
+			a := int64(op.GetDataOffset())
+			if lo < 0 || a < lo {
+				lo = a
+			}
+			hi = max(hi, a+int64(op.GetDataLength()))
+		}
+	}
+	// The window's blobs are adjacent in the payload, so they are read in one
+	// call — one range request over HTTP — rather than one per worker.
+	src, base := r.p.ra, r.p.dataOffset
+	if lo >= 0 && hi-lo <= maxWindowRead {
+		buf := make([]byte, hi-lo)
+		if _, err := r.p.ra.ReadAt(buf, r.p.dataOffset+lo); err != nil && err != io.EOF {
+			return nil, err
+		}
+		src, base = bytes.NewReader(buf), -lo
+	}
+	errs := make([]error, len(segs))
+	var wg sync.WaitGroup
+	for _, j := range todo {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[j], errs[j] = r.p.decompressOpAt(ops[segs[j].opIndex], src, base)
+		}()
+	}
+	wg.Wait()
+	return out, errors.Join(errs...)
+}
+
+// maxWindowRead bounds the single read decompressAll makes for a window; a
+// sparser window falls back to each worker reading its own blob.
+const maxWindowRead = 64 << 20
 
 // opData returns the operation's full decompressed output, from cache or by
 // decompressing it, evicting the oldest entry past the cache bound.
@@ -137,12 +204,18 @@ func (r *partitionReaderAt) opData(idx int) ([]byte, error) {
 // decompressOp decompresses one operation into its contiguous output buffer
 // (totalBlocks*blockSize), zero-padding a stream shorter than its extents.
 func (p *Payload) decompressOp(op *InstallOperation) ([]byte, error) {
+	return p.decompressOpAt(op, p.ra, p.dataOffset)
+}
+
+// decompressOpAt is decompressOp reading the blob from src, where the payload's
+// data section begins at base.
+func (p *Payload) decompressOpAt(op *InstallOperation, src io.ReaderAt, base int64) ([]byte, error) {
 	out := make([]byte, int64(totalBlocks(op.GetDstExtents()))*int64(p.blockSize))
 	switch op.GetType() {
 	case InstallOperation_ZERO, InstallOperation_DISCARD:
 		return out, nil // already zero
 	}
-	sr := io.NewSectionReader(p.ra, p.dataOffset+int64(op.GetDataOffset()), int64(op.GetDataLength()))
+	sr := io.NewSectionReader(src, base+int64(op.GetDataOffset()), int64(op.GetDataLength()))
 	var rd io.ReadCloser
 	switch op.GetType() {
 	case InstallOperation_REPLACE:
