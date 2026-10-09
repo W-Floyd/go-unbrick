@@ -88,7 +88,7 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 			facts.Recognize(b, rs, facts.File{Name: base, Data: data, From: base, Top: true})
 		}
 	}
-	if !srcfile.IsZip(path) {
+	if !srcfile.IsArchive(path) {
 		return nil
 	}
 	facts.Set(b, facts.SourceStockZip, path, facts.Provenance{Source: base, Authority: facts.Attested})
@@ -102,7 +102,11 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		return err
 	}
 	var read []srcfile.Member
+	hasPayload := false
 	for _, m := range members {
+		if filetype.Detect(m.Head) == filetype.OTAPayload {
+			hasPayload = true
+		}
 		budget := int64(maxMemberRead)
 		if isBootKind(m.Head) {
 			budget = maxBootRead
@@ -112,7 +116,16 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		}
 	}
 	if p != nil {
-		p.Begin(len(read))
+		p.Begin(len(read) + btoi(hasPayload))
+	}
+	if hasPayload {
+		if p != nil {
+			p.Describe("reading payload partitions")
+		}
+		ingestPayload(b, rs, path, base)
+		if p != nil {
+			p.Advance()
+		}
 	}
 	for _, m := range read {
 		name := filepath.Base(m.Name)
@@ -127,6 +140,13 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		}
 	}
 	return nil
+}
+
+func btoi(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // Progress is stepped as ingestion reads members: Begin with the count, then
@@ -231,15 +251,26 @@ func FactProviders() []facts.Provider {
 		},
 
 		// The vbmeta signing key and rollback index — the verified-boot root and
-		// anti-rollback floor. Both vbmeta partitions carry the same top key, so
-		// two members corroborate rather than conflict.
+		// anti-rollback floor. Only the root vbmeta states them: a chained one
+		// (vbmeta_system) has its own rollback slot, often a timestamp, assigned
+		// by the root's chain descriptor rather than its own header. So when any
+		// vbmeta present chains others, only those roots are read.
 		facts.Rule{
 			Out: facts.AVBKey.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested,
 			Fn: func(b *facts.Bag) (bool, error) {
-				set := false
+				var imgs []*avb.Image
+				roots := false
 				for _, data := range facts.GetAll(b, facts.SourceVBMeta) {
 					img, err := avb.ParseImage(data)
 					if err != nil || img.PublicKeySHA256 == "" {
+						continue
+					}
+					imgs = append(imgs, img)
+					roots = roots || chainsOthers(img)
+				}
+				set := false
+				for _, img := range imgs {
+					if roots && !chainsOthers(img) {
 						continue
 					}
 					facts.Set(b, facts.AVBKey, img.PublicKeySHA256, facts.Provenance{Source: "vbmeta AVB pubkey", Authority: facts.Attested})
@@ -272,6 +303,17 @@ func FactProviders() []facts.Provider {
 			},
 		},
 	}...)
+}
+
+// chainsOthers reports whether a vbmeta delegates to chained partitions, which
+// makes it a root.
+func chainsOthers(img *avb.Image) bool {
+	for _, d := range img.Descriptors {
+		if d.Kind == "chain" {
+			return true
+		}
+	}
+	return false
 }
 
 // secbootRule reads one field of the secure-boot identity of every signed image

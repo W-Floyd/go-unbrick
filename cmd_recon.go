@@ -33,6 +33,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/lp"
 	"github.com/W-Floyd/go-unbrick/internal/mcfg"
 	"github.com/W-Floyd/go-unbrick/internal/modem"
+	"github.com/W-Floyd/go-unbrick/internal/otameta"
 	"github.com/W-Floyd/go-unbrick/internal/payload"
 	"github.com/W-Floyd/go-unbrick/internal/qfil"
 	"github.com/W-Floyd/go-unbrick/internal/rsakey"
@@ -227,14 +228,19 @@ func identityFactLines(b *facts.Bag) []string {
 		add("Secure boot: %s", strings.Join(sb, ", "))
 	}
 	if table, ok := facts.Get(b, facts.AntiRollbackTable); ok {
-		enf := "not enforced"
-		if v, _ := facts.Get(b, facts.EnforceAntiRollback); v {
-			enf = "enforced"
+		// Enforcement is known only where a package's own manifest states it; a
+		// table read off the images themselves is silent on it.
+		enf := ""
+		if v, ok := facts.Get(b, facts.EnforceAntiRollback); ok {
+			enf = "not enforced, "
+			if v {
+				enf = "enforced, "
+			}
 		}
 		if bumped := facts.Bumped(table); len(bumped) == 0 {
-			add("Anti-rollback: %s, all %d images at 0x00 (baseline)", enf, len(table))
+			add("Anti-rollback: %sall %d images at 0x00 (baseline)", enf, len(table))
 		} else {
-			add("Anti-rollback: %s, bumped: %s", enf, strings.Join(bumped, ", "))
+			add("Anti-rollback: %sbumped: %s", enf, strings.Join(bumped, ", "))
 		}
 	}
 	if ids, ok := facts.Get(b, imgfacts.OTACerts); ok {
@@ -518,10 +524,12 @@ func runFileRecon(path string) error {
 	f.Close()
 
 	kind := filetype.Detect(head)
-	// Every non-zip branch reads the input whole; over HTTP that is the full
-	// download this route exists to avoid, so only a modest file is accepted.
-	if infile.IsRemote(path) && kind != filetype.Zip && size > maxCascadeRead {
-		return fmt.Errorf("%s is %s and not a zip; download it to recon it", infile.Base(path), humanBytes(size))
+	archive := (kind == filetype.Zip || kind == filetype.Tar || kind == filetype.Gzip) && srcfile.IsArchive(path)
+	// Every non-archive branch reads the input whole, and a .tgz can only be
+	// read from its start; over HTTP either is the full download this route
+	// exists to avoid, so only a modest file is accepted.
+	if infile.IsRemote(path) && (!archive || kind == filetype.Gzip) && size > maxCascadeRead {
+		return fmt.Errorf("%s is %s and cannot be read by range; download it to recon it", infile.Base(path), humanBytes(size))
 	}
 	fmt.Printf("%s\n", infile.Base(path))
 	fmt.Printf("  Size:  %s\n", humanBytes(size))
@@ -532,24 +540,24 @@ func runFileRecon(path string) error {
 	// planner's answers, and the judgments about them print after everything else.
 	bag, findings := reconIngest(path)
 	var rerr error
-	switch kind {
-	case filetype.Zip:
-		rerr = reconZip(path, bag)
-	case filetype.VBMeta:
+	switch {
+	case archive:
+		rerr = reconArchive(path, bag)
+	case kind == filetype.VBMeta:
 		rerr = reconVBMeta(path)
-	case filetype.SingleNLonely:
+	case kind == filetype.SingleNLonely:
 		rerr = reconContainer(path)
-	case filetype.AndroidBoot, filetype.AndroidVendorBoot:
+	case kind == filetype.AndroidBoot, kind == filetype.AndroidVendorBoot:
 		rerr = reconBootImage(path)
-	case filetype.ELF:
+	case kind == filetype.ELF:
 		rerr = reconELF(path)
-	case filetype.GPT:
+	case kind == filetype.GPT:
 		rerr = reconGPT(path)
-	case filetype.DTBOTable, filetype.DeviceTree:
+	case kind == filetype.DTBOTable, kind == filetype.DeviceTree:
 		rerr = reconDTBO(path)
-	case filetype.SparseImage:
+	case kind == filetype.SparseImage:
 		rerr = reconSparse(path)
-	case filetype.Ext4, filetype.FAT:
+	case kind == filetype.Ext4, kind == filetype.FAT:
 		rerr = reconExt4(path)
 	default:
 		// Vendor-specific content with no neutral magic: Motorola CID image or SLCF.
@@ -771,7 +779,7 @@ func printModemCarrier(ext4 []byte, indent string) {
 	}
 }
 
-func reconZip(path string, bag *facts.Bag) error {
+func reconArchive(path string, bag *facts.Bag) error {
 	// Which vendor's package is this?
 	vendorID := ""
 	if drv, ok := vendor.Detect(path); ok {
@@ -820,6 +828,12 @@ func reconZip(path string, bag *facts.Bag) error {
 		base := filepath.Base(m.Name)
 		kind := filetype.Detect(m.Head)
 		bar.Describe("reading " + base)
+		if label, detail, ok := describeOTAMember(path, base, m); ok {
+			bar.Clear()
+			fmt.Printf("    %-26s [%s] — %s\n", base, label, detail)
+			bar.Advance()
+			continue
+		}
 		switch {
 		case kind == filetype.OTAPayload:
 			bar.Clear()
@@ -848,6 +862,22 @@ func reconZip(path string, bag *facts.Bag) error {
 		printSuperMap(path, "      ")
 	}
 	return nil
+}
+
+// describeOTAMember labels an OTA package's descriptive members (metadata,
+// otacert, the protobufs), which carry no magic for typeLabel to go on.
+func describeOTAMember(path, base string, m srcfile.Member) (label, detail string, ok bool) {
+	if m.Size > 1<<16 {
+		return "", "", false
+	}
+	data := m.Head
+	if uint64(len(data)) < m.Size {
+		var err error
+		if _, data, err = srcfile.Open(path, base); err != nil {
+			return "", "", false
+		}
+	}
+	return otameta.Describe(base, data)
 }
 
 // printPayload lists an OTA payload's partitions, cascading into each one small
