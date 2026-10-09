@@ -51,9 +51,11 @@ GOOS=windows GOARCH=amd64 go build -o unbrick.exe .   # cross-compile
 go test ./...                   # unit + parity tests
 ```
 
-`internal/rapidgzip` (cgo bindings to librapidarchive's parallel gzip reader)
-needs the submodule, a C++17 compiler and zlib; its nested submodules are not
-used. It is not linked into the binary yet, so the build above stays pure Go.
+With cgo (the default for a native build), `.tgz` packages are read through
+`internal/rapidgzip`, bindings to librapidarchive's parallel gzip reader. That
+needs the submodule, a C++17 compiler and zlib (its nested submodules are not
+used). Without cgo — `CGO_ENABLED=0`, or a cross-compile — a pure-Go reader
+takes over, a few times slower on large packages.
 
 ```sh
 git submodule update --init third_party/librapidarchive

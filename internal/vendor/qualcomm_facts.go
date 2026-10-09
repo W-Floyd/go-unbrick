@@ -1,6 +1,7 @@
 package vendor
 
 import (
+	"bytes"
 	"fmt"
 	"path"
 	"strings"
@@ -29,6 +30,17 @@ var sourceSignedStage = facts.Key[signedStage]("source:qcom_signed_stage",
 // is OEM-signed too but embeds QTI's XBL-Sec chain as data.
 var representativeStages = map[string]bool{"abl": true, "aboot": true}
 
+// programmerSWTypes are the sw_id types of EDL programmers (3; 26 on OnePlus).
+// A programmer ships beside a package's boot chain, not in it, and a loader
+// collection is nothing but programmers, so neither is a stage.
+var programmerSWTypes = map[uint32]bool{3: true, 26: true}
+
+// isProgrammer recognizes an EDL programmer by its sw_id or, where the vendor
+// stamped another, by the protocol it speaks.
+func isProgrammer(id *secboot.Identity, data []byte) bool {
+	return programmerSWTypes[id.SWType()] || bytes.Contains(bytes.ToLower(data), []byte("firehose"))
+}
+
 // stageName is a member or partition name reduced to its stage: no directory,
 // extension or slot suffix.
 func stageName(name string) string {
@@ -55,8 +67,11 @@ func (qualcomm) FactRecognizers() []facts.Recognizer {
 		}
 		prov := facts.Provenance{Source: f.From, Authority: facts.Attested}
 		stage := stageName(f.Name)
-		facts.Set(b, sourceSignedStage, signedStage{Name: stage, AntiRollback: int(id.AntiRollback())}, prov)
-		out := []string{sourceSignedStage.Name()}
+		var out []string
+		if !isProgrammer(id, f.Data) {
+			facts.Set(b, sourceSignedStage, signedStage{Name: stage, AntiRollback: int(id.AntiRollback())}, prov)
+			out = append(out, sourceSignedStage.Name())
+		}
 		if representativeStages[stage] {
 			facts.Set(b, imgfacts.SourceImage, f.Data, prov)
 			out = append(out, imgfacts.SourceImage.Name())
@@ -70,11 +85,15 @@ func (qualcomm) FactProviders() []facts.Provider {
 	return []facts.Provider{facts.Rule{
 		Out: facts.AntiRollbackTable.Name(), In: []string{sourceSignedStage.Name()}, Price: 1, Level: facts.Attested,
 		Fn: func(b *facts.Bag) (bool, error) {
+			// Only a boot chain has a rollback table: without its application
+			// bootloader, a set of signed images is a collection, not a chain.
 			table := map[string]int{}
+			chain := false
 			for _, s := range facts.GetAll(b, sourceSignedStage) {
 				table[s.Name] = s.AntiRollback
+				chain = chain || representativeStages[s.Name]
 			}
-			if len(table) == 0 {
+			if !chain {
 				return false, nil
 			}
 			facts.Set(b, facts.AntiRollbackTable, table, facts.Provenance{Source: "signed images' SW_ID", Authority: facts.Attested})

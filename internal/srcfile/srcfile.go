@@ -14,7 +14,6 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
@@ -136,7 +135,7 @@ func openTar(path string) (*archive, error) {
 			f.Close()
 			return nil, err
 		}
-		if hdr.Typeflag != tar.TypeReg || isAppleDouble(hdr.Name) {
+		if !isMember(hdr) {
 			continue
 		}
 		off, err := f.Seek(0, io.SeekCurrent)
@@ -150,104 +149,16 @@ func openTar(path string) (*archive, error) {
 	}
 }
 
-// A gzip stream can only be read from its start, so a .tgz is indexed in one
-// pass and remembered for the process: heads of every member, and the whole of
-// each small one, which is all most callers ask for. A larger member re-streams
-// the archive up to it.
-const (
-	tgzHead = 64 << 10
-	tgzKeep = 8 << 20
-)
-
-var tgzCache = struct {
-	sync.Mutex
-	m map[string][]entry
-}{m: map[string][]entry{}}
-
-func openTGZ(path string) (*archive, error) {
-	if infile.IsRemote(path) {
-		return nil, fmt.Errorf("%s: a compressed tar cannot be read by range; reading it would mean fetching all of it", infile.Base(path))
-	}
-	tgzCache.Lock()
-	defer tgzCache.Unlock()
-	if es, ok := tgzCache.m[path]; ok {
-		return &archive{entries: es, close: func() error { return nil }}, nil
-	}
-	var es []entry
-	err := streamTGZ(path, func(i int, hdr *tar.Header, r io.Reader) (bool, error) {
-		e := entry{name: hdr.Name, size: uint64(hdr.Size)}
-		if hdr.Size <= tgzKeep {
-			data, err := io.ReadAll(r)
-			if err != nil {
-				return false, err
-			}
-			e.head = data[:min(len(data), tgzHead)]
-			e.open = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil }
-		} else {
-			head := make([]byte, tgzHead)
-			n, err := io.ReadFull(r, head)
-			if err != nil && err != io.ErrUnexpectedEOF {
-				return false, err
-			}
-			e.head = head[:n]
-			e.open = func() (io.ReadCloser, error) { return restreamTGZ(path, i) }
-		}
-		es = append(es, e)
-		return true, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	tgzCache.m[path] = es
-	return &archive{entries: es, close: func() error { return nil }}, nil
+// isMember reports a tar entry that is a package member: a regular file that is
+// not a macOS sidecar.
+func isMember(hdr *tar.Header) bool {
+	return hdr.Typeflag == tar.TypeReg && !isAppleDouble(hdr.Name)
 }
 
-// streamTGZ walks the regular files of a .tgz in order, numbering them; fn
-// returns false to stop.
-func streamTGZ(path string, fn func(i int, hdr *tar.Header, r io.Reader) (bool, error)) error {
-	f, err := infile.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	for i := 0; ; {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if hdr.Typeflag != tar.TypeReg || isAppleDouble(hdr.Name) {
-			continue
-		}
-		more, err := fn(i, hdr, tr)
-		if err != nil || !more {
-			return err
-		}
-		i++
-	}
-}
-
-// restreamTGZ returns member i of a .tgz, read through from the start.
-func restreamTGZ(path string, i int) (io.ReadCloser, error) {
-	pr, pw := io.Pipe()
-	go func() {
-		pw.CloseWithError(streamTGZ(path, func(j int, _ *tar.Header, r io.Reader) (bool, error) {
-			if j < i {
-				return true, nil
-			}
-			_, err := io.Copy(pw, r)
-			return false, err
-		}))
-	}()
-	return pr, nil
+// errRemoteTGZ refuses a .tgz over HTTP: gzip can only be entered at its
+// start, so any read of it is a read of everything before.
+func errRemoteTGZ(path string) error {
+	return fmt.Errorf("%s: a compressed tar cannot be read by range; reading it would mean fetching all of it", infile.Base(path))
 }
 
 // Members lists an archive's files, each with up to headLen bytes for

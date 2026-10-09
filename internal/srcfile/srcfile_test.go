@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,7 +86,10 @@ func writeTar(t *testing.T, name string, gz bool, files map[string][]byte) strin
 }
 
 func TestTarAndTGZ(t *testing.T) {
-	big := bytes.Repeat([]byte("S"), tgzKeep+1) // past the in-memory cap: re-streamed
+	// Incompressible and past 8 MiB: several rapidgzip chunks, and past the
+	// pure-Go reader's in-memory cap, so it is re-streamed there.
+	big := make([]byte, 9<<20)
+	rand.New(rand.NewSource(1)).Read(big)
 	files := map[string][]byte{
 		"rom/images/vbmeta.img": []byte("AVB0vbmeta"),
 		"rom/images/super.img":  big,
