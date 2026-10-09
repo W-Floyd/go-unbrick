@@ -88,7 +88,7 @@ func (samsung) CanIngest(path string) bool {
 
 	// 1. Content inspection on standalone files
 	if !fi.IsDir() && !strings.HasSuffix(strings.ToLower(path), ".zip") {
-		if data, err := infile.ReadFile(path); err == nil {
+		if data, err := readStandalone(path, fi); err == nil {
 			if isSamsungContent(data) {
 				return true
 			}

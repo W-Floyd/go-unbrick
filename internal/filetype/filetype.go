@@ -28,6 +28,8 @@ const (
 	SingleNLonely     Kind = "single_n_lonely"
 	OTAPayload        Kind = "android-ota-payload"
 	FAT               Kind = "fat"
+	Tar               Kind = "tar"
+	Gzip              Kind = "gzip"
 	Unknown           Kind = "unknown"
 )
 
@@ -42,6 +44,10 @@ func Detect(head []byte) Kind {
 		return Zip
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("\x7fELF")):
 		return ELF
+	case len(head) >= 262 && bytes.Equal(head[257:262], []byte("ustar")):
+		return Tar
+	case len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b:
+		return Gzip
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("ANDROID!")):
 		return AndroidBoot
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("VNDRBOOT")):

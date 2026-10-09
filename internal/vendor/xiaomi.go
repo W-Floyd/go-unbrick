@@ -46,7 +46,7 @@ func (xiaomi) CanIngest(path string) bool {
 
 	// 1. Content inspection on standalone ELF files
 	if !fi.IsDir() {
-		if data, err := infile.ReadFile(path); err == nil {
+		if data, err := readStandalone(path, fi); err == nil {
 			if id, err := secboot.FromELF(data); err == nil {
 				if id.OEMID == "0072" {
 					return true

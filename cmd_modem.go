@@ -20,7 +20,7 @@ import (
 // zip or payload.bin (its modem partition), or a radio.img / NON-HLOS.bin /
 // modem partition image passed directly.
 func modemImage(path string) ([]byte, error) {
-	if srcfile.IsZip(path) {
+	if srcfile.IsArchive(path) {
 		_, data, err := srcfile.Open(path, "radio.img", "NON-HLOS.bin")
 		if err == nil {
 			return data, nil

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -251,11 +252,18 @@ func superChunks(path string) []string {
 		sort.Slice(chunks, func(i, j int) bool { return chunkIndex(chunks[i]) < chunkIndex(chunks[j]) })
 		return chunks
 	}
-	if _, _, err := srcfile.Open(path, "super.img"); err == nil {
-		return []string{"super.img"}
+	// A lone super.img is read whole by the caller, so one past maxWholeSuper (a
+	// fastboot ROM's is several GiB) is left alone rather than held in memory.
+	members, _ := srcfile.Members(path, 0)
+	for _, m := range members {
+		if strings.EqualFold(filepath.Base(m.Name), "super.img") && m.Size <= maxWholeSuper {
+			return []string{"super.img"}
+		}
 	}
 	return nil
 }
+
+const maxWholeSuper = 1 << 30
 
 // chunkIndex is the trailing integer of a sparsechunk name, so chunk 10 sorts
 // after chunk 2 rather than lexically before it.
