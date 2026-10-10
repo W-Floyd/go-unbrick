@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
 func TestServregNote(t *testing.T) {
@@ -40,5 +42,28 @@ func TestBuildTreeDir(t *testing.T) {
 	if len(d.files) != 1 || d.base[c] != "top.txt" || img == nil || img.base[a] != "adsp.mdt" ||
 		img.dirs["sub"] == nil || img.dirs["sub"].base[b] != "x.bin" {
 		t.Fatalf("tree: %+v", d)
+	}
+}
+
+func TestLoaderLines(t *testing.T) {
+	v.Set("catalog", "catalog")
+	v.Set("library", t.TempDir())
+	bag := func(oem, root string) *facts.Bag {
+		b := facts.NewBag()
+		p := facts.Provenance{Source: "test", Authority: facts.Attested}
+		facts.Set(b, facts.OEMID, oem, p)
+		facts.Set(b, facts.RootKeyHash, root, p)
+		facts.Set(b, facts.SoC, "Qualcomm SM6225 Snapdragon 680", p)
+		return b
+	}
+	// fogona's root signs a loader the index holds for its SM6225.
+	got := loaderLines(bag("02E8", "8b2d1c830d9d85768b0e192d66f5bf307a390691b32f8bd2571943a8a8e34a8a"))
+	if len(got) < 2 || !strings.Contains(strings.Join(got, "\n"), "001b80e102e80000_8b2d1c830d9d8576_fhprg_moto_g52.bin") {
+		t.Errorf("fogona: %q", got)
+	}
+	// a05s: Samsung's root, no loader known.
+	got = loaderLines(bag("0020", "3bafc69540869a32b0448ab38484c130a6ba5e08822cda0d24002aa01e6a7ae3"))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "Loader: none known for 001B80E1") {
+		t.Errorf("a05s: %q", got)
 	}
 }

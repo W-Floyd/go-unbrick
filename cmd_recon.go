@@ -239,7 +239,7 @@ func printWhy(b *facts.Bag) {
 // care where the bytes came from, so a stock package and a set of partitions
 // read off a live device print the same way.
 func printIdentityFacts(b *facts.Bag, indent string) {
-	for _, line := range identityFactLines(b) {
+	for _, line := range append(identityFactLines(b), loaderLines(b)...) {
 		fmt.Println(indent + line)
 	}
 }

@@ -384,6 +384,30 @@ func (c *Catalog) SoCByCPUName(vendor, cpu string) (string, bool) {
 	return soc, true
 }
 
+// JTAGsForSoC returns the JTAG IDs catalog devices of that SoC (its marketing
+// name, as SoC facts spell it) record, whatever their vendor: a JTAG ID names
+// the silicon.
+func (c *Catalog) JTAGsForSoC(soc string) []string {
+	if c == nil || soc == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range c.devices {
+		if !strings.EqualFold(d.SoC, soc) {
+			continue
+		}
+		for _, j := range d.JTAGIDs {
+			if !seen[j] {
+				seen[j] = true
+				out = append(out, j)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // DeviceByJTAG returns the first catalog device matching the given 8-character JTAG ID.
 func (c *Catalog) DeviceByJTAG(jtag string) (*Device, bool) {
 	if c == nil {

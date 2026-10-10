@@ -203,6 +203,16 @@ func (h *harvester) refreshTemblast(path string) error {
 	return nil
 }
 
+// ReadTemblast reads the catalog JSON file.
+func ReadTemblast(path string) ([]TemblastEntry, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []TemblastEntry
+	return entries, json.Unmarshal(b, &entries)
+}
+
 // loadTemblast is the overlay: a 16-hex MD5 prefix (all Temblast publishes) to
 // the row's signer/type/bad flag, and the GitHub repos its rows point at. The
 // signer matters: without it import-loaders falls back to OEM_ID, which has no
