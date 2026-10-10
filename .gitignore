@@ -44,3 +44,4 @@ recon/
 /edl_config.json
 
 .DS_Store
+.claude/settings.json
