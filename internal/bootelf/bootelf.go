@@ -722,6 +722,8 @@ func machineString(m uint16) string {
 		return "x86_64"
 	case MachineRISCV:
 		return "RISC-V"
+	case 94: // EM_XTENSA: Qualcomm's Venus video core
+		return "Xtensa"
 	default:
 		return fmt.Sprintf("Machine-0x%04x", m)
 	}

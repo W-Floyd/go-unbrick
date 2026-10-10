@@ -130,7 +130,7 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		}
 	}
 	if p != nil {
-		p.Begin(len(read) + btoi(hasPayload))
+		p.Begin(len(read) + btoi(hasPayload) + len(tars))
 	}
 	if hasPayload {
 		if p != nil {
@@ -159,7 +159,13 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		}
 	}
 	for _, m := range tars {
+		if p != nil {
+			p.Describe("locating members of " + filepath.Base(m.Name))
+		}
 		ingestTar(b, rs, path, base, m.Name, p)
+		if p != nil {
+			p.Advance()
+		}
 	}
 	return nil
 }

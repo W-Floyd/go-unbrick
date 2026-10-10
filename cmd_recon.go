@@ -1438,7 +1438,15 @@ func leafNote(img []byte, path string) string {
 		line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
 		return strings.TrimSpace(line)
 	}
-	return mcfgNote(img, path)
+	if note := mcfgNote(img, path); note != "" {
+		return note
+	}
+	// A whole signed image (venus.mbn, widevine.mbn), not split like an .mdt.
+	if data, err := modem.Extract(img, path); err == nil && filetype.Detect(data) == filetype.ELF {
+		collectKeys(data)
+		return strings.TrimPrefix(summarize(data, data), " — ")
+	}
+	return ""
 }
 
 // servregNote summarizes a Qualcomm service-registry map (.jsn): the
