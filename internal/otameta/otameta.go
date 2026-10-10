@@ -237,6 +237,9 @@ func Describe(base string, data []byte) (label, detail string, ok bool) {
 		}
 		return "OTA metadata (protobuf)", describeMetadata(m.Type, first(m.Pre.Devices), m.Post.Incremental, m.Post.SDKLevel, m.Wipe, m.Downgrade), true
 	case "apex_info.pb":
+		if len(data) == 0 { // written empty when the build lists no APEXes
+			return "APEX manifest", "empty: no modules listed", true
+		}
 		apexes, err := ParseApexInfo(data)
 		if err != nil {
 			return "", "", false
