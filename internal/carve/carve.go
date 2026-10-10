@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 )
 
 // MaxBuffer bounds what is held in memory for a node that can only be
@@ -41,22 +42,38 @@ type Node struct {
 	at     io.ReaderAt
 	stream func() (io.ReadCloser, error)
 	path   string // the input itself, for the root
+	defl   *srcfile.Deflated
 
-	once sync.Once
-	kind string
-	kids []*Node
-	err  error
-	head []byte
+	once    sync.Once
+	partial string
+	kind    string
+	kids    []*Node
+	err     error
+	head    []byte
 }
 
 // Open returns the root node for an input path or URL.
+// It is one node per input for the process, so what is expanded once (a
+// remote archive found by search) is not searched for again.
 func Open(p string) (*Node, error) {
+	roots.Lock()
+	defer roots.Unlock()
+	if n, ok := roots.m[p]; ok {
+		return n, nil
+	}
 	f, err := infile.Open(p)
 	if err != nil {
 		return nil, err
 	}
-	return &Node{Name: infile.Base(p), Size: f.Size(), at: f, path: p}, nil
+	n := &Node{Name: infile.Base(p), Size: f.Size(), at: f, path: p}
+	roots.m[p] = n
+	return n, nil
 }
+
+var roots = struct {
+	sync.Mutex
+	m map[string]*Node
+}{m: map[string]*Node{}}
 
 // FromReaderAt makes a node of bytes at random.
 func FromReaderAt(name string, ra io.ReaderAt, size int64) *Node {
@@ -72,6 +89,10 @@ func FromBytes(name string, b []byte) *Node {
 func FromStream(name string, size int64, open func() (io.ReadCloser, error)) *Node {
 	return &Node{Name: name, Size: size, stream: open}
 }
+
+// Partial says why n's children may not be all of them, once expanded; ""
+// when they are.
+func (n *Node) Partial() string { return n.partial }
 
 // Path is the input path the root was opened from; "" below the root.
 func (n *Node) Path() string { return n.path }

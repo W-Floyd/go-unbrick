@@ -20,6 +20,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/avb"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
@@ -101,11 +102,15 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 	if err != nil {
 		return err
 	}
-	var read []srcfile.Member
+	var read, tars []srcfile.Member
 	hasPayload := false
 	for _, m := range members {
-		if filetype.Detect(m.Head) == filetype.OTAPayload {
+		switch filetype.Detect(m.Head) {
+		case filetype.OTAPayload:
 			hasPayload = true
+		case filetype.Tar:
+			tars = append(tars, m)
+			continue
 		}
 		budget := int64(maxMemberRead)
 		if isBootKind(m.Head) {
@@ -144,7 +149,48 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 			p.Advance()
 		}
 	}
+	for _, m := range tars {
+		ingestTar(b, rs, path, base, m.Name, p)
+	}
 	return nil
+}
+
+// ingestTar offers a tar member's own members (an Odin .tar.md5's images,
+// each lz4-compressed) to the recognizers, under the same budgets.
+func ingestTar(b *facts.Bag, rs []facts.Recognizer, path, base, name string, p Progress) {
+	root, err := carve.Open(path)
+	if err != nil {
+		return
+	}
+	n, err := root.Walk(name)
+	if err != nil {
+		return
+	}
+	_, kids, err := n.Children()
+	if err != nil {
+		return
+	}
+	for _, k := range kids {
+		inner := k
+		if filetype.Detect(k.Head()) == filetype.LZ4 {
+			if _, c, err := k.Children(); err == nil && len(c) == 1 {
+				inner = c[0]
+			}
+		}
+		budget := int64(maxMemberRead)
+		if isBootKind(inner.Head()) {
+			budget = maxBootRead
+		}
+		if k.Size > budget || inner.Size > budget {
+			continue
+		}
+		if p != nil {
+			p.Describe("reading " + k.Name)
+		}
+		if data, err := inner.Bytes(); err == nil {
+			facts.Recognize(b, rs, facts.File{Name: filepath.Base(inner.Name), Data: data, From: base + " " + filepath.Base(name) + "/" + k.Name})
+		}
+	}
 }
 
 func btoi(v bool) int {
@@ -245,7 +291,7 @@ func FactProviders() []facts.Provider {
 			Out: facts.SecurityPatch.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested,
 			Fn: func(b *facts.Bag) (bool, error) {
 				for _, data := range facts.GetAll(b, SourceBootImage) {
-					p := buildProps(data)
+					p := BuildProps(data)
 					if v := p["ro.build.version.security_patch"]; v != "" {
 						facts.Set(b, facts.SecurityPatch, v, facts.Provenance{Source: "prop.default", Authority: facts.Attested})
 						return true, nil
@@ -354,10 +400,10 @@ func secbootRule(out facts.Fact[string], source string, pick func(*secboot.Ident
 	}
 }
 
-// buildProps parses the key=value build properties out of a boot image's
+// BuildProps parses the key=value build properties out of a boot image's
 // ramdisk (prop.default / *.prop). Comment and blank lines are skipped. Returns
-// nil if the image has no such file.
-func buildProps(data []byte) map[string]string {
+// nil if the image has no such file. Only the first such file is read.
+func BuildProps(data []byte) map[string]string {
 	img, err := bootimg.Parse(data)
 	if err != nil {
 		return nil

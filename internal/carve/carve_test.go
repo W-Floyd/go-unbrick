@@ -7,6 +7,8 @@ import (
 	"compress/gzip"
 	"io"
 	"testing"
+
+	"github.com/pierrec/lz4/v4"
 )
 
 func tarOf(t *testing.T, files map[string][]byte) []byte {
@@ -111,5 +113,30 @@ func TestConcatExtents(t *testing.T) {
 	part := make([]byte, 4)
 	if n, _ := c.ReadAt(part, 5); n != 4 || string(part) != "\x00\x00AA" {
 		t.Errorf("mid read = %q", part)
+	}
+}
+
+// TestOdinPackage walks a firmware zip as Samsung ships one: a deflated
+// .tar.md5 of lz4 images, the tar followed by its checksum line.
+func TestOdinPackage(t *testing.T) {
+	img := append([]byte("AVB0"), bytes.Repeat([]byte("vbmeta "), 4000)...)
+	var lz bytes.Buffer
+	w := lz4.NewWriter(&lz)
+	w.Write(img)
+	w.Close()
+	odin := append(tarOf(t, map[string][]byte{"vbmeta.img.lz4": lz.Bytes()}),
+		"0123456789abcdef0123456789abcdef  BL_TEST.tar\n"...)
+	root := FromBytes("fw.zip", zipOf(t, map[string][]byte{"BL_TEST.tar.md5": odin}, nil))
+
+	n, err := root.Walk("BL_TEST.tar.md5/vbmeta.img.lz4/vbmeta.img")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, n); !bytes.Equal(got, img) {
+		t.Errorf("vbmeta.img: %d bytes, want %d", len(got), len(img))
+	}
+	tarNode, _ := root.Walk("BL_TEST.tar.md5")
+	if tarNode.defl == nil || tarNode.Partial() != "" {
+		t.Errorf("deflated tar: span %v, partial %q", tarNode.defl, tarNode.Partial())
 	}
 }

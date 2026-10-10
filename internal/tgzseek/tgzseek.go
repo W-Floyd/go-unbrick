@@ -39,6 +39,9 @@ var (
 	// MinBudget is the budget floor, for archives small enough that a
 	// fraction of them is less than one landing.
 	MinBudget int64 = 8 << 20
+	// WholeBelow is the stream size up to which opening may fetch all of
+	// it: landings save little there, and a short budget leaves gaps.
+	WholeBelow int64 = 64 << 20
 	// Keep is the largest member whose bytes are kept from the walk; larger
 	// ones are decoded again when read.
 	Keep int64 = 16 << 20
@@ -136,12 +139,52 @@ func Open(r io.ReaderAt, size int64) (*Archive, error) {
 		return nil, err
 	}
 	m := &meter{r: r, got: map[int64]bool{}}
-	o := &opener{r: m, raw: r, end: size - 8, isize: binary.LittleEndian.Uint32(tr[4:]),
-		budget: max(int64(Budget*float64(size)), MinBudget)}
+	o := &opener{r: m, raw: r, start: start, end: size - 8, isize: binary.LittleEndian.Uint32(tr[4:]),
+		budget: budgetFor(size)}
 	if err := o.open(start * 8); err != nil {
 		return nil, err
 	}
 	return o.archive(), nil
+}
+
+// OpenDeflate lists a tar held as the raw deflate stream at [start, end) of
+// r that decodes to size bytes: a deflated zip member.
+func OpenDeflate(r io.ReaderAt, start, end, size int64) (*Archive, error) {
+	m := &meter{r: r, got: map[int64]bool{}}
+	o := &opener{r: m, raw: r, start: start, end: end, isize: uint32(size), total: size,
+		budget: budgetFor(end - start)}
+	if err := o.open(start * 8); err != nil {
+		return nil, err
+	}
+	return o.archive(), nil
+}
+
+func budgetFor(n int64) int64 {
+	if n <= WholeBelow {
+		return n
+	}
+	return max(int64(Budget*float64(n)), MinBudget)
+}
+
+// odinTrimmed drops the md5sum line Odin appends to a .tar.md5 after the
+// end-of-archive blocks.
+func odinTrimmed(b []byte) []byte {
+	t := bytes.TrimSuffix(b, []byte("\n"))
+	i := bytes.LastIndexByte(t, 0) + 1
+	line := t[i:]
+	if bytes.IndexByte(line, ' ') != 32 || !isHex(line[:32]) || bytes.IndexByte(line, '\n') >= 0 {
+		return b
+	}
+	return t[:i]
+}
+
+func isHex(b []byte) bool {
+	for _, c := range b {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // deflateStart parses the gzip member header.

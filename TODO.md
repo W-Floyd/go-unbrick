@@ -1,5 +1,26 @@
 # TODO
 
+## Samsung Odin AP — members after super
+
+A deflated `AP_*.tar.md5` in a samfw zip (`tgzseek.OpenDeflate`) lists
+`boot`, `dtbo`, `vendor_boot`, `recovery`, `super.img.lz4` by chaining
+landings from the head; super (4.7 GiB lz4) cannot be predicted from a 1 MiB
+sample, so its sweep exhausts the budget and what follows is not located. The
+tail cannot anchor either: the last member decodes to >150 MB of
+compressible data with no header in the last 64 MiB of stream. Test package:
+SM-M145F M145FXXSDDZH1 (samfw / s01.ooo link). vbmeta_system and anything
+else after super are missing until this is solved.
+
+## Samsung — flag a package that is not the latest
+
+`GET https://fota-cloud-dn.ospserver.net/firmware/<CSC>/<model>/version.xml`
+(any non-curl User-Agent; curl's default gets 403) lists the latest build
+(`PDA/CSC/CP`, e.g. `M145FXXSDDZH1/M145FODMDDZH1/M145FXXSDDZH1` for
+SM-M145F/INS) and earlier upgrade builds with sizes. Recon has the model
+(`SKU`) and build (`SoftwareVersion`); the CSC is in the Odin CSC member's
+name and `meta-data`. `.enc4` downloads are AES-ECB per block (range reads
+decrypt in place) but the key needs the signed server exchange — out of scope.
+
 ## Remote .tgz — locate the members between super and the tail
 
 `internal/tgzseek` lists a remote `.tgz` exactly at both ends and searches the

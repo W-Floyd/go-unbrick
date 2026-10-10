@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -58,12 +60,18 @@ var (
 	byDir     = map[string]*remote{}
 )
 
+// filenames maps an opened URL to its Content-Disposition name, for Base.
+var filenames sync.Map
+
 type meta struct {
 	URL          string `json:"url"`
 	Size         int64  `json:"size"`
 	ETag         string `json:"etag,omitempty"`
 	LastModified string `json:"last_modified,omitempty"`
 	ChunkSize    int64  `json:"chunk_size"`
+	// Filename is the Content-Disposition name, for a URL whose path does
+	// not name the file (a signed or opaque download link).
+	Filename string `json:"filename,omitempty"`
 }
 
 func (m meta) modTime() time.Time {
@@ -184,6 +192,9 @@ func newRemote(u string) (*remote, error) {
 	if err != nil {
 		return nil, err
 	}
+	if m.Filename != "" && m.Filename != "." && m.Filename != "/" {
+		filenames.Store(u, m.Filename)
+	}
 	return openEntry(m)
 }
 
@@ -206,6 +217,9 @@ func probe(u string) (meta, error) {
 	defer resp.Body.Close()
 
 	m := meta{URL: u, ETag: resp.Header.Get("ETag"), LastModified: resp.Header.Get("Last-Modified"), ChunkSize: chunkSize}
+	if _, ps, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
+		m.Filename = path.Base(ps["filename"])
+	}
 	switch resp.StatusCode {
 	case http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable: // 416: empty object
 		total, err := contentRangeTotal(resp.Header.Get("Content-Range"))

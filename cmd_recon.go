@@ -22,6 +22,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/devcfg"
 	"github.com/W-Floyd/go-unbrick/internal/dtbo"
 	"github.com/W-Floyd/go-unbrick/internal/edl"
@@ -257,6 +258,12 @@ func identityFactLines(b *facts.Bag) []string {
 		}
 		if carrier, ok := facts.Get(b, facts.Carrier); ok {
 			line += " — " + carrier
+		}
+		out = append(out, line)
+	} else if name, ok := facts.Get(b, facts.Codename); ok {
+		line := "Device: " + name
+		if sku, ok := facts.Get(b, facts.SKU); ok {
+			line += " (" + sku + ")"
 		}
 		out = append(out, line)
 	}
@@ -1029,6 +1036,8 @@ func reconArchive(path string, bag *facts.Bag) error {
 		case kind == filetype.OTAPayload:
 			bar.Clear()
 			printPayload(path, base, int64(m.Size), "    ")
+		case kind == filetype.Tar:
+			printNestedTar(path, m.Name, "    ", bar)
 		case int64(m.Size) > maxCascadeRead:
 			// Don't expand anything too big; label it and move on.
 			bar.Clear()
@@ -1053,6 +1062,61 @@ func reconArchive(path string, bag *facts.Bag) error {
 		printSuperMap(path, "      ")
 	}
 	return nil
+}
+
+// printNestedTar lists a tar member's own members (an Odin .tar.md5),
+// cascading into each small enough to read; an lz4 one is read through its
+// decompression.
+func printNestedTar(path, name, indent string, bar *barSink) {
+	base := filepath.Base(name)
+	n, err := carvePath(path, name)
+	var kids []*carve.Node
+	if err == nil {
+		_, kids, err = n.Children()
+	}
+	bar.Clear()
+	if err != nil {
+		fmt.Printf("%s%-26s [tar]  (%v)\n", indent, base, err)
+		return
+	}
+	fmt.Printf("%s%-26s [tar]  %s, %d members\n", indent, base, humanBytes(n.Size), len(kids))
+	if why := n.Partial(); why != "" {
+		fmt.Printf("%s  %s listing is partial: %s\n", indent, cWarn("[!]"), why)
+	}
+	for _, k := range kids {
+		bar.Describe("reading " + k.Name)
+		line, data := nestedMember(k)
+		bar.Clear()
+		if data != nil {
+			cascade(k.Name, data, indent+"  ", reconDepth-1)
+		} else {
+			fmt.Printf("%s  %s\n", indent, line)
+		}
+	}
+}
+
+// nestedMember reads k whole when it is small enough to cascade into, else
+// describes it from its head.
+func nestedMember(k *carve.Node) (line string, data []byte) {
+	inner := k
+	if filetype.Detect(k.Head()) == filetype.LZ4 {
+		if _, c, err := k.Children(); err == nil && len(c) == 1 {
+			inner = c[0]
+		}
+	}
+	if k.Size <= maxCascadeRead {
+		if b, err := inner.Bytes(); err == nil {
+			return "", b
+		}
+	}
+	size := humanBytes(k.Size)
+	if inner != k {
+		size += " lz4"
+		if inner.Size >= 0 {
+			size += ", " + humanBytes(inner.Size) + " raw"
+		}
+	}
+	return fmt.Sprintf("%-24s [%s]  %s (not expanded)", k.Name, typeLabel(inner.Name, inner.Head()), size), nil
 }
 
 // maxWholeRead caps the member read whole to label what its head cannot
@@ -1443,6 +1507,10 @@ func typeLabel(name string, head []byte) string {
 		return "ELF"
 	case filetype.OTAPayload:
 		return "OTA payload"
+	case filetype.Tar:
+		return "tar"
+	case filetype.LZ4:
+		return "lz4"
 	case filetype.PE:
 		return "PE executable"
 	}

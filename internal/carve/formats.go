@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/W-Floyd/erofs"
+	"github.com/pierrec/lz4/v4"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
@@ -22,6 +24,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/payload"
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/tgzseek"
 )
 
 func init() {
@@ -30,10 +33,13 @@ func init() {
 		// the members of a remote one cheaply.
 		Expander{Kind: "archive", Match: func(n *Node, _ []byte) bool { return n.path != "" && srcfile.IsArchive(n.path) }, Expand: expandInput},
 		Expander{Kind: "zip", Match: kind(filetype.Zip), Expand: expandZip},
+		// Before tar: a deflated one is entered mid-stream, not buffered whole.
+		Expander{Kind: "tar", Match: func(n *Node, h []byte) bool { return n.defl != nil && filetype.Detect(h) == filetype.Tar }, Expand: expandDeflatedTar},
 		Expander{Kind: "tar", Match: kind(filetype.Tar), Expand: expandTar},
 		// Before gzip: a boot image's ramdisk is often gzip, and is a cpio.
 		Expander{Kind: "ramdisk", Match: isRamdisk, Expand: expandRamdisk},
 		Expander{Kind: "gzip", Match: kind(filetype.Gzip), Expand: expandGzip},
+		Expander{Kind: "lz4", Match: kind(filetype.LZ4), Expand: expandLZ4},
 		Expander{Kind: "payload", Match: kind(filetype.OTAPayload), Expand: expandPayload},
 		Expander{Kind: "sparse", Match: kind(filetype.SparseImage), Expand: expandSparse},
 		Expander{Kind: "super", Match: func(_ *Node, h []byte) bool { return lp.IsSuper(h) }, Expand: expandSuper},
@@ -68,7 +74,9 @@ func expandInput(n *Node) ([]*Node, error) {
 		if e.At != nil {
 			out = append(out, FromReaderAt(e.Name, e.At, int64(e.Size)))
 		} else {
-			out = append(out, FromStream(e.Name, int64(e.Size), e.Open))
+			k := FromStream(e.Name, int64(e.Size), e.Open)
+			k.defl = e.Deflate
+			out = append(out, k)
 		}
 	}
 	return out, nil
@@ -93,9 +101,57 @@ func expandZip(n *Node) ([]*Node, error) {
 			continue
 		}
 		open := func() (io.ReadCloser, error) { return f.Open() }
-		out = append(out, FromStream(f.Name, int64(f.UncompressedSize64), open))
+		k := FromStream(f.Name, int64(f.UncompressedSize64), open)
+		if off, err := f.DataOffset(); err == nil && f.Method == zip.Deflate {
+			k.defl = &srcfile.Deflated{R: ra, Start: off, End: off + int64(f.CompressedSize64)}
+		}
+		out = append(out, k)
 	}
 	return out, nil
+}
+
+// expandDeflatedTar lists a tar held deflated in a zip without decoding it
+// through: an Odin .tar.md5 is gigabytes of lz4 images.
+func expandDeflatedTar(n *Node) ([]*Node, error) {
+	a, err := tgzseek.OpenDeflate(n.defl.R, n.defl.Start, n.defl.End, n.Size)
+	if err != nil {
+		return nil, err
+	}
+	if !a.Complete {
+		n.partial = a.String()
+	}
+	var out []*Node
+	for i, e := range a.Entries {
+		k := FromStream(e.Name, e.Size, func() (io.ReadCloser, error) { return io.NopCloser(a.Open(i)), nil })
+		if int64(len(e.Head)) == e.Size || len(e.Head) >= headLen {
+			k.head = e.Head[:min(len(e.Head), headLen)]
+		}
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+// expandLZ4 has one child, the decompressed frame, named without ".lz4".
+func expandLZ4(n *Node) ([]*Node, error) {
+	name := strings.TrimSuffix(path.Base(n.Name), ".lz4")
+	if name == path.Base(n.Name) {
+		name += ".out"
+	}
+	size := int64(-1)
+	if h := n.Head(); len(h) >= 14 && h[4]&0x08 != 0 { // FLG.ContentSize
+		size = int64(binary.LittleEndian.Uint64(h[6:14]))
+	}
+	open := func() (io.ReadCloser, error) {
+		rc, err := n.Reader()
+		if err != nil {
+			return nil, err
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{lz4.NewReader(rc), rc}, nil
+	}
+	return []*Node{FromStream(name, size, open)}, nil
 }
 
 // expandTar indexes a tar: tar.Reader seeks past each body, so every member

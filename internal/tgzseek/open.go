@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/W-Floyd/go-unbrick/internal/inflate"
 )
@@ -13,8 +14,11 @@ import (
 type opener struct {
 	r      *meter
 	raw    io.ReaderAt
-	end    int64 // offset of the gzip trailer
+	start  int64 // offset of the deflate stream
+	end    int64 // offset just past it
 	isize  uint32
+	total  int64 // the decoded length when known exactly (a zip's); else 0
+	noTail bool  // no anchored tail: tail.first is only a bound
 	budget int64
 
 	head     []item
@@ -31,7 +35,9 @@ type opener struct {
 	middle   []item
 	seen     map[string]bool
 	explored []span // compressed byte ranges landings have decoded
-	queue    []int64
+	queue    []landing
+	sweeps   int   // targets queued so far, naming each sweep
+	sweep    int   // the sweep the current landing is from; 0 for none
 	lo, hi   int64 // where landings search
 	floor    int64 // the most lo can widen to
 
@@ -43,6 +49,10 @@ type opener struct {
 // backTries is how many steps back in a row may find nothing before a large
 // member is assumed and stepping stops.
 const backTries = 3
+
+// parsedBlocks is how many whole blocks a landing's entry must parse through
+// when no stored blocks confirm it.
+const parsedBlocks = 4
 
 type span struct{ from, to int64 }
 
@@ -60,6 +70,7 @@ func (o *opener) open(startBit int64) error {
 	if err != nil {
 		return err
 	}
+	logf("head: %d entries", len(items))
 	o.head = items
 	for _, it := range items {
 		o.h1 += it.span
@@ -74,7 +85,15 @@ func (o *opener) open(startBit int64) error {
 		return nil
 	}
 	if err := o.anchorTail(); err != nil {
-		return err
+		if err != errNoTail || o.total == 0 {
+			return err
+		}
+		// A last member too large to decode back through: landings still
+		// find what lies between, and the listing stays partial, as the
+		// tar's own end (its padding, Odin's checksum line) is not known.
+		o.noTail = true
+		o.tail.bit, o.tail.first = o.end*8, uint32(o.total)
+		logf("no tail anchor; the listing will be partial")
 	}
 	o.floor = startBit / 8
 	o.hi = o.tail.bit / 8
@@ -87,9 +106,12 @@ func (o *opener) open(startBit int64) error {
 		// cannot store those in much more than that, which bounds how far
 		// before the end the next header can be. The total is known mod
 		// 2^32; the smallest that fits is assumed, for where to look only.
-		total := int64(o.isize)
-		for total < o.h1+2*block {
-			total += 1 << 32
+		total := o.total
+		if total == 0 {
+			total = int64(o.isize)
+			for total < o.h1+2*block {
+				total += 1 << 32
+			}
 		}
 		bound := o.end - int64(float64(total-o.h1)*(1+storedOverhead)) - 64<<10
 		o.lo = max(o.lo, min(bound, o.hi))
@@ -188,19 +210,23 @@ func (o *opener) walk(c *cursor, at int64) (items []item, st *stop, end int64, e
 
 // anchorTail decodes from near the end of the stream to the end, and finds a
 // header there whose chain runs through the end-of-archive blocks with only
-// zeros after: offsets in that run are then known from the gzip trailer.
+// zeros (or an Odin checksum line) after: offsets in that run are then known
+// from the decoded length.
 func (o *opener) anchorTail() error {
 	for back := int64(1 << 20); ; back *= 4 {
-		from := max(0, o.end-back)
-		if back > TailLimit {
-			return errors.New("tgzseek: no tar header chain found near the end of the archive")
+		from := max(o.start, o.end-back)
+		// Past a quarter of the budget, landings are the better use of the rest.
+		if back > TailLimit || back > 1<<20 && back > o.budget/4 {
+			return errNoTail
 		}
-		bit, err := inflate.Find(o.r, from, o.end, 16<<20)
-		if err != nil {
-			if from == 0 {
-				return fmt.Errorf("tgzseek: entering the end of the stream: %w", err)
+		// From the start itself, as a block found past it would miss the
+		// first header.
+		bit := o.start * 8
+		if from > o.start {
+			var err error
+			if bit, err = inflate.FindEnd(o.r, from, o.end); err != nil {
+				continue
 			}
-			continue
 		}
 		d := inflate.NewUnknown(o.r, bit)
 		var out bytes.Buffer
@@ -218,39 +244,79 @@ func (o *opener) anchorTail() error {
 			}
 		}
 		if (d.Bit()+7)/8 != o.end {
-			return errors.New("tgzseek: the deflate stream does not end at the gzip trailer (concatenated gzip members are not supported)")
+			return errors.New("tgzseek: the deflate stream does not end where its container says (concatenated gzip members are not supported)")
 		}
 		b := out.Bytes()
 		base := o.isize - uint32(len(b))
+		// With the decoded length exact, where the head ended is a place in
+		// this run: the end of the archive there needs no header before it.
+		if p := o.h1 - (o.total - int64(len(b))); o.total > 0 && p >= 0 && p+2*block <= int64(len(b)) &&
+			!anyUnknown(unk[p:]) && allZero(odinTrimmed(b[p:])) {
+			o.tail.bit, o.tail.first = bit, uint32(o.h1)
+			logf("tail anchored at the end of the head, %d bytes before the end", o.end-bit/8)
+			return nil
+		}
 		for p := int64((block - base%block) % block); p+block <= int64(len(b)); p += block {
 			if anyUnknown(unk[p:p+block]) || !validHeader(b[p:p+block]) {
 				continue
 			}
 			tc := &cursor{run: &run{start: bit}, pos: p, buf: b[p:], unk: unk[p:], eof: true}
 			items, _, q, eoa, err := o.walk(tc, p)
-			if err != nil || !eoa || anyUnknown(unk[q:]) || !allZero(b[q:]) {
+			if err != nil || !eoa || anyUnknown(unk[q:]) || !allZero(odinTrimmed(b[q:])) {
 				continue
 			}
-			o.tail.bit, o.tail.items, o.tail.first = bit, items, base+uint32(p)
+			first := base + uint32(p)
+			// A short stream's tail run can reach back over the head.
+			for len(items) > 0 && o.seen[key(items[0])] {
+				first += uint32(items[0].span)
+				items = items[1:]
+			}
+			o.tail.bit, o.tail.items, o.tail.first = bit, items, first
 			for _, it := range items {
 				o.note(it)
 			}
 			logf("tail anchored: %d entries from %d bytes before the end", len(items), o.end-bit/8)
 			return nil
 		}
+		if from == o.start {
+			return errNoTail
+		}
 	}
 }
 
-// target queues landings where the header after a costly member is likely:
-// where its compression so far predicts, and just short of the most room it
-// can take.
+var errNoTail = errors.New("tgzseek: no tar header chain found near the end of the archive")
+
+// landing is a queued place to land, and the sweep it belongs to.
+type landing struct {
+	x     int64
+	sweep int
+}
+
+// target queues landings where the header after a costly member can be:
+// where its compression so far predicts, just short of the most room it can
+// take, then outward from the prediction to cover the stretch between, as a
+// member's compression can change along it. A sweep ends at its first find.
 func (o *opener) target(st *stop) {
+	o.sweeps++
+	q := func(x int64) { o.queue = append(o.queue, landing{x, o.sweeps}) }
 	at := st.bit / 8
 	pred := at + int64(float64(st.left)*st.ratio)
 	ub := at + int64(float64(st.left)*(1+storedOverhead)) + 64<<10
-	o.queue = append(o.queue, pred-LandWalk/2)
-	if ub-pred > LandWalk {
-		o.queue = append(o.queue, ub-LandWalk/2)
+	q(pred - LandWalk/2)
+	if ub-pred <= LandWalk {
+		return
+	}
+	q(ub - LandWalk/2)
+	// A landing searches LandWalk of output, which takes about ratio as
+	// much of the stream.
+	step := max(int64(float64(LandWalk)*min(st.ratio, 1)), LandWalk/8)
+	for k := int64(1); pred-k*step >= at || pred+k*step < ub-LandWalk; k++ {
+		if x := pred + k*step - LandWalk/2; x < ub-LandWalk {
+			q(x)
+		}
+		if x := pred - k*step - LandWalk/2; x >= at {
+			q(x)
+		}
 	}
 }
 
@@ -282,11 +348,13 @@ func (o *opener) isExplored(x int64) bool {
 // landing has decoded.
 func (o *opener) next() (int64, bool) {
 	o.stepping = false
+	o.sweep = 0
 	for len(o.queue) > 0 {
-		x := o.queue[0]
+		l := o.queue[0]
 		o.queue = o.queue[1:]
-		if x >= o.lo && x < o.hi && !o.isExplored(x) {
-			return x, true
+		if l.x >= o.lo && l.x < o.hi && !o.isExplored(l.x) {
+			o.sweep = l.sweep
+			return l.x, true
 		}
 	}
 	if o.backMisses < backTries {
@@ -338,14 +406,18 @@ func (o *opener) explore(from, to int64) {
 // walks the chain from the first one found.
 func (o *opener) land(x int64) error {
 	to := min(x+LandWalk, o.end)
-	bit, err := inflate.Find(o.r, x, to, LandConfirm)
+	// Entered on a parse through a few blocks, not on stored blocks, which
+	// compressible data lacks: a header found from a false entry would
+	// still have to pass its checksum and match the owner.
+	bit, err := inflate.FindParsed(o.r, x, to, parsedBlocks, LandConfirm)
 	if err != nil {
 		o.explore(x, to)
+		logf("landing at %d: no entry", x)
 		return nil
 	}
 	c := newCursor(o.r, bit, false)
-	found := int64(-1)
-	for at := int64(0); at < LandWalk && found < 0; {
+	found, at := int64(-1), int64(0)
+	for at < LandWalk && found < 0 {
 		b, u, err := c.window(at, 256<<10+block)
 		if err != nil {
 			break
@@ -357,7 +429,10 @@ func (o *opener) land(x int64) error {
 		at += int64(len(b) - block)
 	}
 	if found < 0 {
-		o.explore(x, c.bit()/8)
+		// Only what was searched, less a margin: the decoder runs ahead of
+		// its output, and the place of output in the stream is estimated.
+		searched := bit/8 + int64(float64(at)*c.ratio()) - LandWalk/8
+		o.explore(x, max(x, min(searched, c.bit()/8)))
 		logf("landing at %d: no header", x)
 		return nil
 	}
@@ -376,6 +451,9 @@ func (o *opener) land(x int64) error {
 		n++
 	}
 	logf("landing at %d: %d new entries", x, n)
+	if n > 0 && o.sweep != 0 {
+		o.queue = slices.DeleteFunc(o.queue, func(l landing) bool { return l.sweep == o.sweep })
+	}
 	if st != nil && n > 0 {
 		o.target(st)
 	}

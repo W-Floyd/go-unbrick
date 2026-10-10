@@ -13,6 +13,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 )
 
 // samsung: Qualcomm-SoC Samsung devices share the secboot identity core (so
@@ -86,8 +87,11 @@ func (samsung) CanIngest(path string) bool {
 		return false
 	}
 
+	// By content: a URL need not end in .zip.
+	isZip := !fi.IsDir() && srcfile.IsZip(path)
+
 	// 1. Content inspection on standalone files
-	if !fi.IsDir() && !strings.HasSuffix(strings.ToLower(path), ".zip") {
+	if !fi.IsDir() && !isZip {
 		if data, err := readStandalone(path, fi); err == nil {
 			if isSamsungContent(data) {
 				return true
@@ -99,9 +103,15 @@ func (samsung) CanIngest(path string) bool {
 	}
 
 	// 2. Content inspection on Zip archives
-	if strings.HasSuffix(strings.ToLower(path), ".zip") {
+	if isZip {
 		if zr, err := infile.OpenZip(path); err == nil {
 			defer zr.Close()
+			// Odin's AP/BL/CP/CSC tarballs, before reading any member.
+			for _, f := range zr.File {
+				if isOdinName(filepath.Base(f.Name)) {
+					return true
+				}
+			}
 			for _, f := range zr.File {
 				if f.FileInfo().IsDir() {
 					continue
@@ -178,4 +188,18 @@ func (samsung) HarvestStock(TargetSource) (*blankflash.Target, error) {
 
 func (samsung) Assemble(*blankflash.Donor, *blankflash.Target, AssembleOptions) (*blankflash.ForgeResult, error) {
 	return nil, fmt.Errorf("samsung recovery packaging (Odin/Firehose XML): %w", ErrUnsupported)
+}
+
+// isOdinName recognizes the tarballs of an Odin firmware package:
+// AP_<build>….tar.md5, BL_…, CP_…, CSC_…, HOME_CSC_….
+func isOdinName(name string) bool {
+	if !strings.HasSuffix(name, ".tar.md5") && !strings.HasSuffix(name, ".tar") {
+		return false
+	}
+	for _, p := range []string{"AP_", "BL_", "CP_", "CSC_", "HOME_CSC_"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }

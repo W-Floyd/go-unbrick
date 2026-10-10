@@ -39,13 +39,14 @@ const (
 // Decoder is an io.Reader over the decompressed bytes. Bytes it cannot know are
 // returned as 0; ExactFrom says where the known-exact output begins.
 type Decoder struct {
-	r    io.ReaderAt
-	next int64 // offset in r of the next byte to load into bits
-	buf  []byte
-	bp   int
-	be   int
-	eof  bool // r has no bytes past buf[be]
-	over uint // zero bits fed in past the end of r
+	r     io.ReaderAt
+	next  int64 // offset in r of the next byte to load into bits
+	start int64 // where next began
+	buf   []byte
+	bp    int
+	be    int
+	eof   bool // r has no bytes past buf[be]
+	over  uint // zero bits fed in past the end of r
 
 	bits  uint64
 	nbits uint
@@ -104,7 +105,7 @@ func NewExact(r io.ReaderAt, bit int64, hist []byte) *Decoder {
 }
 
 func newDecoder(r io.ReaderAt, bit int64) *Decoder {
-	d := &Decoder{r: r, next: bit / 8, buf: make([]byte, 64<<10)}
+	d := &Decoder{r: r, next: bit / 8, start: bit / 8, buf: make([]byte, 4<<10)}
 	if s := uint(bit % 8); s > 0 {
 		d.fill()
 		d.bits >>= s
@@ -147,6 +148,8 @@ func (d *Decoder) Blocks() int { return d.blocks }
 // passed its length check.
 func (d *Decoder) StoredBlocks() int { return d.storedBlocks }
 
+const maxBuf = 64 << 10
+
 func (d *Decoder) fill() {
 	for d.nbits <= 56 {
 		if d.bp == d.be {
@@ -154,6 +157,11 @@ func (d *Decoder) fill() {
 				d.nbits += 8 // pad with zeros; consuming them is an error
 				d.over += 8
 				continue
+			}
+			// Small at first: a candidate entry point usually fails within
+			// bytes.
+			if d.next > d.start && len(d.buf) < maxBuf {
+				d.buf = make([]byte, 2*len(d.buf))
 			}
 			n, err := d.r.ReadAt(d.buf, d.next)
 			d.next += int64(n)

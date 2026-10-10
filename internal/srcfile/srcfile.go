@@ -88,6 +88,14 @@ type entry struct {
 	head []byte // prefilled when reading the head again would be costly (tgz)
 	open func() (io.ReadCloser, error)
 	at   io.ReaderAt // the member at random, when its container allows; nil otherwise
+	defl *Deflated
+}
+
+// Deflated locates a member stored as a raw deflate stream, for a reader
+// that enters it mid-stream (tgzseek) rather than decoding from the start.
+type Deflated struct {
+	R          io.ReaderAt
+	Start, End int64 // byte range of the stream in R
 }
 
 type archive struct {
@@ -109,8 +117,13 @@ func openArchive(path string) (*archive, error) {
 				continue
 			}
 			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open}
-			if off, err := f.DataOffset(); err == nil && f.Method == zip.Store {
-				e.at = io.NewSectionReader(zr.Input(), off, int64(f.UncompressedSize64))
+			if off, err := f.DataOffset(); err == nil {
+				switch f.Method {
+				case zip.Store:
+					e.at = io.NewSectionReader(zr.Input(), off, int64(f.UncompressedSize64))
+				case zip.Deflate:
+					e.defl = &Deflated{R: zr.Input(), Start: off, End: off + int64(f.CompressedSize64)}
+				}
 			}
 			a.entries = append(a.entries, e)
 		}
@@ -217,6 +230,8 @@ type Entry struct {
 	// member, a stored zip member, a .tgz member under rapidgzip. Nil when the
 	// member can only be streamed.
 	At io.ReaderAt
+	// Deflate is set for a deflated zip member.
+	Deflate *Deflated
 }
 
 // Entries lists path's members for reading, which stays possible until close.
@@ -231,7 +246,7 @@ func Entries(path string) ([]Entry, io.Closer, error) {
 	}
 	out := make([]Entry, 0, len(a.entries))
 	for _, e := range a.entries {
-		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at})
+		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at, Deflate: e.defl})
 	}
 	return out, closerFunc(a.close), nil
 }

@@ -31,6 +31,7 @@ const (
 	FAT               Kind = "fat"
 	Tar               Kind = "tar"
 	Gzip              Kind = "gzip"
+	LZ4               Kind = "lz4"
 	PE                Kind = "pe"
 	Unknown           Kind = "unknown"
 )
@@ -50,6 +51,8 @@ func Detect(head []byte) Kind {
 		return Tar
 	case len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b:
 		return Gzip
+	case len(head) >= 4 && le.Uint32(head[:4]) == 0x184d2204: // frame format
+		return LZ4
 	case isPE(head):
 		return PE
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("ANDROID!")):

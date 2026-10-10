@@ -1,9 +1,9 @@
 package vendor
 
-// Content recognition for Motorola file formats that have no neutral magic the
-// generic filetype detector handles — the CID image, the MotoLogo container, and
-// the subsidy-lock .nvm. Kept behind the vendor seam so the recon command never
-// hardcodes Motorola magics; it just asks RecognizeArtifact.
+// Content recognition for vendor file formats that have no neutral magic the
+// generic filetype detector handles — Motorola's CID image, MotoLogo container
+// and subsidy-lock .nvm, and Samsung's .pit. Kept behind the vendor seam so the
+// recon command never hardcodes vendor magics; it just asks RecognizeArtifact.
 
 import (
 	"fmt"
@@ -57,6 +57,9 @@ func RecognizeArtifact(cat *catalog.Catalog, data []byte) (ArtifactInfo, bool) {
 			}
 			return ArtifactInfo{Label: "Motorola SLCF", Detail: d}, true
 		}
+	}
+	if p, err := ParsePIT(data); err == nil {
+		return ArtifactInfo{Label: "Samsung PIT", Detail: fmt.Sprintf("%d partitions, %s", len(p.Entries), p.Chip)}, true
 	}
 	return ArtifactInfo{}, false
 }

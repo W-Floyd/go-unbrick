@@ -98,6 +98,9 @@ func scale(t *testing.T) {
 		Budget, MinBudget, Keep = saved[0].(float64), saved[1].(int64), saved[2].(int64)
 		WalkLimit, LandWalk, LandConfirm = saved[3].(int64), saved[4].(int64), saved[5].(int64)
 	})
+	whole := WholeBelow
+	WholeBelow = 0
+	t.Cleanup(func() { WholeBelow = whole })
 	infile.CacheDir = t.TempDir()
 	Log = t.Logf
 	t.Cleanup(func() { Log = nil })
@@ -176,5 +179,43 @@ func TestRemotePartial(t *testing.T) {
 				t.Fatalf("%s: %d bytes, %v", f.name, len(got), err)
 			}
 		}
+	}
+}
+
+// TestRemoteDeflateOdin reads a .tar.md5 deflated inside a zip: a raw deflate
+// stream at an offset, the tar followed by Odin's checksum line.
+func TestRemoteDeflateOdin(t *testing.T) {
+	scale(t)
+	files := rom()
+	var tb bytes.Buffer
+	tw := tar.NewWriter(&tb)
+	for _, f := range files {
+		tw.WriteHeader(&tar.Header{Name: f.name, Size: int64(len(f.body)), Mode: 0o644, Typeflag: tar.TypeReg, Uname: "builder", ModTime: time.Unix(1e9, 0)})
+		tw.Write(f.body)
+	}
+	tw.Close()
+	tb.WriteString("0123456789abcdef0123456789abcdef  AP_TEST.tar\n")
+	gz := pigztest.Gzip(tb.Bytes(), 128<<10)
+	start, err := deflateStart(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := random(70000, 9) // the zip before the member
+	s := serve(t, append(prefix, gz...))
+	f, err := infile.Open(s.URL + "/fw.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := int64(len(prefix))
+	a, err := OpenDeflate(f, off+start, off+int64(len(gz))-8, int64(tb.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Complete || len(a.Entries) != len(files) {
+		t.Fatalf("listing: %v", a)
+	}
+	got, err := io.ReadAll(a.Open(7))
+	if err != nil || !bytes.Equal(got, files[7].body) {
+		t.Fatalf("dtbo.img: %d bytes, %v", len(got), err)
 	}
 }

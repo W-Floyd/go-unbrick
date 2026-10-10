@@ -25,10 +25,14 @@ func IsRemote(p string) bool {
 }
 
 // Base is filepath.Base for a local path; for a URL it is the unescaped last
-// path element, ignoring any query string (signed CDN links carry long ones).
+// path element, ignoring any query string (signed CDN links carry long ones),
+// or, once the URL is open, the name the server gave it.
 func Base(p string) string {
 	if !IsRemote(p) {
 		return filepath.Base(p)
+	}
+	if n, ok := filenames.Load(p); ok {
+		return n.(string)
 	}
 	u, err := url.Parse(p)
 	if err != nil {
