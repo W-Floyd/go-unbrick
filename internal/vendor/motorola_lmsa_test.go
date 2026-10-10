@@ -7,20 +7,6 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/lenovo"
 )
 
-func TestLMSAOutName(t *testing.T) {
-	for in, want := range map[string]string{
-		"MT6765_Android_scatter.t": "MT6765_Android_scatter.txt",
-		"rawprogram0.x":            "rawprogram0.xml",
-		"SCATTER.T":                "SCATTER.Txt", // extension matched case-insensitively
-		"flash_tool.exe":           "",
-		"scatter.txt":              "",
-	} {
-		if got := lmsaOutName(in); got != want {
-			t.Errorf("lmsaOutName(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestLMSAExpander(t *testing.T) {
 	const pw = "captured-session-key"
 	enc, err := lenovo.EncryptROM([]byte("<?xml version=\"1.0\"?><data/>"), pw)

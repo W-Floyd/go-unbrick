@@ -3,7 +3,6 @@ package vendor
 import (
 	"os"
 	"path"
-	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/lenovo"
@@ -21,23 +20,9 @@ const LMSAPasswordEnv = "LMSA_ROM_PASSWORD"
 func (motorola) CarveExpanders() []carve.Expander {
 	return []carve.Expander{{
 		Kind:   "lmsa-rom",
-		Match:  func(n *carve.Node, _ []byte) bool { return lmsaOutName(n.Name) != "" },
+		Match:  func(n *carve.Node, _ []byte) bool { return lenovo.OutName(n.Name) != "" },
 		Expand: expandLMSAROM,
 	}}
-}
-
-// lmsaOutName returns the decrypted name for an LMSA ROM file, or "" if name is
-// not one. The extension alone identifies these; the ciphertext has no magic
-// (its first bytes are a random IV and salt).
-func lmsaOutName(name string) string {
-	switch {
-	case strings.HasSuffix(strings.ToLower(name), ".t"):
-		return name + "xt"
-	case strings.HasSuffix(strings.ToLower(name), ".x"):
-		return name + "ml"
-	default:
-		return ""
-	}
 }
 
 func expandLMSAROM(n *carve.Node) ([]*carve.Node, error) {
@@ -53,5 +38,5 @@ func expandLMSAROM(n *carve.Node) ([]*carve.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []*carve.Node{carve.FromBytes(lmsaOutName(path.Base(n.Name)), out)}, nil
+	return []*carve.Node{carve.FromBytes(lenovo.OutName(path.Base(n.Name)), out)}, nil
 }

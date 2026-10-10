@@ -34,6 +34,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/lenovo"
 	"github.com/W-Floyd/go-unbrick/internal/linuxdev"
 	"github.com/W-Floyd/go-unbrick/internal/lp"
 	"github.com/W-Floyd/go-unbrick/internal/mcfg"
@@ -1078,10 +1079,12 @@ func reconArchive(path string, bag *facts.Bag) error {
 			} else {
 				fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
 			}
-		case !isContainer(kind):
+		case !isContainer(kind) && lenovo.OutName(base) == "":
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]%s\n", base, typeLabel(base, m.Head), summarize(m.Head, nil))
 		default:
+			// An LMSA ROM (.t/.x) is not a neutral container but cascade
+			// decrypts and descends into it, so read it whole like one.
 			_, data, err := srcfile.Open(path, base)
 			bar.Clear()
 			if err != nil {
@@ -1382,6 +1385,30 @@ func isContainer(k filetype.Kind) bool {
 }
 
 // cascade prints one node and recurses into its children up to depth levels.
+// lmsaWordlistEnv names a file of newline-separated passwords to try, beyond the
+// recovered default and lenovo.Candidates, when decrypting an LMSA ROM.
+const lmsaWordlistEnv = "LMSA_ROM_WORDLIST"
+
+// lmsaExtraPasswords gathers caller-supplied LMSA passwords: a single one from
+// the override env, then every line of a wordlist file if one is named. Both are
+// tried before the built-in candidates.
+func lmsaExtraPasswords() []string {
+	var extra []string
+	if p := os.Getenv(vendor.LMSAPasswordEnv); p != "" {
+		extra = append(extra, p)
+	}
+	if wl := os.Getenv(lmsaWordlistEnv); wl != "" {
+		if b, err := os.ReadFile(wl); err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				if s := strings.TrimRight(line, "\r"); s != "" {
+					extra = append(extra, s)
+				}
+			}
+		}
+	}
+	return extra
+}
+
 func cascade(name string, data []byte, indent string, depth int) {
 	// Detect on the full in-memory record: some magics (a 4K-sector GPT header)
 	// sit past the first 4 KiB. filetype only indexes what it needs, so this is cheap.
@@ -1391,6 +1418,16 @@ func cascade(name string, data []byte, indent string, depth int) {
 		collectKeys(data)
 	}
 	if depth <= 0 {
+		return
+	}
+	if lenovo.OutName(name) != "" {
+		if out, pw, err := lenovo.Recover(data, lmsaExtraPasswords()...); err == nil {
+			fmt.Printf("%s  decrypted with password %q\n", indent, pw)
+			cascade(lenovo.OutName(filepath.Base(name)), out, indent+"  ", depth-1)
+		} else {
+			fmt.Printf("%s  %s LMSA ROM: no known password (try %s or %s)\n",
+				indent, cWarn("[!]"), vendor.LMSAPasswordEnv, lmsaWordlistEnv)
+		}
 		return
 	}
 	switch kind {
@@ -1650,6 +1687,8 @@ func typeLabel(name string, head []byte) string {
 		return info.Label
 	}
 	switch strings.ToLower(filepath.Ext(name)) {
+	case ".t", ".x":
+		return "LMSA ROM (encrypted)"
 	case ".nvm":
 		return "SLCF subsidy"
 	case ".xml":

@@ -57,6 +57,39 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOutName(t *testing.T) {
+	for in, want := range map[string]string{
+		"MT6768_Android_scatter.t": "MT6768_Android_scatter.txt",
+		"rawprogram0.x":            "rawprogram0.xml",
+		"SCATTER.T":                "SCATTER.Txt", // extension matched case-insensitively
+		"flash_tool.exe":           "",
+		"scatter.txt":              "",
+	} {
+		if got := OutName(in); got != want {
+			t.Errorf("OutName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRecover(t *testing.T) {
+	enc, err := EncryptROM([]byte("hi"), "lenovo") // in Candidates, not the default
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, pw, err := Recover(enc)
+	if err != nil || pw != "lenovo" || string(data) != "hi" {
+		t.Fatalf("Recover = %q, %q, %v", data, pw, err)
+	}
+	// An unknown password is found only when supplied as an extra.
+	enc2, _ := EncryptROM([]byte("hi"), "zzz-not-listed")
+	if _, _, err := Recover(enc2); err != ErrWrongPassword {
+		t.Fatalf("Recover without hint = %v, want ErrWrongPassword", err)
+	}
+	if _, pw, err := Recover(enc2, "zzz-not-listed"); err != nil || pw != "zzz-not-listed" {
+		t.Fatalf("Recover with hint = %q, %v", pw, err)
+	}
+}
+
 func TestWrongPassword(t *testing.T) {
 	enc, err := EncryptROM([]byte("scatter"), "right")
 	if err != nil {

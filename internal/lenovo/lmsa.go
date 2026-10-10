@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // DefaultPassword is Configurations.DefaultKey as the LMSA endpoint returns it —
@@ -53,6 +54,55 @@ const (
 // ErrWrongPassword is returned when the framed plaintext's magic does not match,
 // which almost always means the supplied password is wrong.
 var ErrWrongPassword = errors.New("lenovo: LMSA ROM magic mismatch (wrong password or corrupt file)")
+
+// Candidates are passwords Recover tries after DefaultPassword and any the
+// caller supplies — the EncryptFile sample's default and common Lenovo/MediaTek
+// strings. Derivation is PBKDF1-heavy (1000 hashes per attempt), so this is a
+// small curated list, not a brute force; supply a wordlist via Recover's extra
+// arguments for more.
+var Candidates = []string{
+	"osd", "lenovo", "Lenovo", "LENOVO", "motorola", "Motorola", "moto",
+	"lmsa", "LMSA", "mediatek", "MediaTek", "mtk", "MTK",
+	"DefaultDecryptPassword", "DefaultKey", "flashtool", "spflashtool",
+	"SoftwareFix", "RescueAndSmartAssistant",
+}
+
+// OutName maps an LMSA ROM filename to its decrypted name (foo.t→foo.txt,
+// foo.x→foo.xml), or "" if name is not one. The extension alone identifies
+// these: the ciphertext has no magic (its first bytes are a random IV and salt).
+func OutName(name string) string {
+	switch {
+	case strings.HasSuffix(strings.ToLower(name), ".t"):
+		return name + "xt"
+	case strings.HasSuffix(strings.ToLower(name), ".x"):
+		return name + "ml"
+	default:
+		return ""
+	}
+}
+
+// Recover decrypts src, trying extra passwords first, then DefaultPassword, then
+// Candidates. It returns the plaintext and the password that worked, or
+// ErrWrongPassword if none did. A structural problem (too short, not block
+// aligned) is returned immediately, since it is not a password issue.
+func Recover(src []byte, extra ...string) (data []byte, password string, err error) {
+	seen := map[string]bool{}
+	order := append(append(append([]string{}, extra...), DefaultPassword), Candidates...)
+	for _, pw := range order {
+		if seen[pw] {
+			continue
+		}
+		seen[pw] = true
+		data, err := DecryptROM(src, pw)
+		if err == nil {
+			return data, pw, nil
+		}
+		if !errors.Is(err, ErrWrongPassword) {
+			return nil, "", err
+		}
+	}
+	return nil, "", ErrWrongPassword
+}
 
 // DecryptROM decrypts one LMSA ROM file (.t/.x) and returns the original file
 // bytes (the .txt/.xml), after verifying the embedded SHA-256. password is
