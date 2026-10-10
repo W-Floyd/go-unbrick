@@ -118,6 +118,39 @@ func minu(a, b uint64) uint64 {
 	return b
 }
 
+// OutputSize returns the raw image size a sparse blob expands to, read from its
+// header (total_blks × blk_sz) without decoding — O(1), so a 45 GiB userdata is
+// cheap to report. A non-sparse blob returns its own length.
+func OutputSize(blob []byte) (int64, error) {
+	if !IsSparse(blob) {
+		return int64(len(blob)), nil
+	}
+	if len(blob) < 28 {
+		return 0, fmt.Errorf("sparse: header truncated (%d bytes)", len(blob))
+	}
+	le := binary.LittleEndian
+	blkSz := le.Uint32(blob[12:16])
+	totalBlks := le.Uint32(blob[16:20])
+	return int64(totalBlks) * int64(blkSz), nil
+}
+
+// Prefix expands just the first n bytes of the raw image, enough to identify its
+// filesystem without materializing the whole thing. Don't-care regions read as
+// zero. A non-sparse blob returns its own first n bytes.
+func Prefix(blob []byte, n int) ([]byte, error) {
+	if !IsSparse(blob) {
+		if n > len(blob) {
+			n = len(blob)
+		}
+		return blob[:n], nil
+	}
+	buf := make([]byte, n)
+	if _, err := CopyRange(blob, 0, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
 // Decode expands a sparse image to its raw form. A non-sparse blob is returned
 // unchanged, so callers can pass through images that are already raw.
 func Decode(blob []byte) ([]byte, error) {

@@ -914,11 +914,15 @@ func reconSparse(path string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := sparse.Decode(data)
+	size, err := sparse.OutputSize(data)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("  Sparse:  expands to %s; inner: %s\n", humanBytes(int64(len(raw))), filetype.Detect(raw))
+	inner := filetype.Unknown
+	if pre, err := sparse.Prefix(data, 64<<10); err == nil {
+		inner = filetype.Detect(pre)
+	}
+	fmt.Printf("  Sparse:  expands to %s; inner: %s\n", humanBytes(size), inner)
 	return nil
 }
 
@@ -1473,6 +1477,12 @@ func cascade(name string, data []byte, indent string, depth int) {
 	case filetype.AndroidBoot, filetype.AndroidVendorBoot:
 		descendBootRamdisk(data, indent+"  ")
 	case filetype.SparseImage:
+		// summarize already named the expanded size and inner FS from the header.
+		// Only expand the whole image when it is small enough to descend into; a
+		// 45 GiB userdata is left at that one line rather than materialized.
+		if size, err := sparse.OutputSize(data); err != nil || size > maxCascadeRead {
+			return
+		}
 		if raw, err := sparse.Decode(data); err == nil {
 			cascade("(unsparsed)", raw, indent+"  ", depth-1)
 		}
@@ -1779,8 +1789,14 @@ func summarize(head, data []byte) string {
 		if data == nil {
 			return ""
 		}
-		if raw, err := sparse.Decode(data); err == nil {
-			return fmt.Sprintf(" — expands to %s (%s)", humanBytes(int64(len(raw))), filetype.Detect(raw))
+		// Read the expanded size from the header and detect the inner FS from a
+		// small prefix — never expand the whole image (a 45 GiB userdata hangs).
+		if size, err := sparse.OutputSize(data); err == nil {
+			inner := filetype.Unknown
+			if pre, err := sparse.Prefix(data, 64<<10); err == nil {
+				inner = filetype.Detect(pre)
+			}
+			return fmt.Sprintf(" — expands to %s (%s)", humanBytes(size), inner)
 		}
 	case filetype.Ext4, filetype.FAT:
 		if data == nil {
