@@ -21,6 +21,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
@@ -404,6 +405,9 @@ func FactProviders() []facts.Provider {
 		// the fact as our interpretation, not a raw read, for learning.
 		socRule(SourceImage, "ELF "),
 		socRule(SourceXBL, "xbl "),
+		// Fallback when no image named the silicon: map the board platform
+		// codename (ro.board.platform, e.g. "sun") to the catalog's SoC name.
+		socFromPlatform(),
 		// A boot or recovery ramdisk names the device and build, unless its
 		// brand's driver says its copy is stale (see StaleRamdiskProps).
 		RamdiskProp(facts.Codename, ramdiskTrusted, "ro.product.bootimage.device", "ro.product.vendor.device", "ro.product.device"),
@@ -618,6 +622,33 @@ func commonName(subject string) string {
 func chainedName(source string) bool {
 	f := strings.Fields(source)
 	return len(f) > 0 && strings.HasPrefix(strings.ToLower(filepath.Base(f[len(f)-1])), "vbmeta_")
+}
+
+// socFromPlatform resolves the SoC from the board platform codename
+// (ro.board.platform) through the catalog variant table. It is the fallback for
+// a package where no image's QC version named the silicon, so it is priced above
+// socRule and only taken when the image-derived path is unavailable.
+func socFromPlatform() facts.Rule {
+	return facts.Rule{
+		Out: facts.SoC.Name(), In: []string{facts.BoardPlatform.Name(), facts.SourceCatalog.Name()}, Price: 20, Level: facts.Derived,
+		Fn: func(b *facts.Bag) (bool, error) {
+			plat, ok := facts.Get(b, facts.BoardPlatform)
+			if !ok || plat == "" {
+				return false, nil
+			}
+			cat, err := catalog.Default()
+			if err != nil || cat == nil {
+				return false, nil
+			}
+			soc := cat.ResolveVariant(plat, "")
+			if soc == "" {
+				return false, nil
+			}
+			facts.Set(b, facts.SoC, soc, facts.Provenance{
+				Source: "catalog variant " + plat, Authority: facts.Derived})
+			return true, nil
+		},
+	}
 }
 
 // socRule reads the SoC an image was built for from in.
