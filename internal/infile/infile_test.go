@@ -223,3 +223,52 @@ func TestRemoteStalledTransferRetried(t *testing.T) {
 		t.Errorf("%d range requests, want a retry after the stall", gets.Load())
 	}
 }
+
+// TestRemoteRateLimitedUsesCache: a server that starts refusing (429) still
+// serves what an earlier run cached; what was never fetched stays an error.
+func TestRemoteRateLimitedUsesCache(t *testing.T) {
+	reset(t)
+	body := randBytes(3 * chunkSize)
+	var limited atomic.Bool
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if limited.Load() {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		http.ServeContent(w, r, "f", time.Unix(0, 0), bytes.NewReader(body))
+	}))
+	t.Cleanup(s.Close)
+	var warned string
+	saved := Warn
+	Warn = func(f string, a ...any) { warned = fmt.Sprintf(f, a...) }
+	t.Cleanup(func() { Warn = saved })
+
+	f, err := Open(s.URL + "/fw.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := make([]byte, 100)
+	if _, err := f.ReadAt(head, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	forget()
+	limited.Store(true)
+
+	f, err = Open(s.URL + "/fw.zip")
+	if err != nil {
+		t.Fatalf("rate-limited open with a cache: %v", err)
+	}
+	defer f.Close()
+	got := make([]byte, 100)
+	if _, err := f.ReadAt(got, 0); err != nil || !bytes.Equal(got, body[:100]) {
+		t.Fatalf("cached range: %v", err)
+	}
+	if _, err := f.ReadAt(got, 2*chunkSize); err == nil {
+		t.Error("an uncached range read while rate-limited")
+	}
+	if !strings.Contains(warned, "cached copy") {
+		t.Errorf("no warning: %q", warned)
+	}
+}

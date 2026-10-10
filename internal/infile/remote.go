@@ -190,12 +190,46 @@ func newRemote(u string) (*remote, error) {
 		}
 	}
 	if err != nil {
-		return nil, err
+		// Unreachable (rate-limited, offline): what is cached of it can
+		// still be read, though not checked against the server's copy.
+		cm, ok := cachedMeta(u)
+		if !ok {
+			return nil, err
+		}
+		m = cm
+		defer Warn("%s: %s; using the cached copy, not checked for changes", Base(u), strings.TrimPrefix(err.Error(), u+": "))
 	}
 	if m.Filename != "" && m.Filename != "." && m.Filename != "/" {
 		filenames.Store(u, m.Filename)
 	}
 	return openEntry(m)
+}
+
+// Warn reports a degraded read the caller should know of; stderr by default.
+var Warn = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+}
+
+// cachedMeta is the most recently written cache entry for u.
+func cachedMeta(u string) (meta, bool) {
+	root, err := cacheRoot()
+	if err != nil {
+		return meta{}, false
+	}
+	paths, _ := filepath.Glob(filepath.Join(root, "*", "meta.json"))
+	var best meta
+	var bestAt time.Time
+	for _, p := range paths {
+		var m meta
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &m) == nil && m.URL == u && fi.ModTime().After(bestAt) {
+			best, bestAt = m, fi.ModTime()
+		}
+	}
+	return best, !bestAt.IsZero()
 }
 
 // probe asks for one byte — some CDNs answer HEAD differently from GET — to
@@ -269,7 +303,11 @@ func openEntry(m meta) (*remote, error) {
 
 	var old meta
 	if b, err := os.ReadFile(metaPath); err == nil && json.Unmarshal(b, &old) == nil && old.same(m) {
-		// reuse
+		// Reused; a name the server now gives is kept for an offline run.
+		if m.Filename != "" && old.Filename != m.Filename {
+			b, _ := json.MarshalIndent(m, "", "  ")
+			_ = os.WriteFile(metaPath, b, 0o644)
+		}
 	} else {
 		if err := os.RemoveAll(dir); err != nil {
 			return nil, err
