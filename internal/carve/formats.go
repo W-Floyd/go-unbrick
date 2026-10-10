@@ -228,16 +228,19 @@ func expandPayload(n *Node) ([]*Node, error) {
 	return out, nil
 }
 
+// expandSparse presents the raw image as one child, read by range off the sparse
+// blob rather than materialized — so a multi-GiB ext4/erofs inside a sparse image
+// is walked lazily by the filesystem expanders, not buffered whole.
 func expandSparse(n *Node) ([]*Node, error) {
 	b, err := n.Bytes()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := sparse.Decode(b)
+	ra, size, err := sparse.ReaderAt(b)
 	if err != nil {
 		return nil, err
 	}
-	return []*Node{FromBytes("unsparsed", raw)}, nil
+	return []*Node{FromReaderAt("unsparsed", ra, size)}, nil
 }
 
 // expandSuper maps super's logical partitions through their extents.

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 // Magic is the little-endian sparse file magic (0xed26ff3a).
@@ -149,6 +150,52 @@ func Prefix(blob []byte, n int) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+// ReaderAt presents a sparse blob as a random-access raw image without expanding
+// it: each ReadAt maps to a CopyRange window, and don't-care regions read as
+// zero. This lets a filesystem reader (ext4fs, erofs) walk a multi-GiB image by
+// range instead of materializing it. A non-sparse blob is wrapped as-is. The
+// returned size is the raw (expanded) size.
+func ReaderAt(blob []byte) (io.ReaderAt, int64, error) {
+	size, err := OutputSize(blob)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !IsSparse(blob) {
+		return bytes.NewReader(blob), size, nil
+	}
+	return &sparseReaderAt{blob: blob, size: size}, size, nil
+}
+
+type sparseReaderAt struct {
+	blob []byte
+	size int64
+}
+
+// ReadAt fills p from the raw image at off. CopyRange writes only raw/fill data,
+// so p is zeroed first for the don't-care (and unwritten) regions. It costs one
+// chunk-table walk per call.
+func (s *sparseReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fmt.Errorf("sparse: negative offset %d", off)
+	}
+	if off >= s.size {
+		return 0, io.EOF
+	}
+	n := p
+	var atEnd error
+	if off+int64(len(p)) > s.size {
+		n = p[:s.size-off]
+		atEnd = io.EOF
+	}
+	for i := range n {
+		n[i] = 0
+	}
+	if _, err := CopyRange(s.blob, uint64(off), n); err != nil {
+		return 0, err
+	}
+	return len(n), atEnd
 }
 
 // Decode expands a sparse image to its raw form. A non-sparse blob is returned

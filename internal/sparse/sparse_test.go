@@ -3,6 +3,7 @@ package sparse
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"testing"
 )
 
@@ -86,5 +87,44 @@ func TestDecodePassthroughNonSparse(t *testing.T) {
 	}
 	if IsSparse(raw) {
 		t.Error("IsSparse false positive")
+	}
+}
+
+func TestReaderAtMatchesDecode(t *testing.T) {
+	blk := uint32(16)
+	blob := buildSparse(blk, []func(*bytes.Buffer){
+		rawChunk(blk, bytes.Repeat([]byte{0xAB}, 32)), // 2 blocks
+		fillChunk(3, [4]byte{1, 2, 3, 4}),             // 3 blocks
+		dontCareChunk(4),                              // 4 blocks (zeros)
+		rawChunk(blk, bytes.Repeat([]byte{0xCD}, 16)), // 1 block
+	})
+	// buildSparse writes total_blks=0; set the real count (2+3+4+1=10).
+	binary.LittleEndian.PutUint32(blob[16:20], 10)
+
+	want, err := Decode(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, size, err := ReaderAt(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != int64(len(want)) {
+		t.Fatalf("size = %d, want %d", size, len(want))
+	}
+	for _, w := range [][2]int{{0, len(want)}, {0, 5}, {30, 10}, {78, 20}, {155, 5}} {
+		got := make([]byte, w[1])
+		n, _ := ra.ReadAt(got, int64(w[0]))
+		if !bytes.Equal(got[:n], want[w[0]:w[0]+n]) {
+			t.Fatalf("ReadAt(off=%d,len=%d): got %x, want %x", w[0], w[1], got[:n], want[w[0]:w[0]+n])
+		}
+	}
+	// A read straddling the end returns the tail plus io.EOF.
+	got := make([]byte, 10)
+	if n, err := ra.ReadAt(got, size-3); n != 3 || err != io.EOF {
+		t.Fatalf("tail read: n=%d err=%v, want 3, EOF", n, err)
+	}
+	if _, err := ra.ReadAt(got, size); err != io.EOF {
+		t.Fatalf("read at EOF: err=%v, want EOF", err)
 	}
 }
