@@ -10,9 +10,11 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -1037,6 +1039,9 @@ func reconArchive(path string, bag *facts.Bag) error {
 		whole := ""
 		if kind == filetype.Unknown {
 			whole = wholeLabel(path, base, m)
+			if whole == "" && typeLabel(base, m.Head) == "unknown" {
+				whole = pieceLabel(base, members)
+			}
 		}
 		switch {
 		case whole != "":
@@ -1048,9 +1053,20 @@ func reconArchive(path string, bag *facts.Bag) error {
 		case kind == filetype.Tar:
 			printNestedTar(path, m.Name, "    ", bar)
 		case int64(m.Size) > maxCascadeRead:
-			// Don't expand anything too big; label it and move on.
+			// Don't expand anything too big; label it, with the build its
+			// own build.prop states when it can be read in place.
+			fp := ""
+			if n, err := carvePath(path, m.Name); err == nil && n.RandomAccess() {
+				if ra, err := n.ReaderAt(); err == nil {
+					fp = partitionFingerprint(ra, n.Size, m.Head)
+				}
+			}
 			bar.Clear()
-			fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
+			if fp != "" {
+				fmt.Printf("    %-26s [%s]  %s — %s\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)), fp)
+			} else {
+				fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
+			}
 		case !isContainer(kind):
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]%s\n", base, typeLabel(base, m.Head), summarize(m.Head, nil))
@@ -1164,7 +1180,12 @@ const maxWholeRead = 1 << 20
 // bytes, or returns "": one that is zeros throughout, as packages ship to wipe
 // a partition (Xiaomi's multi_image.mbn for multiimgoem), or a backup GPT.
 func wholeLabel(path, base string, m srcfile.Member) string {
-	if m.Size == 0 || m.Size > maxWholeRead {
+	// A wipe image is read further: only zeros are, and its head says so.
+	limit := uint64(maxWholeRead)
+	if bytes.Count(m.Head, []byte{0}) == len(m.Head) {
+		limit = maxBlankRead
+	}
+	if m.Size == 0 || m.Size > limit {
 		return ""
 	}
 	data := m.Head
@@ -1182,9 +1203,41 @@ func wholeLabel(path, base string, m srcfile.Member) string {
 			return fmt.Sprintf("[gpt backup]  %d partitions", len(t.Partitions))
 		}
 		return "[gpt backup]"
+	case lp.IsSuper(data):
+		if md, err := lp.Parse(data); err == nil {
+			var names []string
+			for _, p := range md.Partitions {
+				names = append(names, p.Name)
+			}
+			return fmt.Sprintf("[super metadata]  %d partitions: %s", len(names), strings.Join(names, ", "))
+		}
+		return "[super metadata]"
 	}
 	return ""
 }
+
+// pieceRe is how a sparse image split for QFIL names its pieces: name_N.img,
+// each written at the offset the rawprogram XML gives.
+var pieceRe = regexp.MustCompile(`^(.+)_(\d+)\.img$`)
+
+// pieceLabel labels a piece of a split partition image, which carries no
+// format of its own past the first, or "": the member must be one of a
+// name_N.img series that has a first piece.
+func pieceLabel(base string, members []srcfile.Member) string {
+	m := pieceRe.FindStringSubmatch(base)
+	if m == nil {
+		return ""
+	}
+	for _, o := range members {
+		if filepath.Base(o.Name) == m[1]+"_1.img" {
+			return fmt.Sprintf("[%s, piece %s]", m[1], m[2])
+		}
+	}
+	return ""
+}
+
+// maxBlankRead caps the member read whole to prove it is zeros throughout.
+const maxBlankRead = 64 << 20
 
 // describeOTAMember labels an OTA package's descriptive members (metadata,
 // otacert, the protobufs), which carry no magic for typeLabel to go on.
@@ -1562,6 +1615,19 @@ func typeLabel(name string, head []byte) string {
 		return "lz4"
 	case filetype.PE:
 		return "PE executable"
+	case filetype.F2FS:
+		return "f2fs"
+	case filetype.JPEG:
+		return "JPEG"
+	case filetype.PNG:
+		return "PNG"
+	case filetype.WinHelp:
+		return "WinHelp"
+	case filetype.TypeLib:
+		return "COM type library"
+	}
+	if lp.IsSuper(head) {
+		return "super metadata"
 	}
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
 		return info.Label
@@ -1583,7 +1649,32 @@ func typeLabel(name string, head []byte) string {
 	} else if ok {
 		return "text"
 	}
+	if highEntropy(head) {
+		return "encrypted or compressed"
+	}
 	return "unknown"
+}
+
+// highEntropy reports bytes as close to uniform as ciphertext or compressed
+// data, and enough of them to tell: what is left once no format is seen.
+func highEntropy(b []byte) bool {
+	if len(b) < 1024 {
+		return false
+	}
+	var count [256]int
+	for _, c := range b {
+		count[c]++
+	}
+	h := 0.0
+	for _, n := range count {
+		if n > 0 {
+			p := float64(n) / float64(len(b))
+			h -= p * math.Log2(p)
+		}
+	}
+	// A sample of n bytes from a uniform source falls short of 8 bits by
+	// about 255/(2n ln 2); allow a little more.
+	return h > 8-255/(float64(len(b))*math.Ln2)-0.05
 }
 
 // summarize returns a short " — detail" for a node when full data is available;

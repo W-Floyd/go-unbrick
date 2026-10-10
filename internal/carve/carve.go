@@ -90,6 +90,9 @@ func FromStream(name string, size int64, open func() (io.ReadCloser, error)) *No
 	return &Node{Name: name, Size: size, stream: open}
 }
 
+// RandomAccess reports whether n reads at random without buffering it whole.
+func (n *Node) RandomAccess() bool { return n.at != nil }
+
 // Partial says why n's children may not be all of them, once expanded; ""
 // when they are.
 func (n *Node) Partial() string { return n.partial }

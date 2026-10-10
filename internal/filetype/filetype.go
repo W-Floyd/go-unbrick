@@ -33,6 +33,11 @@ const (
 	Gzip              Kind = "gzip"
 	LZ4               Kind = "lz4"
 	PE                Kind = "pe"
+	F2FS              Kind = "f2fs"
+	JPEG              Kind = "jpeg"
+	PNG               Kind = "png"
+	WinHelp           Kind = "winhelp"     // .hlp, beside Windows flash tools
+	TypeLib           Kind = "com-typelib" // .tlb, a COM type library
 	Unknown           Kind = "unknown"
 )
 
@@ -86,6 +91,16 @@ func Detect(head []byte) Kind {
 		return Ext4
 	case len(head) >= 1028 && le.Uint32(head[1024:1028]) == 0xe0f5e1e2:
 		return EROFS
+	case len(head) >= 1028 && le.Uint32(head[1024:1028]) == 0xf2f52010:
+		return F2FS
+	case len(head) >= 3 && bytes.Equal(head[:3], []byte{0xff, 0xd8, 0xff}):
+		return JPEG
+	case len(head) >= 8 && bytes.Equal(head[:8], []byte("\x89PNG\r\n\x1a\n")):
+		return PNG
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte{0x3f, 0x5f, 0x03, 0x00}):
+		return WinHelp
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte("MSFT")):
+		return TypeLib
 	default:
 		return Unknown
 	}
