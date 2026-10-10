@@ -51,8 +51,14 @@ func Recognizers() []facts.Recognizer {
 		case filetype.ELF:
 			// A signed image is a fact about itself; a package full of them is not
 			// one image, so inside a container this is left to the recon walk.
+			// Except its XBL: the first stage is built per SoC, so it names the
+			// package's.
 			if !f.Top {
-				return nil
+				if !strings.EqualFold(f.Name, "xbl.elf") {
+					return nil
+				}
+				facts.Set(b, SourceXBL, f.Data, facts.Provenance{Source: f.From, Authority: facts.Attested})
+				return []string{SourceXBL.Name()}
 			}
 			facts.Set(b, SourceImage, f.Data,
 				facts.Provenance{Source: f.From, Authority: facts.Attested})
@@ -66,6 +72,9 @@ func Recognizers() []facts.Recognizer {
 // Whole-file, because every reading of it (the signature chain, the ramdisk,
 // the build string) needs a different part.
 var SourceImage = facts.Key[[]byte]("source:image", facts.Fmt(facts.ByteLen))
+
+// SourceXBL is a package's xbl.elf.
+var SourceXBL = facts.Key[[]byte]("source:xbl", facts.Fmt(facts.ByteLen))
 
 // Keys whose values are cert identities. Two facts, not one: the chain a signed
 // image carries is the boot-time trust, the certs in recovery's otacerts.zip are
@@ -347,22 +356,8 @@ func FactProviders() []facts.Provider {
 		// value is the catalog's marketing spelling of that silicon (bootelf
 		// resolves it), so SourceCatalog is a declared input — which also marks
 		// the fact as our interpretation, not a raw read, for learning.
-		facts.Rule{
-			Out: facts.SoC.Name(), In: []string{SourceImage.Name(), facts.SourceCatalog.Name()}, Price: 5, Level: facts.Derived,
-			Fn: func(b *facts.Bag) (bool, error) {
-				data, ok := facts.Get(b, SourceImage)
-				if !ok {
-					return false, nil
-				}
-				info, err := bootelf.Analyze(data)
-				if err != nil || info.TargetSoC == "" {
-					return false, nil
-				}
-				facts.Set(b, facts.SoC, info.TargetSoC, facts.Provenance{
-					Source: "ELF " + strings.TrimSpace(info.QCVersion), Authority: facts.Derived})
-				return true, nil
-			},
-		},
+		socRule(SourceImage, "ELF "),
+		socRule(SourceXBL, "xbl "),
 	}...)
 }
 
@@ -572,4 +567,24 @@ func commonName(subject string) string {
 func chainedName(source string) bool {
 	f := strings.Fields(source)
 	return len(f) > 0 && strings.HasPrefix(strings.ToLower(filepath.Base(f[len(f)-1])), "vbmeta_")
+}
+
+// socRule reads the SoC an image was built for from in.
+func socRule(in facts.Fact[[]byte], label string) facts.Rule {
+	return facts.Rule{
+		Out: facts.SoC.Name(), In: []string{in.Name(), facts.SourceCatalog.Name()}, Price: 5, Level: facts.Derived,
+		Fn: func(b *facts.Bag) (bool, error) {
+			data, ok := facts.Get(b, in)
+			if !ok {
+				return false, nil
+			}
+			info, err := bootelf.Analyze(data)
+			if err != nil || info.TargetSoC == "" {
+				return false, nil
+			}
+			facts.Set(b, facts.SoC, info.TargetSoC, facts.Provenance{
+				Source: label + strings.TrimSpace(info.QCVersion), Authority: facts.Derived})
+			return true, nil
+		},
+	}
 }

@@ -287,8 +287,16 @@ func identityFactLines(b *facts.Bag) []string {
 		add("Model: %s", model)
 	}
 	var plat []string
+	soc, hasSoC := facts.Get(b, facts.SoC)
+	if hasSoC {
+		plat = append(plat, soc)
+	}
 	if v, ok := facts.Get(b, facts.BoardPlatform); ok {
-		plat = append(plat, v)
+		if hasSoC {
+			plat[0] += " (" + v + ")"
+		} else {
+			plat = append(plat, v)
+		}
 	}
 	if v, ok := facts.Get(b, facts.FirstAPILevel); ok {
 		plat = append(plat, fmt.Sprintf("launched on API %d", v))

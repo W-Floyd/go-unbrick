@@ -35,6 +35,7 @@ func (samsung) FactProviders() []facts.Provider {
 		prop(facts.SKU, "ro.product.bootimage.model", "ro.product.vendor.model", "ro.product.model"),
 		prop(facts.BuildFingerprint, "ro.bootimage.build.fingerprint", "ro.vendor.build.fingerprint"),
 		prop(facts.SoftwareVersion, "ro.build.PDA", "ro.bootimage.build.version.incremental"),
+		prop(facts.BoardPlatform, "ro.board.platform", "ro.product.board"),
 	}
 }
 
