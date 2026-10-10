@@ -18,6 +18,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/dtbo"
+	"github.com/W-Floyd/go-unbrick/internal/ext4fs"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/lp"
 	"github.com/W-Floyd/go-unbrick/internal/modem"
@@ -44,7 +45,7 @@ func init() {
 		Expander{Kind: "sparse", Match: kind(filetype.SparseImage), Expand: expandSparse},
 		Expander{Kind: "super", Match: func(_ *Node, h []byte) bool { return lp.IsSuper(h) }, Expand: expandSuper},
 		Expander{Kind: "fat", Match: kind(filetype.FAT), Expand: expandFirmwareFS, FS: firmwareFS},
-		Expander{Kind: "ext4", Match: kind(filetype.Ext4), Expand: expandFirmwareFS, FS: firmwareFS},
+		Expander{Kind: "ext4", Match: kind(filetype.Ext4), Expand: expandExt4, FS: ext4FS},
 		Expander{Kind: "erofs", Match: kind(filetype.EROFS), Expand: expandEROFS, FS: erofsFS},
 		Expander{Kind: "boot", Match: kind(filetype.AndroidBoot, filetype.AndroidVendorBoot), Expand: expandBoot},
 		Expander{Kind: "single_n_lonely", Match: kind(filetype.SingleNLonely), Expand: expandSingleNLonely},
@@ -293,6 +294,44 @@ func expandFirmwareFS(n *Node) ([]*Node, error) {
 		}
 	}
 	return out, nil
+}
+
+// ext4FS reads an ext4 image in place: a file is reached through the
+// directories on its path, not by holding the image.
+func ext4FS(n *Node) (fs.FS, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	return ext4fs.Open(ra, n.Size)
+}
+
+// maxFirmwareImage is the largest ext4 image listed as a firmware image is
+// (in memory, its split .mdt images joined); a partition past it is walked
+// in place.
+const maxFirmwareImage = 256 << 20
+
+func expandExt4(n *Node) ([]*Node, error) {
+	if n.Size <= maxFirmwareImage {
+		return expandFirmwareFS(n)
+	}
+	img, err := ext4FS(n)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	err = fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
+		return nil
+	})
+	return out, err
 }
 
 func erofsFS(n *Node) (fs.FS, error) {

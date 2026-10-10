@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1072,6 +1073,33 @@ func reconArchive(path string, bag *facts.Bag) error {
 	return nil
 }
 
+// partitionFingerprint is the build fingerprint a partition image's own
+// build.prop states, read in place, or "".
+func partitionFingerprint(ra io.ReaderAt, size int64, head []byte) string {
+	switch filetype.Detect(head) {
+	case filetype.Ext4, filetype.EROFS:
+	default:
+		return ""
+	}
+	fsys, err := carve.FromReaderAt("", ra, size).FS()
+	if err != nil {
+		return ""
+	}
+	for _, p := range []string{"build.prop", "etc/build.prop", "system/build.prop"} {
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil || len(data) > 1<<20 {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok && strings.HasPrefix(k, "ro.") && strings.HasSuffix(k, "build.fingerprint") && v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
 // printNestedTar lists a tar member's own members (an Odin .tar.md5),
 // cascading into each small enough to read; an lz4 one is read through its
 // decompression.
@@ -1204,8 +1232,13 @@ func printPayload(zipPath, name string, size int64, indent string) {
 		if psize > maxCascadeRead {
 			head := make([]byte, 8192)
 			ra.ReadAt(head, 0)
+			fp := partitionFingerprint(ra, psize, head)
 			bar.Clear()
-			fmt.Printf("%s  %-24s [%s]  %s (not expanded)\n", indent, pn, typeLabel(pn, head), humanBytes(psize))
+			if fp != "" {
+				fmt.Printf("%s  %-24s [%s]  %s — %s\n", indent, pn, typeLabel(pn, head), humanBytes(psize), fp)
+			} else {
+				fmt.Printf("%s  %-24s [%s]  %s (not expanded)\n", indent, pn, typeLabel(pn, head), humanBytes(psize))
+			}
 			bar.Advance()
 			continue
 		}

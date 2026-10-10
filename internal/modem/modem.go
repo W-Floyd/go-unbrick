@@ -15,16 +15,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"path"
 	"regexp"
 	"sort"
 	"strings"
 
-	ext4 "github.com/W-Floyd/go-ext4"
-
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/ext4fs"
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 )
 
@@ -93,51 +92,6 @@ type Entry struct {
 	Size uint64
 }
 
-// ext4 superblock s_feature_incompat is a u32 LE at offset 0x60; INCOMPAT_FLEX_BG
-// is bit 0x200.
-const (
-	ext4FeatIncompatOff = 1024 + 0x60
-	ext4FlexBG          = 0x200
-)
-
-// ensureFlexBg works around go-ext4's refusal to read a filesystem without the
-// flex_bg incompat flag. The reader never actually depends on flex_bg — it locates
-// each block group's inode table from that group's descriptor, which is correct
-// with or without the flag; flex_bg only changes where those tables physically
-// sit. Some Motorola partitions (dspso, a small single-group image) are built
-// without it. Set the flag on a copy so the reader accepts them; nothing reads it
-// back. Only a non-flex_bg image is copied, and those are the small ones.
-func ensureFlexBg(raw []byte) []byte {
-	if len(raw) < ext4FeatIncompatOff+4 {
-		return raw
-	}
-	feat := binary.LittleEndian.Uint32(raw[ext4FeatIncompatOff:])
-	if feat&ext4FlexBG != 0 {
-		return raw
-	}
-	out := make([]byte, len(raw))
-	copy(out, raw)
-	binary.LittleEndian.PutUint32(out[ext4FeatIncompatOff:], feat|ext4FlexBG)
-	return out
-}
-
-func openExt4(raw []byte) (*ext4.BlockGroupDescriptorList, *bytes.Reader, error) {
-	raw = ensureFlexBg(raw)
-	r := bytes.NewReader(raw)
-	if _, err := r.Seek(ext4.Superblock0Offset, io.SeekStart); err != nil {
-		return nil, nil, err
-	}
-	sb, err := ext4.NewSuperblockWithReader(r)
-	if err != nil {
-		return nil, nil, err
-	}
-	bgdl, err := ext4.NewBlockGroupDescriptorListWithReadSeeker(r, sb)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bgdl, r, nil
-}
-
 // List returns every regular file in the modem image, sorted by path.
 func List(img []byte) ([]Entry, error) {
 	raw, err := Resolve(img)
@@ -147,36 +101,28 @@ func List(img []byte) ([]Entry, error) {
 	if isFAT(raw) {
 		return fatList(raw)
 	}
-	bgdl, r, err := openExt4(raw)
-	if err != nil {
-		return nil, err
-	}
-	root, err := bgdl.GetWithAbsoluteInode(ext4.InodeRootDirectory)
-	if err != nil {
-		return nil, err
-	}
-	dw, err := ext4.NewDirectoryWalk(r, root, ext4.InodeRootDirectory)
+	return ext4List(raw)
+}
+
+func ext4List(raw []byte) ([]Entry, error) {
+	fsys, err := ext4fs.Open(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
 		return nil, err
 	}
 	var out []Entry
-	for {
-		full, de, err := dw.Next()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, err
-		}
-		if !de.IsRegular() {
-			continue
+	err = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
 		}
 		size := uint64(0)
-		if bgd, err := bgdl.GetWithAbsoluteInode(int(de.Data().Inode)); err == nil {
-			if in, err := ext4.NewInodeWithReadSeeker(bgd, r, int(de.Data().Inode)); err == nil {
-				size = in.Size()
-			}
+		if info, err := d.Info(); err == nil {
+			size = uint64(info.Size())
 		}
-		out = append(out, Entry{Path: full, Size: size})
+		out = append(out, Entry{Path: p, Size: size})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
@@ -193,50 +139,30 @@ func Extract(img []byte, name string) ([]byte, error) {
 	if isFAT(raw) {
 		return fatExtract(raw, name)
 	}
-	bgdl, r, err := openExt4(raw)
-	if err != nil {
-		return nil, err
-	}
-	root, err := bgdl.GetWithAbsoluteInode(ext4.InodeRootDirectory)
-	if err != nil {
-		return nil, err
-	}
-	dw, err := ext4.NewDirectoryWalk(r, root, ext4.InodeRootDirectory)
+	fsys, err := ext4fs.Open(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
 		return nil, err
 	}
 	var match string
-	var inode int
-	for {
-		full, de, err := dw.Next()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, err
+	err = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
 		}
-		if !de.IsRegular() {
-			continue
-		}
-		if full == name || strings.HasSuffix(full, "/"+name) {
+		if p == name || strings.HasSuffix(p, "/"+name) {
 			if match != "" {
-				return nil, fmt.Errorf("modem: %q is ambiguous (%s and %s); use a full path", name, match, full)
+				return fmt.Errorf("modem: %q is ambiguous (%s and %s); use a full path", name, match, p)
 			}
-			match, inode = full, int(de.Data().Inode)
+			match = p
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if match == "" {
 		return nil, fmt.Errorf("modem: %q: %w", name, ErrNotFound)
 	}
-	bgd, err := bgdl.GetWithAbsoluteInode(inode)
-	if err != nil {
-		return nil, err
-	}
-	in, err := ext4.NewInodeWithReadSeeker(bgd, r, inode)
-	if err != nil {
-		return nil, err
-	}
-	en := ext4.NewExtentNavigatorWithReadSeeker(r, in)
-	return io.ReadAll(ext4.NewInodeReader(en))
+	return fs.ReadFile(fsys, match)
 }
 
 // mpssRe finds the modem's QC_IMAGE_VERSION_STRING (baseband/MPSS build), the

@@ -1,33 +1,8 @@
 package modem
 
 import (
-	"encoding/binary"
 	"testing"
 )
-
-// go-ext4 refuses a filesystem without the flex_bg flag though it never depends
-// on it. ensureFlexBg sets the flag on a copy for a non-flex_bg image (some
-// Motorola partitions, e.g. dspso, are built that way) and leaves a flex_bg
-// image — and its backing bytes — untouched.
-func TestEnsureFlexBg(t *testing.T) {
-	img := make([]byte, ext4FeatIncompatOff+4)
-	binary.LittleEndian.PutUint32(img[ext4FeatIncompatOff:], 0x42) // extents|filetype, no flex_bg
-
-	got := ensureFlexBg(img)
-	if binary.LittleEndian.Uint32(got[ext4FeatIncompatOff:])&ext4FlexBG == 0 {
-		t.Error("flex_bg not set on the returned image")
-	}
-	if binary.LittleEndian.Uint32(img[ext4FeatIncompatOff:])&ext4FlexBG != 0 {
-		t.Error("the original slice must not be mutated")
-	}
-
-	// An image that already has flex_bg is returned as-is (same backing array).
-	withFlag := make([]byte, ext4FeatIncompatOff+4)
-	binary.LittleEndian.PutUint32(withFlag[ext4FeatIncompatOff:], 0x42|ext4FlexBG)
-	if out := ensureFlexBg(withFlag); &out[0] != &withFlag[0] {
-		t.Error("a flex_bg image should not be copied")
-	}
-}
 
 func TestBaseband(t *testing.T) {
 	// A raw ext4 buffer (magic at 1024+0x38) with an MPSS version string embedded,
