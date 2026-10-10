@@ -263,6 +263,35 @@ type FactRecognizer interface {
 	FactRecognizers() []facts.Recognizer
 }
 
+// CompanionFinder is an optional Driver capability: naming the other packages
+// of the release a package belongs to (a fastboot package's OTA, or the
+// reverse), from how this OEM names and hosts them. It does no I/O: known is
+// the locations the caller has seen (the HTTP cache), which a name with parts
+// only the publisher knows can still be matched against.
+type CompanionFinder interface {
+	Companions(path string, known []string) []Companion
+}
+
+// Companion is another package of the same release.
+type Companion struct {
+	What string // e.g. "full OTA"
+	// URL is where it is, when derived whole or found in known. Otherwise
+	// Hint is its name with the parts that cannot be derived marked.
+	URL  string
+	Hint string
+}
+
+// Companions gathers every registered driver's suggestions for path.
+func Companions(path string, known []string) []Companion {
+	var out []Companion
+	for _, d := range Drivers() {
+		if cf, ok := d.(CompanionFinder); ok {
+			out = append(out, cf.Companions(path, known)...)
+		}
+	}
+	return out
+}
+
 // Recognizers gathers every registered driver's format recognizers.
 func Recognizers() []facts.Recognizer {
 	var out []facts.Recognizer

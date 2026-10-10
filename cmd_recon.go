@@ -49,7 +49,7 @@ import (
 // resolved through the vendor seam and vendor parsers.
 func newReconCmd() *cobra.Command {
 	var depth int
-	var carve, why string
+	var carve, why, with string
 	var verify, learn bool
 	c := &cobra.Command{
 		Use:   "recon <file | http(s) url>",
@@ -61,6 +61,7 @@ func newReconCmd() *cobra.Command {
 			reconWhy = why
 			reconVerify = verify
 			reconLearn = learn
+			reconWith = with
 			return runFileRecon(args[0])
 		},
 	}
@@ -69,6 +70,7 @@ func newReconCmd() *cobra.Command {
 	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
 	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
+	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach")
 	return c
 }
 
@@ -87,6 +89,8 @@ var (
 	// knowledge store — off by default, since an image's facts describe the
 	// artifact, not a unit in hand; on, they corroborate what devices report.
 	reconLearn bool
+	// reconWith is a companion package of the same release (--with).
+	reconWith string
 )
 
 // reconGraph is every derivation available to a recon: the neutral device and
@@ -111,7 +115,11 @@ func reconRecognizers() []facts.Recognizer {
 // reconIngest resolves everything a file can say about itself. What it contains
 // is discovered, not assumed: every member is offered to the recognizers, which
 // decide what each one is from its content, and only then does the planner run.
-func reconIngest(path string) (*facts.Bag, []facts.Finding) {
+//
+// A companion (--with) is another package of the same release, read for what
+// the first cannot reach. Its members join the same Bag only once both
+// packages, resolved on their own, name the same device and build.
+func reconIngest(path, with string) (*facts.Bag, []facts.Finding, error) {
 	bag := facts.NewBag()
 	if cat := activeCatalog(); cat != nil {
 		facts.Set(bag, facts.SourceCatalog, cat,
@@ -119,11 +127,53 @@ func reconIngest(path string) (*facts.Bag, []facts.Finding) {
 	}
 	bar := newBar()
 	defer bar.Clear()
-	if err := imgfacts.Ingest(bag, reconRecognizers(), path, bar); err != nil {
-		return bag, []facts.Finding{{Severity: facts.Warn, Message: "reading " + infile.Base(path) + ": " + err.Error()}}
+	raw := facts.NewBag()
+	if err := imgfacts.Ingest(raw, reconRecognizers(), path, bar); err != nil {
+		return bag, []facts.Finding{{Severity: facts.Warn, Message: "reading " + infile.Base(path) + ": " + err.Error()}}, nil
+	}
+	bag.Merge(raw)
+	if with != "" {
+		comp := facts.NewBag()
+		if err := imgfacts.Ingest(comp, reconRecognizers(), with, bar); err != nil {
+			return nil, nil, fmt.Errorf("reading %s: %w", infile.Base(with), err)
+		}
+		if err := sameRelease(path, raw, with, comp); err != nil {
+			return nil, nil, err
+		}
+		bag.Merge(comp)
 	}
 	res := reconGraph().ResolveAll(bag, facts.Options{Verify: reconVerify})
-	return bag, res.Findings
+	return bag, res.Findings, nil
+}
+
+// sameRelease resolves two packages apart and requires that they name the
+// same device and the same build: a codename alone is shared by every release
+// of a device.
+func sameRelease(pa string, a *facts.Bag, pb string, b *facts.Bag) error {
+	resolved := func(raw *facts.Bag) *facts.Bag {
+		r := facts.NewBag()
+		r.Merge(raw)
+		reconGraph().ResolveAll(r, facts.Options{})
+		return r
+	}
+	ra, rb := resolved(a), resolved(b)
+	na, nb := infile.Base(pa), infile.Base(pb)
+	build := false
+	for _, k := range []string{facts.Codename.Name(), facts.SoftwareVersion.Name(), facts.BuildFingerprint.Name()} {
+		va, okA := ra.Best(k)
+		vb, okB := rb.Best(k)
+		if !okA || !okB {
+			continue
+		}
+		if !ra.Equal(k, va.Data, vb.Data) {
+			return fmt.Errorf("%s is not the same release as %s: %s %s vs %s", nb, na, k, ra.Show(k, va.Data), rb.Show(k, vb.Data))
+		}
+		build = build || k != facts.Codename.Name()
+	}
+	if !build {
+		return fmt.Errorf("nothing shows %s is the same release as %s: they share no build number or fingerprint", nb, na)
+	}
+	return nil
 }
 
 // printWhy prints the derivation trace --why asked for.
@@ -538,7 +588,13 @@ func runFileRecon(path string) error {
 	resetCerts() // keys/certs are gathered during the walk, printed deduped after
 	// Resolve before rendering: the identity lines a package prints are the
 	// planner's answers, and the judgments about them print after everything else.
-	bag, findings := reconIngest(path)
+	bag, findings, err := reconIngest(path, reconWith)
+	if err != nil {
+		return err
+	}
+	if reconWith != "" {
+		fmt.Printf("  With:  %s\n", infile.Base(reconWith))
+	}
 	var rerr error
 	switch {
 	case archive:
@@ -578,7 +634,11 @@ func runFileRecon(path string) error {
 		// unrelated phones. JTAG-fallback keying is for a *live* device (still one
 		// unit), never a file.
 		if _, ok := facts.Get(bag, facts.Codename); ok {
-			learnFromRecon(bag, "", nil) // no unit in hand, so no serial to stitch by
+			detected := ""
+			if drv, ok := vendor.Detect(path); ok {
+				detected = drv.ID()
+			}
+			learnFromRecon(bag, "", nil, detected) // no unit in hand, so no serial to stitch by
 		} else {
 			fmt.Printf("\n  %s no codename in this artifact — a lone component is not device knowledge; not learned\n", cWarn("[i]"))
 		}
@@ -794,6 +854,9 @@ func reconArchive(path string, bag *facts.Bag) error {
 	// corroborates the patch/date. Read it before rendering so it shows and so a
 	// subsequent --learn contributes the true system identity.
 	learnSystemProps(path, bag)
+	if reconWith != "" {
+		learnSystemProps(reconWith, bag)
+	}
 	// What the package says about itself was resolved before this ran: the
 	// recognizers decided what each member is, the vendor's rules turned those
 	// into facts, and the planner cross-checked the ones two members both
@@ -810,6 +873,15 @@ func reconArchive(path string, bag *facts.Bag) error {
 	fmt.Printf("  Contents (%d members):\n", len(members))
 	if why := srcfile.Incomplete(path); why != "" {
 		fmt.Printf("    %s listing is partial: %s\n", cWarn("[!]"), why)
+		if reconWith == "" {
+			for _, c := range vendor.Companions(path, infile.Known()) {
+				where := c.URL
+				if where == "" {
+					where = c.Hint
+				}
+				fmt.Printf("    %s the release's %s may hold the rest: --with %s\n", cWarn("[i]"), c.What, where)
+			}
+		}
 	}
 	var chunkCount int
 	var chunkBytes int64
@@ -845,6 +917,9 @@ func reconArchive(path string, bag *facts.Bag) error {
 			// Don't expand anything too big; label it and move on.
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
+		case kind == filetype.Unknown && isBlank(path, base, m):
+			bar.Clear()
+			fmt.Printf("    %-26s [blank]  %s of zeros\n", base, humanBytes(int64(m.Size)))
 		case !isContainer(kind):
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]%s\n", base, typeLabel(base, m.Head), summarize(m.Head, nil))
@@ -869,6 +944,26 @@ func reconArchive(path string, bag *facts.Bag) error {
 
 // describeOTAMember labels an OTA package's descriptive members (metadata,
 // otacert, the protobufs), which carry no magic for typeLabel to go on.
+// maxBlankRead caps the member read whole to tell it is blank: a zero head
+// proves nothing about the rest.
+const maxBlankRead = 1 << 20
+
+// isBlank reports a non-empty member that is zeros throughout, as packages
+// ship to wipe a partition (Xiaomi's multi_image.mbn for multiimgoem).
+func isBlank(path, base string, m srcfile.Member) bool {
+	if m.Size == 0 || m.Size > maxBlankRead || bytes.ContainsFunc(m.Head, func(r rune) bool { return r != 0 }) {
+		return false
+	}
+	data := m.Head
+	if uint64(len(data)) < m.Size {
+		var err error
+		if _, data, err = srcfile.Open(path, base); err != nil {
+			return false
+		}
+	}
+	return uint64(len(data)) == m.Size && bytes.Count(data, []byte{0}) == len(data)
+}
+
 func describeOTAMember(path, base string, m srcfile.Member) (label, detail string, ok bool) {
 	if m.Size > 1<<16 {
 		return "", "", false

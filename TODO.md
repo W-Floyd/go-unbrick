@@ -10,6 +10,8 @@ On the tapas test URL
 a cold recon fetches 57 MiB (0.84%) and finds the head, `super.img`, and the
 tail cluster `patch5.xml`…`flash_gen_crc_list.py` (incl. `vbmeta_system`,
 `tz`, `dtbo`); 2.34 GB of members are not located, `abl`/`vbmeta` among them.
+Their facts are reachable meanwhile through `recon --with <the release's OTA>`,
+whose name `vendor.Companions` suggests (minus Xiaomi's content hash).
 
 Why (measured): the ISIZE total is 8.85 GB, so ~2.35 GB follows super, in
 large members; a ≥160 MB one sits right before `patch5.xml`. No landing in

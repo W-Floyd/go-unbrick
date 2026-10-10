@@ -296,6 +296,26 @@ func (b *Bag) Show(name string, data any) string {
 	return fmt.Sprintf("%v", data)
 }
 
+// Merge adds every value and derivation o holds to b.
+func (b *Bag) Merge(o *Bag) {
+	for name, vs := range o.vals {
+		b.vals[name] = append(b.vals[name], vs...)
+	}
+	for name, f := range o.eq {
+		if _, ok := b.eq[name]; !ok {
+			b.eq[name] = f
+		}
+	}
+	for name, f := range o.show {
+		if _, ok := b.show[name]; !ok {
+			b.show[name] = f
+		}
+	}
+	for name, ss := range o.trace {
+		b.trace[name] = append(b.trace[name], ss...)
+	}
+}
+
 // Trace returns the derivations recorded for a fact, in the order they ran.
 func (b *Bag) Trace(name string) []Step { return b.trace[name] }
 

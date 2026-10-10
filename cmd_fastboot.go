@@ -551,7 +551,7 @@ func printDeviceFacts(r *fastboot.DeviceRecon, cat *catalog.Catalog, why string,
 		}
 	}
 	if !noLearn {
-		learnFromRecon(bag, pin, []string{r.Serial})
+		learnFromRecon(bag, pin, []string{r.Serial}, "")
 	}
 }
 

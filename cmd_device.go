@@ -139,7 +139,7 @@ func runTransportRecon(tr transport.Transport, f deviceReconFlags, printSections
 	}
 
 	if !f.noLearn {
-		learnFromRecon(bag, f.pin, transportSerials(tr))
+		learnFromRecon(bag, f.pin, transportSerials(tr), "")
 	}
 	return nil
 }
@@ -159,8 +159,9 @@ func transportSerials(tr transport.Transport) []string {
 // device session and commits the accumulated union instead, so recons of one
 // physical unit across routes stitch into a single matching set. It is
 // best-effort: a device with neither key, or a write failure, is silently
-// skipped — learning must never break a recon.
-func learnFromRecon(bag *facts.Bag, pin string, serials []string) {
+// skipped — learning must never break a recon. detected is the vendor a file
+// recon recognized the package as, used when no fact names one.
+func learnFromRecon(bag *facts.Bag, pin string, serials []string, detected string) {
 	key := "" // codename is the model-level key; JTAG is the fallback
 	if v, ok := facts.Get(bag, facts.Codename); ok {
 		key = v
@@ -177,6 +178,10 @@ func learnFromRecon(bag *facts.Bag, pin string, serials []string) {
 		if dev, ok := activeCatalog().Device(key); ok {
 			vendorID = dev.Vendor
 		}
+	}
+	// Last, the vendor a file recon detected the package as.
+	if vendorID == "" {
+		vendorID = detected
 	}
 	if key == "" {
 		if v, ok := facts.Get(bag, facts.JTAGID); ok {

@@ -120,6 +120,23 @@ func cacheRoot() (string, error) {
 	return filepath.Join(d, "go-unbrick", "http"), nil
 }
 
+// Known lists the URLs the cache holds an entry for, fetched in part or whole.
+func Known() []string {
+	root, err := cacheRoot()
+	if err != nil {
+		return nil
+	}
+	metas, _ := filepath.Glob(filepath.Join(root, "*", "meta.json"))
+	var out []string
+	for _, p := range metas {
+		var m meta
+		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &m) == nil && m.URL != "" {
+			out = append(out, m.URL)
+		}
+	}
+	return out
+}
+
 func logf(format string, args ...any) {
 	if Log != nil {
 		Log(format, args...)
