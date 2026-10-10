@@ -259,18 +259,28 @@ func FactProviders() []facts.Provider {
 			Out: facts.AVBKey.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested,
 			Fn: func(b *facts.Bag) (bool, error) {
 				var imgs []*avb.Image
+				var chained []bool
 				roots := false
-				for _, data := range facts.GetAll(b, facts.SourceVBMeta) {
+				for _, v := range b.Values(facts.SourceVBMeta.Name()) {
+					data, _ := v.Data.([]byte)
 					img, err := avb.ParseImage(data)
 					if err != nil || img.PublicKeySHA256 == "" {
 						continue
 					}
 					imgs = append(imgs, img)
+					chained = append(chained, chainedName(v.Source))
 					roots = roots || chainsOthers(img)
 				}
 				set := false
-				for _, img := range imgs {
+				for i, img := range imgs {
 					if roots && !chainsOthers(img) {
+						continue
+					}
+					// Without its root, a chained vbmeta is still not the root,
+					// but its content cannot say so: a root need not chain, and
+					// the header's rollback location is often left 0. Its name
+					// breaks the tie.
+					if !roots && chained[i] {
 						continue
 					}
 					facts.Set(b, facts.AVBKey, img.PublicKeySHA256, facts.Provenance{Source: "vbmeta AVB pubkey", Authority: facts.Attested})
@@ -504,4 +514,11 @@ func commonName(subject string) string {
 		return rest[:j]
 	}
 	return rest
+}
+
+// chainedName reports a source ("package member", or a file) naming a chained
+// vbmeta image, which AOSP calls vbmeta_<partition>.img; the root is vbmeta.img.
+func chainedName(source string) bool {
+	f := strings.Fields(source)
+	return len(f) > 0 && strings.HasPrefix(strings.ToLower(filepath.Base(f[len(f)-1])), "vbmeta_")
 }

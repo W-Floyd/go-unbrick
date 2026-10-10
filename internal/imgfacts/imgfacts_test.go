@@ -94,3 +94,17 @@ func TestRecognizesVBMetaAndTopLevelImageOnly(t *testing.T) {
 		t.Error("a vbmeta is not source:image")
 	}
 }
+
+func TestChainedName(t *testing.T) {
+	for src, want := range map[string]bool{
+		"rom.tgz vbmeta_system.img": true,
+		"VBMETA_VENDOR.IMG":         true,
+		"rom.tgz vbmeta.img":        false,
+		"/tmp/vbmeta.img":           false,
+		"":                          false,
+	} {
+		if got := chainedName(src); got != want {
+			t.Errorf("chainedName(%q) = %v", src, got)
+		}
+	}
+}

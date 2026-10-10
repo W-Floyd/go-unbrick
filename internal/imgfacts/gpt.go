@@ -63,16 +63,21 @@ func recognizeGPT(b *facts.Bag, f facts.File) []string {
 var abFromGPT = facts.Rule{
 	Out: facts.ABEnabled.Name(), In: []string{SourceGPT.Name()}, Price: 1, Level: facts.Attested,
 	Fn: func(b *facts.Bag) (bool, error) {
-		names, ok := facts.Get(b, SourceGPT)
-		if !ok || len(names) == 0 {
-			return false, nil
+		// A UFS package ships one table per LUN, and a LUN without boot says
+		// nothing about slots either way.
+		for _, names := range facts.GetAll(b, SourceGPT) {
+			parts := make([]transport.Partition, len(names))
+			hasBoot := false
+			for i, n := range names {
+				parts[i] = transport.Partition{Name: n}
+				hasBoot = hasBoot || parts[i].Base() == "boot"
+			}
+			if hasBoot {
+				facts.Set(b, facts.ABEnabled, transport.ABTable(parts),
+					facts.Provenance{Source: "package GPT slot layout", Authority: facts.Attested})
+				return true, nil
+			}
 		}
-		parts := make([]transport.Partition, len(names))
-		for i, n := range names {
-			parts[i] = transport.Partition{Name: n}
-		}
-		facts.Set(b, facts.ABEnabled, transport.ABTable(parts),
-			facts.Provenance{Source: "package GPT slot layout", Authority: facts.Attested})
-		return true, nil
+		return false, nil
 	},
 }
