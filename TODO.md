@@ -1,5 +1,30 @@
 # TODO
 
+## Remote .tgz — locate the members between super and the tail
+
+`internal/tgzseek` lists a remote `.tgz` exactly at both ends and searches the
+middle under a fetch budget (`tgzseek.Budget`); recon marks the listing partial
+when the found members' spans do not close the gap to the ISIZE-anchored end.
+On the tapas test URL
+(<https://bn.d.miui.com/OS2.0.209.0.VMTMIXM/tapas_global_images_OS2.0.209.0.VMTMIXM_20260909.0000.00_15.0_global_2936b5ae03.tgz>)
+a cold recon fetches 57 MiB (0.84%) and finds the head, `super.img`, and the
+tail cluster `patch5.xml`…`flash_gen_crc_list.py` (incl. `vbmeta_system`,
+`tz`, `dtbo`); 2.34 GB of members are not located, `abl`/`vbmeta` among them.
+
+Why (measured): the ISIZE total is 8.85 GB, so ~2.35 GB follows super, in
+large members; a ≥160 MB one sits right before `patch5.xml`. No landing in
+6.3–7.0 GB compressed (10 MB spacing) hit a header. Super's compressed end is
+unknown: integrating sampled compressibility undershoots by ~5% (±300 MB), and
+nothing in the stream maps compressed to tar offsets without a contiguous
+decode. A landing only finds a header within `LandWalk` after it.
+
+Leads, none verified:
+- Predict the member after a found one from its size when it is mostly stored
+  blocks (ratio ≈ 1 + 5/16395, exact to KiB); `target` already queues that
+  upper bound, but nothing past super has been found to chain from.
+- pigz block ends fall at every 128 KiB of output, which gives a landing's tar
+  offset mod 128 KiB: a cheap check that a jump landed on the expected header.
+
 ## QCDT model-field stripping — validation pending
 
 `internal/qcdt` (`StripModel`, wired as `--strip-model`) is implemented and

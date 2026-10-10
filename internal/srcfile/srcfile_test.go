@@ -7,9 +7,15 @@ import (
 	"compress/gzip"
 	"io"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/inflate/pigztest"
 )
 
 func writeZip(t *testing.T, files map[string]string) string {
@@ -119,5 +125,37 @@ func TestTarAndTGZ(t *testing.T) {
 		if _, data, err := Open(p, "super.img"); err != nil || !bytes.Equal(data, big) {
 			t.Errorf("%s: Open super.img: %d bytes, %v", tc.name, len(data), err)
 		}
+	}
+}
+
+func TestRemoteTGZ(t *testing.T) {
+	infile.CacheDir = t.TempDir()
+	vb := append([]byte("AVB0"), make([]byte, 4092)...)
+	var tb bytes.Buffer
+	tw := tar.NewWriter(&tb)
+	for _, f := range []struct {
+		name string
+		body []byte
+	}{{"rom/images/vbmeta.img", vb}, {"rom/flash_all.sh", []byte("fastboot flash")}} {
+		tw.WriteHeader(&tar.Header{Name: f.name, Size: int64(len(f.body)), Mode: 0o644, Typeflag: tar.TypeReg})
+		tw.Write(f.body)
+	}
+	tw.Close()
+	body := pigztest.Gzip(tb.Bytes(), 128<<10)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"x"`)
+		http.ServeContent(w, r, "f", time.Unix(0, 0), bytes.NewReader(body))
+	}))
+	defer s.Close()
+	u := s.URL + "/rom.tgz"
+	ms, err := Members(u, 4)
+	if err != nil || len(ms) != 2 || string(ms[0].Head) != "AVB0" {
+		t.Fatalf("Members = %v, %v", ms, err)
+	}
+	if why := Incomplete(u); why != "" {
+		t.Errorf("Incomplete = %q", why)
+	}
+	if _, data, err := Open(u, "vbmeta.img"); err != nil || !bytes.Equal(data, vb) {
+		t.Fatalf("Open vbmeta.img: %d bytes, %v", len(data), err)
 	}
 }

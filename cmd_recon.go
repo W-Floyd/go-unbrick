@@ -525,10 +525,10 @@ func runFileRecon(path string) error {
 
 	kind := filetype.Detect(head)
 	archive := (kind == filetype.Zip || kind == filetype.Tar || kind == filetype.Gzip) && srcfile.IsArchive(path)
-	// Every non-archive branch reads the input whole, and a .tgz can only be
-	// read from its start; over HTTP either is the full download this route
-	// exists to avoid, so only a modest file is accepted.
-	if infile.IsRemote(path) && (!archive || kind == filetype.Gzip) && size > maxCascadeRead {
+	// Every non-archive branch reads the input whole; over HTTP that is the
+	// full download this route exists to avoid, so only a modest file is
+	// accepted.
+	if infile.IsRemote(path) && !archive && size > maxCascadeRead {
 		return fmt.Errorf("%s is %s and cannot be read by range; download it to recon it", infile.Base(path), humanBytes(size))
 	}
 	fmt.Printf("%s\n", infile.Base(path))
@@ -808,6 +808,9 @@ func reconArchive(path string, bag *facts.Bag) error {
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
 	fmt.Printf("  Contents (%d members):\n", len(members))
+	if why := srcfile.Incomplete(path); why != "" {
+		fmt.Printf("    %s listing is partial: %s\n", cWarn("[!]"), why)
+	}
 	var chunkCount int
 	var chunkBytes int64
 	var expand []srcfile.Member

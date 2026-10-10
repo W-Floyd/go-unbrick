@@ -27,9 +27,6 @@ var tgzCache = struct {
 }{m: map[string][]entry{}}
 
 func openTGZ(path string) (*archive, error) {
-	if infile.IsRemote(path) {
-		return nil, errRemoteTGZ(path)
-	}
 	tgzCache.Lock()
 	defer tgzCache.Unlock()
 	if es, ok := tgzCache.m[path]; ok {

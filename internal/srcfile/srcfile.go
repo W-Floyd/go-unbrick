@@ -91,6 +91,7 @@ type entry struct {
 type archive struct {
 	entries []entry
 	close   func() error
+	partial string // why entries may not be all of them; "" when they are
 }
 
 func openArchive(path string) (*archive, error) {
@@ -111,6 +112,9 @@ func openArchive(path string) (*archive, error) {
 	case tarKind:
 		return openTar(path)
 	case tgzKind:
+		if infile.IsRemote(path) {
+			return openRemoteTGZ(path)
+		}
 		return openTGZ(path)
 	}
 	return nil, fmt.Errorf("%s: not an archive", infile.Base(path))
@@ -155,10 +159,19 @@ func isMember(hdr *tar.Header) bool {
 	return hdr.Typeflag == tar.TypeReg && !isAppleDouble(hdr.Name)
 }
 
-// errRemoteTGZ refuses a .tgz over HTTP: gzip can only be entered at its
-// start, so any read of it is a read of everything before.
-func errRemoteTGZ(path string) error {
-	return fmt.Errorf("%s: a compressed tar cannot be read by range; reading it would mean fetching all of it", infile.Base(path))
+// Incomplete returns why path's listing may be missing members, or "" when
+// it is complete or path is not an archive. Only a remote .tgz can be
+// incomplete: its members are found by search under a fetch budget.
+func Incomplete(path string) string {
+	if !IsArchive(path) {
+		return ""
+	}
+	a, err := openArchive(path)
+	if err != nil {
+		return ""
+	}
+	defer a.close()
+	return a.partial
 }
 
 // Members lists an archive's files, each with up to headLen bytes for
@@ -240,6 +253,9 @@ func Open(path string, names ...string) (member string, data []byte, err error) 
 				return e.name, b, err
 			}
 		}
+	}
+	if a.partial != "" {
+		return "", nil, fmt.Errorf("%s: none of %v found in the archive (%s)", infile.Base(path), names, a.partial)
 	}
 	return "", nil, fmt.Errorf("%s: none of %v found in the archive", infile.Base(path), names)
 }
