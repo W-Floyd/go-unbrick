@@ -187,7 +187,18 @@ func ParseGPTWithLUN(data []byte, lun int) (*Table, error) {
 
 	// Calculate partition array offset.
 	var partOffset int
-	if currentLBA > 0 && partEntryLBA >= currentLBA {
+	if partEntryLBA < currentLBA && currentLBA > 1 {
+		// A backup header, at the disk's last LBA with its entries just before
+		// it. An image of one (gpt_backupN.bin) ends with the header's sector,
+		// which gives the sector size.
+		if s := len(data) - headerOffset; s == 512 || s == 4096 {
+			sectorSize = s
+		}
+		partOffset = headerOffset - int(currentLBA-partEntryLBA)*sectorSize
+		if partOffset < 0 {
+			return nil, fmt.Errorf("backup GPT entries start before the image (%d)", partOffset)
+		}
+	} else if currentLBA > 0 && partEntryLBA >= currentLBA {
 		partOffset = headerOffset + int(partEntryLBA-currentLBA)*sectorSize
 	} else if headerOffset >= sectorSize {
 		partOffset = headerOffset - sectorSize + int(partEntryLBA)*sectorSize

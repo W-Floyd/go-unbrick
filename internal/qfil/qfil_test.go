@@ -506,3 +506,29 @@ func TestParseGPTMultiLUNContainer(t *testing.T) {
 		t.Errorf("abl_a program entry = %+v, want LUN 3 start 1760", e)
 	}
 }
+
+// A backup image (gpt_backupN.bin) is the entries then the header, which sits
+// at the disk's last LBA: offsets come from the header's place in the image.
+func TestParseBackupGPT(t *testing.T) {
+	const ss, last = 4096, 1 << 20
+	img := make([]byte, ss*2)
+	ent := img[:128]
+	ent[0] = 0xAA
+	for j, code := range utf16.Encode([]rune("boot_a")) {
+		binary.LittleEndian.PutUint16(ent[56+j*2:], code)
+	}
+	hdr := img[ss : ss+92]
+	copy(hdr[0:8], "EFI PART")
+	binary.LittleEndian.PutUint32(hdr[12:16], 92)
+	binary.LittleEndian.PutUint64(hdr[24:32], last)   // current LBA: the disk's last
+	binary.LittleEndian.PutUint64(hdr[72:80], last-1) // entries just before
+	binary.LittleEndian.PutUint32(hdr[80:84], 8)
+	binary.LittleEndian.PutUint32(hdr[84:88], 128)
+	tb, err := ParseGPT(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tb.SectorSize != ss || len(tb.Partitions) != 1 || tb.Partitions[0].Name != "boot_a" {
+		t.Fatalf("sector %d, partitions %+v", tb.SectorSize, tb.Partitions)
+	}
+}

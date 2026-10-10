@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -70,7 +71,7 @@ func newReconCmd() *cobra.Command {
 	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
 	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
-	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach")
+	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach; found automatically when a vendor can name it, \"none\" to skip")
 	return c
 }
 
@@ -102,7 +103,7 @@ func reconGraph() *facts.Graph {
 	ps = append(ps, linuxdev.FactProviders()...)
 	ps = append(ps, adb.FactProviders()...)
 	ps = append(ps, edl.FactProviders()...)
-	return facts.New(append(ps, vendor.Providers()...), vendor.Checks())
+	return facts.New(append(ps, vendor.Providers()...), append(imgfacts.Checks(), vendor.Checks()...))
 }
 
 // reconRecognizers is what any recon hands its bytes to: the neutral formats
@@ -118,8 +119,51 @@ func reconRecognizers() []facts.Recognizer {
 //
 // A companion (--with) is another package of the same release, read for what
 // the first cannot reach. Its members join the same Bag only once both
-// packages, resolved on their own, name the same device and build.
-func reconIngest(path, with string) (*facts.Bag, []facts.Finding, error) {
+// packages, resolved on their own, name the same device and build. One the
+// user did not name (optional) that fails this is left out with a note
+// instead of failing the recon; used is the companion read, if any.
+func reconIngest(path, with string, optional bool) (bag *facts.Bag, findings []facts.Finding, used string, err error) {
+	bag, findings, err = ingestWith(path, with)
+	if err == nil {
+		return bag, findings, with, nil
+	}
+	if !optional || with == "" {
+		return nil, nil, "", err
+	}
+	skipped := err
+	bag, findings, err = ingestWith(path, "")
+	findings = append(findings, facts.Finding{Severity: facts.Info, Message: fmt.Sprintf("not reading %s: %v", infile.Base(with), skipped)})
+	return bag, findings, "", err
+}
+
+// autoCompanion picks a companion the user did not name: one a vendor can
+// name whole, from the package's own name or among the locations known here
+// (the HTTP cache; for a local package, the files beside it).
+func autoCompanion(path string) (with, how string) {
+	known := infile.Known()
+	if !infile.IsRemote(path) {
+		dir := filepath.Dir(path)
+		if es, err := os.ReadDir(dir); err == nil {
+			for _, e := range es {
+				known = append(known, filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+	for _, c := range vendor.Companions(path, known) {
+		switch {
+		case c.URL == "" || c.URL == path:
+		case !c.Found:
+			return c.URL, "derived from its name"
+		case infile.IsRemote(c.URL):
+			return c.URL, "seen in the HTTP cache"
+		default:
+			return c.URL, "found beside it"
+		}
+	}
+	return "", ""
+}
+
+func ingestWith(path, with string) (*facts.Bag, []facts.Finding, error) {
 	bag := facts.NewBag()
 	if cat := activeCatalog(); cat != nil {
 		facts.Set(bag, facts.SourceCatalog, cat,
@@ -225,8 +269,35 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, facts.SystemFingerprint); ok {
 		add("System fp:   %s", v)
 	}
+	model, hasModel := facts.Get(b, facts.Model)
+	if skus, ok := facts.Get(b, facts.SKUModels); ok {
+		line := "Model: " + b.Show(facts.SKUModels.Name(), skus)
+		if hasModel {
+			line = "Model: " + model + " — " + b.Show(facts.SKUModels.Name(), skus)
+		}
+		out = append(out, line)
+	} else if hasModel {
+		add("Model: %s", model)
+	}
+	var plat []string
+	if v, ok := facts.Get(b, facts.BoardPlatform); ok {
+		plat = append(plat, v)
+	}
+	if v, ok := facts.Get(b, facts.FirstAPILevel); ok {
+		plat = append(plat, fmt.Sprintf("launched on API %d", v))
+	}
+	if len(plat) > 0 {
+		add("Platform: %s", strings.Join(plat, ", "))
+	}
 	if v, ok := facts.Get(b, facts.SecurityPatch); ok {
-		add("Patch level: %s", v)
+		line := "Patch level: " + v
+		if vp, ok := facts.Get(b, facts.VendorSecurityPatch); ok && vp != v {
+			line += ", vendor " + vp
+			if vr, ok := facts.Get(b, facts.VendorRelease); ok {
+				line += " (Android " + vr + ")"
+			}
+		}
+		out = append(out, line)
 	}
 	if v, ok := facts.Get(b, facts.AVBKey); ok {
 		line := "AVB key: sha256 " + short(v)
@@ -295,6 +366,26 @@ func identityFactLines(b *facts.Bag) []string {
 	}
 	if ids, ok := facts.Get(b, imgfacts.OTACerts); ok {
 		add("OTA key: %s", b.Show(imgfacts.OTACerts.Name(), ids))
+	}
+	if v, ok := facts.Get(b, facts.PlatformCert); ok {
+		who, _ := facts.Get(b, facts.PlatformSigner)
+		add("Platform key: %s sha256 %s", orUnknown(who), short(v))
+	}
+	if v, ok := facts.Get(b, facts.DataEncryption); ok {
+		line := "Encryption: "
+		switch v {
+		case "none", "full-disk":
+			line += v
+		default:
+			line += "file-based " + v
+		}
+		if m, _ := facts.Get(b, facts.MetadataEncryption); m {
+			line += ", metadata encrypted"
+		}
+		out = append(out, line)
+	}
+	if v, ok := facts.Get(b, facts.GSIKeys); ok {
+		add("GSI: system also verifies %s", strings.Join(v, ", "))
 	}
 	var props []string
 	if v, ok := facts.Get(b, facts.BuildDate); ok {
@@ -588,12 +679,23 @@ func runFileRecon(path string) error {
 	resetCerts() // keys/certs are gathered during the walk, printed deduped after
 	// Resolve before rendering: the identity lines a package prints are the
 	// planner's answers, and the judgments about them print after everything else.
-	bag, findings, err := reconIngest(path, reconWith)
+	with, how := reconWith, ""
+	switch with {
+	case "none":
+		with = ""
+	case "":
+		with, how = autoCompanion(path)
+	}
+	bag, findings, used, err := reconIngest(path, with, how != "")
 	if err != nil {
 		return err
 	}
-	if reconWith != "" {
-		fmt.Printf("  With:  %s\n", infile.Base(reconWith))
+	reconWith = used
+	switch {
+	case used != "" && how != "":
+		fmt.Printf("  With:  %s (%s; --with none to skip)\n", infile.Base(used), how)
+	case used != "":
+		fmt.Printf("  With:  %s\n", infile.Base(used))
 	}
 	var rerr error
 	switch {
@@ -813,7 +915,7 @@ func reconExt4(path string) error {
 	fmt.Printf("  %-8s %d files\n", typeLabel(path, data)+":", len(entries))
 	for i, e := range entries {
 		if i >= 6 {
-			fmt.Printf("    … (+%d more; try `modem ls`)\n", len(entries)-6)
+			fmt.Printf("    … (+%d more; see `unbrick ls`)\n", len(entries)-6)
 			break
 		}
 		fmt.Printf("    %-28s %s\n", e.Path, humanBytes(int64(e.Size)))
@@ -869,7 +971,14 @@ func reconArchive(path string, bag *facts.Bag) error {
 	if err != nil || len(members) == 0 {
 		return err
 	}
-	sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
+	// By the base name each line shows, the path breaking ties.
+	sort.Slice(members, func(i, j int) bool {
+		bi, bj := filepath.Base(members[i].Name), filepath.Base(members[j].Name)
+		if bi != bj {
+			return bi < bj
+		}
+		return members[i].Name < members[j].Name
+	})
 	fmt.Printf("  Contents (%d members):\n", len(members))
 	if why := srcfile.Incomplete(path); why != "" {
 		fmt.Printf("    %s listing is partial: %s\n", cWarn("[!]"), why)
@@ -909,7 +1018,14 @@ func reconArchive(path string, bag *facts.Bag) error {
 			bar.Advance()
 			continue
 		}
+		whole := ""
+		if kind == filetype.Unknown {
+			whole = wholeLabel(path, base, m)
+		}
 		switch {
+		case whole != "":
+			bar.Clear()
+			fmt.Printf("    %-26s %s\n", base, whole)
 		case kind == filetype.OTAPayload:
 			bar.Clear()
 			printPayload(path, base, int64(m.Size), "    ")
@@ -917,9 +1033,6 @@ func reconArchive(path string, bag *facts.Bag) error {
 			// Don't expand anything too big; label it and move on.
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
-		case kind == filetype.Unknown && isBlank(path, base, m):
-			bar.Clear()
-			fmt.Printf("    %-26s [blank]  %s of zeros\n", base, humanBytes(int64(m.Size)))
 		case !isContainer(kind):
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]%s\n", base, typeLabel(base, m.Head), summarize(m.Head, nil))
@@ -942,28 +1055,39 @@ func reconArchive(path string, bag *facts.Bag) error {
 	return nil
 }
 
-// describeOTAMember labels an OTA package's descriptive members (metadata,
-// otacert, the protobufs), which carry no magic for typeLabel to go on.
-// maxBlankRead caps the member read whole to tell it is blank: a zero head
-// proves nothing about the rest.
-const maxBlankRead = 1 << 20
+// maxWholeRead caps the member read whole to label what its head cannot
+// show: a zero head proves nothing about the rest, and a backup GPT's header
+// is its last sector.
+const maxWholeRead = 1 << 20
 
-// isBlank reports a non-empty member that is zeros throughout, as packages
-// ship to wipe a partition (Xiaomi's multi_image.mbn for multiimgoem).
-func isBlank(path, base string, m srcfile.Member) bool {
-	if m.Size == 0 || m.Size > maxBlankRead || bytes.ContainsFunc(m.Head, func(r rune) bool { return r != 0 }) {
-		return false
+// wholeLabel labels a small member of no recognizable head from all of its
+// bytes, or returns "": one that is zeros throughout, as packages ship to wipe
+// a partition (Xiaomi's multi_image.mbn for multiimgoem), or a backup GPT.
+func wholeLabel(path, base string, m srcfile.Member) string {
+	if m.Size == 0 || m.Size > maxWholeRead {
+		return ""
 	}
 	data := m.Head
 	if uint64(len(data)) < m.Size {
 		var err error
-		if _, data, err = srcfile.Open(path, base); err != nil {
-			return false
+		if _, data, err = srcfile.Open(path, base); err != nil || uint64(len(data)) != m.Size {
+			return ""
 		}
 	}
-	return uint64(len(data)) == m.Size && bytes.Count(data, []byte{0}) == len(data)
+	switch {
+	case bytes.Count(data, []byte{0}) == len(data):
+		return fmt.Sprintf("[blank]  %s of zeros", humanBytes(int64(m.Size)))
+	case filetype.BackupGPT(data):
+		if t, err := qfil.ParseGPT(data); err == nil {
+			return fmt.Sprintf("[gpt backup]  %d partitions", len(t.Partitions))
+		}
+		return "[gpt backup]"
+	}
+	return ""
 }
 
+// describeOTAMember labels an OTA package's descriptive members (metadata,
+// otacert, the protobufs), which carry no magic for typeLabel to go on.
 func describeOTAMember(path, base string, m srcfile.Member) (label, detail string, ok bool) {
 	if m.Size > 1<<16 {
 		return "", "", false
@@ -1150,6 +1274,7 @@ func cascade(name string, data []byte, indent string, depth int) {
 		if entries, err := modem.List(data); err == nil {
 			// Subsystem firmware (adsp, cdsp, modem, …) ships as PIL splits; each
 			// is shown joined, so its build and secboot identity read through.
+			shown := 0
 			for _, e := range entries {
 				if !strings.EqualFold(filepath.Ext(e.Path), ".mdt") {
 					continue
@@ -1164,23 +1289,27 @@ func cascade(name string, data []byte, indent string, depth int) {
 					line += " (" + n + ")"
 				}
 				fmt.Println(line)
+				shown++
 			}
-			shown := 0
+			leaves := 0
 			for _, e := range entries {
 				// Only surface the interesting leaves (signed images, PD maps, configs).
 				if !ext4Notable(e.Path) || strings.EqualFold(filepath.Ext(e.Path), ".mdt") {
 					continue
 				}
-				if shown >= 8 {
-					fmt.Printf("%s  … (+more; `modem ls`)\n", indent)
+				if leaves >= 8 {
+					fmt.Printf("%s  … (+more; see `unbrick ls`)\n", indent)
 					break
 				}
 				line := fmt.Sprintf("%s  %-24s %s", indent, filepath.Base(e.Path), humanBytes(int64(e.Size)))
-				if note := mcfgNote(data, e.Path); note != "" {
+				if note := leafNote(data, e.Path); note != "" {
 					line += " — " + note
 				}
 				fmt.Println(line)
-				shown++
+				leaves++
+			}
+			if shown+leaves == 0 {
+				printDirCounts(entries, indent+"  ")
 			}
 		}
 	}
@@ -1215,8 +1344,74 @@ func mcfgNote(ext4 []byte, path string) string {
 
 func ext4Notable(p string) bool {
 	b := strings.ToLower(filepath.Base(p))
-	return strings.HasSuffix(b, ".jsn") || strings.HasSuffix(b, ".mbn") ||
+	return strings.HasSuffix(b, ".jsn") || strings.HasSuffix(b, ".mbn") || strings.HasSuffix(b, ".ver") ||
 		b == "modem.mdt" || strings.HasPrefix(b, "mcfg") || strings.HasSuffix(b, ".qdb")
+}
+
+// leafNote is the one-line summary of a notable firmware-filesystem leaf, or "".
+func leafNote(img []byte, path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jsn":
+		data, err := modem.Extract(img, path)
+		if err != nil {
+			return ""
+		}
+		return servregNote(data)
+	case ".ver":
+		// A build stamp (Qualcomm's BTFM firmware ships one beside each patch).
+		data, err := modem.Extract(img, path)
+		if ok, _ := filetype.Text(data); err != nil || !ok || len(data) > 256 {
+			return ""
+		}
+		line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+		return strings.TrimSpace(line)
+	}
+	return mcfgNote(img, path)
+}
+
+// servregNote summarizes a Qualcomm service-registry map (.jsn): the
+// protection domain it describes and the services that domain provides, which
+// is what the PD-restart machinery looks up.
+func servregNote(data []byte) string {
+	var m struct {
+		Domain struct {
+			Domain    string `json:"domain"`
+			Subdomain string `json:"subdomain"`
+		} `json:"sr_domain"`
+		Services []struct {
+			Provider string `json:"provider"`
+			Service  string `json:"service"`
+		} `json:"sr_service"`
+	}
+	if json.Unmarshal(data, &m) != nil || m.Domain.Domain == "" {
+		return ""
+	}
+	var svcs []string
+	for _, s := range m.Services {
+		svcs = append(svcs, s.Provider+"/"+s.Service)
+	}
+	return fmt.Sprintf("service registry: %s/%s provides %s", m.Domain.Domain, m.Domain.Subdomain, strings.Join(svcs, ", "))
+}
+
+// printDirCounts lists how a filesystem's files fall by top directory, for an
+// image none of whose files is singled out (DSP libraries, BT firmware).
+func printDirCounts(entries []modem.Entry, indent string) {
+	count := map[string]int{}
+	var dirs []string
+	for _, e := range entries {
+		d, _, ok := strings.Cut(strings.TrimPrefix(e.Path, "/"), "/")
+		if !ok {
+			d = "."
+		}
+		if count[d] == 0 {
+			dirs = append(dirs, d)
+		}
+		count[d]++
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		fmt.Printf("%s%-24s %d files\n", indent, d+"/", count[d])
+	}
 }
 
 // typeLabel gives a short human label for a detected kind (with Moto/ext hints).
@@ -1248,6 +1443,8 @@ func typeLabel(name string, head []byte) string {
 		return "ELF"
 	case filetype.OTAPayload:
 		return "OTA payload"
+	case filetype.PE:
+		return "PE executable"
 	}
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
 		return info.Label
@@ -1263,6 +1460,11 @@ func typeLabel(name string, head []byte) string {
 		return "PNG"
 	case ".dat":
 		return "data"
+	}
+	if ok, script := filetype.Text(head); script {
+		return "script"
+	} else if ok {
+		return "text"
 	}
 	return "unknown"
 }
@@ -1466,7 +1668,7 @@ func reconContainer(path string) error {
 	}
 	if hasModem {
 		if entries, err := modem.List(data); err == nil {
-			fmt.Printf("  Modem filesystem: %d files (try `modem ls`)\n", len(entries))
+			fmt.Printf("  Modem filesystem: %d files (see `unbrick ls`)\n", len(entries))
 		}
 		printModemCarrier(data, "  ")
 	}

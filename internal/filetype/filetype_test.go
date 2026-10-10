@@ -48,3 +48,39 @@ func TestDetect(t *testing.T) {
 	}
 	_ = bytes.MinRead
 }
+
+func TestBackupGPT(t *testing.T) {
+	img := make([]byte, 5*4096)
+	copy(img[4*4096:], "EFI PART")
+	if !BackupGPT(img) || Detect(img) != Unknown {
+		t.Error("backup GPT image: header in the last sector")
+	}
+	if BackupGPT(img[:4*4096]) || BackupGPT(make([]byte, 4096)) {
+		t.Error("BackupGPT without a header in the last sector")
+	}
+}
+
+func TestPEAndText(t *testing.T) {
+	pe := make([]byte, 0x100)
+	copy(pe, "MZ")
+	pe[0x3c] = 0x80
+	copy(pe[0x80:], "PE\x00\x00")
+	if Detect(pe) != PE {
+		t.Error("PE not detected")
+	}
+	pe[0x81] = 'X'
+	if Detect(pe) == PE {
+		t.Error("MZ without a PE signature taken as PE")
+	}
+	for in, want := range map[string][2]bool{
+		"#!/usr/bin/env python\nprint(1)\n": {true, true},
+		"fastboot $* flash abl_a x\r\n":     {true, false},
+		"caf\xc3":                           {true, false}, // a rune cut at the head's end
+		"\x00\x01binary":                    {false, false},
+		"":                                  {false, false},
+	} {
+		if ok, script := Text([]byte(in)); ok != want[0] || script != want[1] {
+			t.Errorf("Text(%q) = %v, %v", in, ok, script)
+		}
+	}
+}

@@ -23,6 +23,10 @@ func gptNames(data []byte) []string {
 	switch filetype.Detect(data) {
 	case filetype.GPT:
 		tables = [][]byte{data}
+	case filetype.Unknown:
+		if filetype.BackupGPT(data) {
+			tables = [][]byte{data}
+		}
 	case filetype.SingleNLonely:
 		recs, err := blankflash.Parse(data)
 		if err != nil {

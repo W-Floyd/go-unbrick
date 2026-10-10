@@ -1,9 +1,11 @@
 package vendor
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/facts"
+	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
 )
 
 // SourceMiscTxt is a Xiaomi fastboot package's misc.txt: key=value lines
@@ -20,9 +22,17 @@ func parseMiscTxt(data []byte) map[string]string {
 	return out
 }
 
+// mi_ext is Xiaomi's own extension partition; its build.prop names the
+// release.
+func init() { imgfacts.ReadPartitionFiles("mi_ext", "etc/build.prop") }
+
+// xiaomiSKUProp is Xiaomi's name for odm's per-SKU props (m7g_build.prop,
+// m7g_ss_build.prop), where AOSP's is build_<sku>.prop.
+var xiaomiSKUProp = regexp.MustCompile(`^odm/etc/([a-z0-9_]+)_build\.prop$`)
+
 // FactRecognizers implements FactRecognizer.
 func (xiaomi) FactRecognizers() []facts.Recognizer {
-	return []facts.Recognizer{func(b *facts.Bag, f facts.File) []string {
+	return []facts.Recognizer{recognizeXiaomiSKUProps, func(b *facts.Bag, f facts.File) []string {
 		if !isText(f.Data) {
 			return nil
 		}
@@ -32,6 +42,21 @@ func (xiaomi) FactRecognizers() []facts.Recognizer {
 		facts.Set(b, SourceMiscTxt, f.Data, facts.Provenance{Source: f.From, Authority: facts.Attested})
 		return []string{SourceMiscTxt.Name()}
 	}}
+}
+
+func recognizeXiaomiSKUProps(b *facts.Bag, f facts.File) []string {
+	m := xiaomiSKUProp.FindStringSubmatch(f.Name)
+	if m == nil {
+		return nil
+	}
+	props := imgfacts.ParseProps(f.Data)
+	if len(props) == 0 {
+		return nil
+	}
+	facts.Set(b, imgfacts.SourcePartProps,
+		imgfacts.PartProps{Partition: "odm", File: strings.TrimPrefix(f.Name, "odm/"), SKU: m[1], Props: props},
+		facts.Provenance{Source: f.From, Authority: facts.Attested})
+	return []string{imgfacts.SourcePartProps.Name()}
 }
 
 // FactProviders implements FactDeriver. The build number is Xiaomi's name for
@@ -49,6 +74,20 @@ func (xiaomi) FactProviders() []facts.Provider {
 	return []facts.Provider{
 		misc(facts.Codename, "device"),
 		misc(facts.SoftwareVersion, "build_number"),
+		// mi_ext overrides the build's incremental with the release's build
+		// number, where system's is an internal stamp on a China build.
+		facts.Rule{
+			Out: facts.SoftwareVersion.Name(), In: []string{imgfacts.SourcePartProps.Name()}, Price: 1, Level: facts.Attested,
+			Fn: func(b *facts.Bag) (bool, error) {
+				for _, p := range facts.GetAll(b, imgfacts.SourcePartProps) {
+					if v := p.Props["ro.build.version.incremental"]; p.Partition == "mi_ext" && xiaomiBuildNumber.MatchString(v) {
+						facts.Set(b, facts.SoftwareVersion, v, facts.Provenance{Source: "mi_ext build.prop", Authority: facts.Attested})
+						return true, nil
+					}
+				}
+				return false, nil
+			},
+		},
 		facts.Rule{
 			Out: facts.SoftwareVersion.Name(), In: []string{facts.BuildFingerprint.Name()}, Price: 1, Level: facts.Derived,
 			Fn: func(b *facts.Bag) (bool, error) {
@@ -76,5 +115,10 @@ func xiaomiIncremental(fp string) (string, bool) {
 		return "", false
 	}
 	inc, _, _ := strings.Cut(parts[4], ":")
-	return inc, inc != ""
+	return inc, xiaomiBuildNumber.MatchString(inc)
 }
+
+// xiaomiBuildNumber is the shape of a release's build number (OS2.0.209.0.VMTMIXM,
+// V14.0.3.0.TMGMIXM). Not every build's incremental is one: a China build's
+// is an internal stamp (17OS4.0.261004.103610129.QCPECN.S).
+var xiaomiBuildNumber = regexp.MustCompile(`^(OS|V)\d+(\.\d+){3}\.[A-Z]+$`)

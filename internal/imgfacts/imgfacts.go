@@ -58,7 +58,7 @@ func Recognizers() []facts.Recognizer {
 			return []string{SourceImage.Name()}
 		}
 		return nil
-	}, recognizeGPT, recognizeOTAMetadata}
+	}, recognizeGPT, recognizeOTAMetadata, recognizePartitionFile}
 }
 
 // SourceImage is one image's bytes: an ELF, a .mbn, an Android boot image.
@@ -127,6 +127,11 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 			p.Advance()
 		}
 	}
+	// What the partition images say about themselves: props, fstab, signers.
+	if p != nil {
+		p.Describe("reading partition images")
+	}
+	ingestPartitionFiles(b, rs, path, base)
 	for _, m := range read {
 		name := filepath.Base(m.Name)
 		if p != nil {
@@ -178,7 +183,7 @@ const (
 
 // FactProviders returns the vendor-neutral image derivations.
 func FactProviders() []facts.Provider {
-	return append(otaProviders(), []facts.Provider{
+	return append(append(otaProviders(), partitionProviders()...), []facts.Provider{
 		abFromGPT,
 		// Reading a whole image costs more than picking a field out of one already
 		// parsed, which is what keeps a chain that starts from a package member

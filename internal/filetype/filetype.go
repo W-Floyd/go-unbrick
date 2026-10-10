@@ -8,6 +8,7 @@ package filetype
 import (
 	"bytes"
 	"encoding/binary"
+	"unicode/utf8"
 )
 
 type Kind string
@@ -30,6 +31,7 @@ const (
 	FAT               Kind = "fat"
 	Tar               Kind = "tar"
 	Gzip              Kind = "gzip"
+	PE                Kind = "pe"
 	Unknown           Kind = "unknown"
 )
 
@@ -48,6 +50,8 @@ func Detect(head []byte) Kind {
 		return Tar
 	case len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b:
 		return Gzip
+	case isPE(head):
+		return PE
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("ANDROID!")):
 		return AndroidBoot
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("VNDRBOOT")):
@@ -82,4 +86,48 @@ func Detect(head []byte) Kind {
 	default:
 		return Unknown
 	}
+}
+
+// BackupGPT reports an image of a backup GPT (gpt_backupN.bin): the entries
+// first, the header in the last sector. Detect cannot see it, as it looks only
+// at a head; this needs the whole image.
+func BackupGPT(data []byte) bool {
+	for _, s := range []int{512, 4096} {
+		if len(data) >= 2*s && len(data)%s == 0 && bytes.HasPrefix(data[len(data)-s:], []byte("EFI PART")) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPE reports a Windows PE executable or DLL: the MZ stub, pointing at a PE
+// signature within the head.
+func isPE(head []byte) bool {
+	if len(head) < 0x40 || head[0] != 'M' || head[1] != 'Z' {
+		return false
+	}
+	off := int(binary.LittleEndian.Uint32(head[0x3c:]))
+	return off+4 <= len(head) && bytes.Equal(head[off:off+4], []byte("PE\x00\x00"))
+}
+
+// Text reports whether head reads as text (UTF-8, no control bytes but
+// whitespace), and whether it is a script, opening with "#!". It is not part
+// of Detect: callers that treat Unknown as "ask the vendor's content
+// recognizers" would otherwise skip text formats those recognize.
+func Text(head []byte) (ok, script bool) {
+	if len(head) == 0 {
+		return false, false
+	}
+	// A head can end mid-rune; only whole runes are judged.
+	for i := 0; i < len(head); {
+		r, n := utf8.DecodeRune(head[i:])
+		if r == utf8.RuneError && n <= 1 && len(head)-i >= utf8.UTFMax {
+			return false, false
+		}
+		if r < 0x20 && r != '\n' && r != '\r' && r != '\t' && r != '\f' {
+			return false, false
+		}
+		i += max(n, 1)
+	}
+	return true, bytes.HasPrefix(head, []byte("#!"))
 }

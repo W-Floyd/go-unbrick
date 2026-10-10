@@ -9,6 +9,7 @@ package facts
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -91,6 +92,55 @@ var (
 	// EnforceAntiRollback is whether the OTA path enforces that table.
 	EnforceAntiRollback = Key[bool]("enforce_anti_rollback")
 )
+
+// What a build's partition images state about the device and how it is
+// secured: vendor and odm build props, the vendor fstab, the SELinux signer
+// map.
+var (
+	// SKUModels maps each hardware SKU a build serves (the odm per-SKU prop
+	// file's name) to its model number, the one on the device's label.
+	SKUModels = Key[map[string]string]("sku_models", Eq(maps.Equal[map[string]string, map[string]string]), Fmt(skuSummary))
+	// BoardPlatform is ro.board.platform, the SoC family the vendor image is
+	// built for ("bengal"). A third namespace beside SoC and Platform.
+	BoardPlatform = Key[string]("board_platform")
+	// FirstAPILevel is the API level the device launched with.
+	FirstAPILevel = Key[int]("first_api_level")
+	// VendorRelease and VendorSecurityPatch are the vendor image's own Android
+	// version and patch level, which can trail the system image's: a
+	// frozen-vendor build updates only system.
+	VendorRelease       = Key[string]("vendor_release")
+	VendorSecurityPatch = Key[string]("vendor_security_patch")
+	// DataEncryption is how userdata is encrypted: the fstab's fileencryption=
+	// (file-based) value, or "full-disk" for forceencrypt.
+	DataEncryption = Key[string]("data_encryption")
+	// MetadataEncryption is whether filesystem metadata is encrypted too.
+	MetadataEncryption = Key[bool]("metadata_encryption")
+	// GSIKeys are the GSI public keys system verifies against beside the
+	// build's own (avb_keys), which is what lets a generic system image boot.
+	GSIKeys = Key[[]string]("gsi_keys", Eq(slices.Equal[[]string, string]), Fmt(func(k []string) string { return strings.Join(k, ", ") }))
+	// PlatformCert is the SHA-256 of the cert system apps are signed with
+	// (the "platform" signer); PlatformSigner is its subject's CN.
+	PlatformCert   = Key[string]("platform_cert", Eq(strings.EqualFold))
+	PlatformSigner = Key[string]("platform_signer")
+	// AOSPTestKeys names the SELinux signer roles whose cert is one of AOSP's
+	// public test keys, with which anyone can sign as that role.
+	AOSPTestKeys = Key[[]string]("aosp_test_keys", Eq(slices.Equal[[]string, string]), Fmt(func(k []string) string { return strings.Join(k, ", ") }))
+)
+
+// skuSummary lists model numbers with the SKUs that share each.
+func skuSummary(m map[string]string) string {
+	by := map[string][]string{}
+	for sku, model := range m {
+		by[model] = append(by[model], sku)
+	}
+	var out []string
+	for model, skus := range by {
+		sort.Strings(skus)
+		out = append(out, fmt.Sprintf("%s (%s)", model, strings.Join(skus, ", ")))
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
+}
 
 // Qualcomm secure-boot identity: what the PBL enforces against every signed
 // image. The same three facts come from fuses (Sahara) and from a signed image's
