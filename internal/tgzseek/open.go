@@ -127,16 +127,24 @@ func key(it item) string { return fmt.Sprintf("%s\x00%d\x00%d", it.Name, it.Size
 func (o *opener) note(it item) { o.seen[key(it)] = true }
 
 // missing is the tar-stream length between the head and the anchored tail
-// that no found entry accounts for, mod 2^32.
+// that no found entry accounts for: exact when the decoded length is (with no
+// tail, it includes the tar's own end), else mod 2^32.
 func (o *opener) missing() int64 {
 	if o.headDone {
 		return 0
 	}
-	sum := uint32(o.h1)
+	sum := o.h1
 	for _, it := range o.middle {
-		sum += uint32(it.span)
+		sum += it.span
 	}
-	return int64(o.tail.first - sum)
+	if o.total > 0 {
+		end := o.total
+		if !o.noTail {
+			end -= int64(uint32(o.total) - o.tail.first)
+		}
+		return end - sum
+	}
+	return int64(o.tail.first - uint32(sum))
 }
 
 // walk follows the header chain in c from offset at, which holds a header,

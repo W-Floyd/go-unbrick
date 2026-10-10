@@ -25,9 +25,54 @@ func (a *Archive) Open(i int) io.Reader {
 	case e.run.exact:
 		m.d, m.skip = inflate.NewExact(a.r, e.run.start, nil), e.rel
 	default:
-		m.d, m.skip = inflate.NewUnknown(a.r, e.run.start), e.rel
+		if d := a.warm(e); d != nil {
+			m.d = d
+		} else {
+			m.d, m.skip = inflate.NewUnknown(a.r, e.run.start), e.rel
+		}
 	}
 	return m
+}
+
+// warmBacks are how far before a landing's entry a read of one of its
+// members re-enters the stream, nearest first.
+var warmBacks = []int64{1 << 20, 4 << 20, 16 << 20}
+
+// warm returns a decoder positioned at e's first byte with its whole window
+// known, by entering the stream before e's run: a member found by a landing
+// can start before the run's own unknown history has washed out. Nil when
+// no entry tried gets there settled.
+func (a *Archive) warm(e *Entry) *inflate.Decoder {
+	for _, back := range warmBacks {
+		from := max(a.start, e.run.start/8-back)
+		bit, err := inflate.FindParsed(a.r, from, e.run.start/8, 4, 1<<20)
+		if err != nil || bit >= e.run.start {
+			continue
+		}
+		d := inflate.NewUnknown(a.r, bit)
+		at := int64(-1) // output at the run's entry, once crossed
+		d.OnBoundary = func(b, out int64) {
+			if b == e.run.start {
+				at = out
+			}
+		}
+		buf := make([]byte, 4<<10)
+		var err2 error
+		for (at < 0 && d.Bit() < e.run.start || at >= 0 && d.Out() < at+e.rel) && err2 == nil {
+			n := int64(len(buf))
+			if at >= 0 {
+				n = min(n, at+e.rel-d.Out())
+			}
+			_, err2 = d.Read(buf[:n])
+		}
+		if err2 == nil && at >= 0 && d.Out() == at+e.rel && d.Settled() {
+			return d
+		}
+		if from == a.start {
+			break
+		}
+	}
+	return nil
 }
 
 type member struct {

@@ -91,6 +91,7 @@ type Entry struct {
 // Archive is an opened .tgz.
 type Archive struct {
 	r       io.ReaderAt
+	start   int64 // offset of the deflate stream in r
 	Entries []Entry
 	// Complete reports that Entries holds every member. When false, Missing
 	// is the tar-stream length of what was not found.
@@ -325,7 +326,7 @@ func anyUnknown(u []bool) bool { return knownPrefix(u) < len(u) }
 // archive assembles the listing: head, then what the landings found in
 // stream order, then the tail.
 func (o *opener) archive() *Archive {
-	a := &Archive{r: o.raw}
+	a := &Archive{r: o.raw, start: o.start}
 	sort.SliceStable(o.middle, func(i, j int) bool { return o.middle[i].bit < o.middle[j].bit })
 	for _, part := range [][]item{o.head, o.middle, o.tail.items} {
 		for _, it := range part {
