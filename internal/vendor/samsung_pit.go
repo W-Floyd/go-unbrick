@@ -9,7 +9,10 @@ import (
 // PIT is a Samsung partition information table (.pit), the layout Odin
 // flashes against.
 type PIT struct {
-	Chip    string // the header's platform tag, e.g. "SM6350"
+	// Tag is the header field after "COM_TAR2" (e.g. "SM6350"). Undocumented,
+	// and not this device's SoC: an SM6225 a05s package carries "SM6350",
+	// apparently a template's. Never a fact about the device.
+	Tag     string
 	Entries []PITEntry
 }
 
@@ -37,7 +40,7 @@ func ParsePIT(data []byte) (*PIT, error) {
 	if n > (len(data)-pitHeader)/pitEntry {
 		return nil, errors.New("PIT: truncated")
 	}
-	p := &PIT{Chip: cstr(data[16:24])}
+	p := &PIT{Tag: cstr(data[16:24])}
 	for i := range n {
 		e := data[pitHeader+i*pitEntry:][:pitEntry]
 		p.Entries = append(p.Entries, PITEntry{

@@ -59,7 +59,7 @@ func RecognizeArtifact(cat *catalog.Catalog, data []byte) (ArtifactInfo, bool) {
 		}
 	}
 	if p, err := ParsePIT(data); err == nil {
-		return ArtifactInfo{Label: "Samsung PIT", Detail: fmt.Sprintf("%d partitions, %s", len(p.Entries), p.Chip)}, true
+		return ArtifactInfo{Label: "Samsung PIT", Detail: fmt.Sprintf("%d partitions", len(p.Entries))}, true
 	}
 	return ArtifactInfo{}, false
 }
