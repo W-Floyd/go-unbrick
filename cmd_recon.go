@@ -1625,6 +1625,12 @@ func typeLabel(name string, head []byte) string {
 		return "WinHelp"
 	case filetype.TypeLib:
 		return "COM type library"
+	case filetype.SQLite:
+		return "SQLite"
+	case filetype.Gzip:
+		return "gzip"
+	case filetype.Zip:
+		return "zip"
 	}
 	if lp.IsSuper(head) {
 		return "super metadata"

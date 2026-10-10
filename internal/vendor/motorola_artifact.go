@@ -2,7 +2,8 @@ package vendor
 
 // Content recognition for vendor file formats that have no neutral magic the
 // generic filetype detector handles — Motorola's CID image, MotoLogo container
-// and subsidy-lock .nvm, Samsung's .pit, Qualcomm's FSGADAPT EFS image. Kept
+// and subsidy-lock .nvm, Samsung's .pit, Qualcomm's FSGADAPT EFS image,
+// MediaTek's partition images, Download Agents and GFH files. Kept
 // behind the vendor seam so the
 // recon command never hardcodes vendor magics; it just asks RecognizeArtifact.
 
@@ -60,6 +61,9 @@ func RecognizeArtifact(cat *catalog.Catalog, data []byte) (ArtifactInfo, bool) {
 		}
 	}
 	if info, ok := fsgArtifact(data); ok {
+		return info, true
+	}
+	if info, ok := mediatekArtifact(data); ok {
 		return info, true
 	}
 	if p, err := ParsePIT(data); err == nil {

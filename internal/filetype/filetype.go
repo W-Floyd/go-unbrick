@@ -38,6 +38,7 @@ const (
 	PNG               Kind = "png"
 	WinHelp           Kind = "winhelp"     // .hlp, beside Windows flash tools
 	TypeLib           Kind = "com-typelib" // .tlb, a COM type library
+	SQLite            Kind = "sqlite"
 	Unknown           Kind = "unknown"
 )
 
@@ -101,6 +102,8 @@ func Detect(head []byte) Kind {
 		return WinHelp
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("MSFT")):
 		return TypeLib
+	case len(head) >= 16 && bytes.Equal(head[:16], []byte("SQLite format 3\x00")):
+		return SQLite
 	default:
 		return Unknown
 	}
