@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
@@ -22,7 +23,12 @@ import (
 // the qboot flasher. Delegates to the blankflash codec, which is this format.
 type motorola struct{}
 
-func init() { Register(motorola{}) }
+func init() {
+	Register(motorola{})
+	// A Motorola ramdisk's props are a placeholder release (fogona:13); the
+	// device and build are its HAB_META and the system image's build.prop.
+	imgfacts.StaleRamdiskProps("motorola")
+}
 
 func (motorola) ID() string       { return "motorola" }
 func (motorola) Platform() string { return PlatformQualcomm }

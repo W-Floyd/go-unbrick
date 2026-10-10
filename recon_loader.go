@@ -21,11 +21,12 @@ import (
 // knownLoader is a Firehose programmer whose signature could authenticate on
 // the device a bag describes.
 type knownLoader struct {
-	where string // library path, or the index's
-	held  bool   // in the library, so its identity was read from the file
-	ar    uint32 // its anti-rollback version, when held
-	md5   string // first 16 hex of the file's MD5, as the index keys files
-	warn  string // why it may still be refused
+	where     string // library path, or the index's
+	held      bool   // in the library, so its identity was read from the file
+	ar        uint32 // its anti-rollback version, when held
+	md5       string // first 16 hex of the file's MD5, as the index keys files
+	inPackage bool   // shipped in the package recon was given
+	warn      string // why it may still be refused
 }
 
 // loaderLines says whether a known Firehose programmer can boot the device:
@@ -45,10 +46,16 @@ func loaderLines(b *facts.Bag) []string {
 	oem, _ := facts.Get(b, facts.OEMID)
 	target := xblIdentity(b)
 
-	found := heldLoaders(jtags, roots, target)
+	found := packageLoaders(b, jtags, roots, target)
 	held := map[string]bool{}
 	for _, l := range found {
 		held[l.md5] = true
+	}
+	for _, l := range heldLoaders(jtags, roots, target) {
+		if !held[l.md5] {
+			held[l.md5] = true
+			found = append(found, l)
+		}
 	}
 	found = append(found, indexedLoaders(jtags, oem, roots, held)...)
 
@@ -66,6 +73,8 @@ func loaderLines(b *facts.Bag) []string {
 	for _, l := range found {
 		line := "  " + l.where
 		switch {
+		case l.inPackage:
+			line += fmt.Sprintf(" (in this package, ARB %d)", l.ar)
 		case l.held && target != nil:
 			line += fmt.Sprintf(" (ARB %d)", l.ar)
 		case !l.held:
@@ -121,30 +130,55 @@ func heldLoaders(jtags []string, roots map[string]bool, target *secboot.Identity
 			if err != nil {
 				continue
 			}
-			id, err := secboot.FromELF(data)
-			if err != nil || !roots[strings.ToLower(id.RootSHA256)] && !roots[strings.ToLower(id.RootSHA384)] {
-				continue
+			if l, ok := checkLoader(p, data, jtags, roots, target); ok {
+				out = append(out, l)
 			}
-			sum := md5.Sum(data)
-			l := knownLoader{where: p, held: true, ar: id.AntiRollback(), md5: hex.EncodeToString(sum[:8])}
-			if id.Meta != nil {
-				l.ar = id.Meta.AntiRollback
-			}
-			if target != nil {
-				tg := *target
-				if tg.Meta != nil {
-					tg.SWID = uint64(tg.Meta.AntiRollback) << 32
-				}
-				ld := *id
-				ld.SWID = uint64(l.ar) << 32
-				if rb := secboot.ValidateRollback(&ld, &tg); rb.Status != secboot.RollbackSafe {
-					l.warn = strings.Join(rb.Reasons, "; ")
-				}
-			}
+		}
+	}
+	return out
+}
+
+// packageLoaders checks the Firehose programmers the package itself ships.
+func packageLoaders(b *facts.Bag, jtags []string, roots map[string]bool, target *secboot.Identity) []knownLoader {
+	var out []knownLoader
+	for _, v := range b.Values(imgfacts.SourceFirehose.Name()) {
+		data, _ := v.Data.([]byte)
+		if l, ok := checkLoader(v.Source, data, jtags, roots, target); ok {
+			l.inPackage = true
 			out = append(out, l)
 		}
 	}
 	return out
+}
+
+// checkLoader reads a programmer's identity from its own signature: it must
+// be signed under one of roots and not bound to other hardware. Its
+// anti-rollback version is checked against target's, when known.
+func checkLoader(where string, data []byte, jtags []string, roots map[string]bool, target *secboot.Identity) (knownLoader, bool) {
+	id, err := secboot.FromELF(data)
+	if err != nil || !roots[strings.ToLower(id.RootSHA256)] && !roots[strings.ToLower(id.RootSHA384)] {
+		return knownLoader{}, false
+	}
+	if j := id.JTAGID; j != "" && j != "00000000" && !containsFold(jtags, j) {
+		return knownLoader{}, false
+	}
+	sum := md5.Sum(data)
+	l := knownLoader{where: where, held: true, ar: id.AntiRollback(), md5: hex.EncodeToString(sum[:8])}
+	if id.Meta != nil {
+		l.ar = id.Meta.AntiRollback
+	}
+	if target != nil {
+		tg := *target
+		if tg.Meta != nil {
+			tg.SWID = uint64(tg.Meta.AntiRollback) << 32
+		}
+		ld := *id
+		ld.SWID = uint64(l.ar) << 32
+		if rb := secboot.ValidateRollback(&ld, &tg); rb.Status != secboot.RollbackSafe {
+			l.warn = strings.Join(rb.Reasons, "; ")
+		}
+	}
+	return l, true
 }
 
 // indexName is bkerler's loader naming: HW_ID (JTAG ID, OEM ID, model) then

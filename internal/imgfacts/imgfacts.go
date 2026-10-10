@@ -52,13 +52,17 @@ func Recognizers() []facts.Recognizer {
 			// A signed image is a fact about itself; a package full of them is not
 			// one image, so inside a container this is left to the recon walk.
 			// Except its XBL: the first stage is built per SoC, so it names the
-			// package's.
+			// package's. And a Firehose programmer it ships, a loader in hand.
 			if !f.Top {
-				if !isXBL(f.Name) {
-					return nil
+				if isXBL(f.Name) {
+					facts.Set(b, SourceXBL, f.Data, facts.Provenance{Source: f.From, Authority: facts.Attested})
+					return []string{SourceXBL.Name()}
 				}
-				facts.Set(b, SourceXBL, f.Data, facts.Provenance{Source: f.From, Authority: facts.Attested})
-				return []string{SourceXBL.Name()}
+				if id, err := secboot.FromELF(f.Data); err == nil && id.SWType() == firehoseSWID {
+					facts.Set(b, SourceFirehose, f.Data, facts.Provenance{Source: f.From, Authority: facts.Attested})
+					return []string{SourceFirehose.Name()}
+				}
+				return nil
 			}
 			facts.Set(b, SourceImage, f.Data,
 				facts.Provenance{Source: f.From, Authority: facts.Attested})
@@ -75,6 +79,12 @@ var SourceImage = facts.Key[[]byte]("source:image", facts.Fmt(facts.ByteLen))
 
 // SourceXBL is a package's xbl.elf.
 var SourceXBL = facts.Key[[]byte]("source:xbl", facts.Fmt(facts.ByteLen))
+
+// SourceFirehose is a Firehose programmer a package ships (prog_firehose_ddr.elf).
+var SourceFirehose = facts.Key[[]byte]("source:firehose", facts.Fmt(facts.ByteLen))
+
+// firehoseSWID is the signed image type of an emergency Firehose programmer.
+const firehoseSWID = 3
 
 // isXBL reports the XBL by file name (xbl.elf) or partition (xbl, xbl_a, as an
 // OTA payload names it).
@@ -394,6 +404,10 @@ func FactProviders() []facts.Provider {
 		// the fact as our interpretation, not a raw read, for learning.
 		socRule(SourceImage, "ELF "),
 		socRule(SourceXBL, "xbl "),
+		// A boot or recovery ramdisk names the device and build, unless its
+		// brand's driver says its copy is stale (see StaleRamdiskProps).
+		RamdiskProp(facts.Codename, ramdiskTrusted, "ro.product.bootimage.device", "ro.product.vendor.device", "ro.product.device"),
+		RamdiskProp(facts.BuildFingerprint, ramdiskTrusted, "ro.bootimage.build.fingerprint", "ro.vendor.build.fingerprint", "ro.build.fingerprint"),
 	}...)
 }
 
@@ -621,6 +635,36 @@ func socRule(in facts.Fact[[]byte], label string) facts.Rule {
 			facts.Set(b, facts.SoC, info.TargetSoC, facts.Provenance{
 				Source: label + strings.TrimSpace(info.QCVersion), Authority: facts.Derived})
 			return true, nil
+		},
+	}
+}
+
+var staleRamdisk = map[string]bool{}
+
+// StaleRamdiskProps marks a brand (lowercase) whose boot ramdisk props do not
+// state the device or build, so they are not read as facts. Call it from init.
+func StaleRamdiskProps(brand string) { staleRamdisk[brand] = true }
+
+func ramdiskTrusted(brand string) bool { return brand != "" && !staleRamdisk[brand] }
+
+// RamdiskProp is a rule reading the first of keys set in a boot or recovery
+// image's ramdisk props, from an image whose brand (lowercased) brandOK
+// accepts.
+func RamdiskProp(out facts.Fact[string], brandOK func(string) bool, keys ...string) facts.Rule {
+	return facts.Rule{
+		Out: out.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested,
+		Fn: func(b *facts.Bag) (bool, error) {
+			for _, data := range facts.GetAll(b, SourceBootImage) {
+				p := BuildProps(data)
+				if !brandOK(strings.ToLower(firstProp(p, "ro.product.bootimage.brand", "ro.product.vendor.brand", "ro.product.brand"))) {
+					continue
+				}
+				if v := firstProp(p, keys...); v != "" {
+					facts.Set(b, out, v, facts.Provenance{Source: "boot ramdisk props", Authority: facts.Attested})
+					return true, nil
+				}
+			}
+			return false, nil
 		},
 	}
 }
