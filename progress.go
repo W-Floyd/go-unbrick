@@ -36,6 +36,9 @@ type barSink struct {
 	mu     sync.Mutex
 	label  string
 	paused bool
+	// spin is the spinner a Describe before Begin draws, while the step
+	// count is not yet known (a package's members still being listed).
+	spin, spun chan struct{}
 }
 
 // newBar is a step bar, or nil off a terminal.
@@ -47,7 +50,11 @@ func newBar() *barSink {
 }
 
 func (b *barSink) Begin(total int) {
-	if b == nil || total <= 0 {
+	if b == nil {
+		return
+	}
+	b.stopSpin()
+	if total <= 0 {
 		return
 	}
 	// The total is fixed once set: sub-steps relabel via Describe without
@@ -83,11 +90,50 @@ func (b *barSink) tick(bar *progressbar.ProgressBar) {
 }
 
 func (b *barSink) Describe(label string) {
-	if b != nil && b.bar != nil {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.label, b.paused = label, false
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.label, b.paused = label, false
+	if b.bar != nil {
 		b.bar.Describe(label + netStatus())
+		return
+	}
+	if b.spin == nil {
+		b.spin, b.spun = make(chan struct{}), make(chan struct{})
+		go b.spinner(b.spin, b.spun)
+	}
+}
+
+func (b *barSink) spinner(stop, done chan struct{}) {
+	defer close(done)
+	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for i := 0; ; i++ {
+		b.mu.Lock()
+		if !b.paused {
+			fmt.Fprintf(os.Stderr, "\r\033[K%c %s%s", frames[i%len(frames)], b.label, netStatus())
+		}
+		b.mu.Unlock()
+		select {
+		case <-stop:
+			clearProgress()
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (b *barSink) stopSpin() {
+	b.mu.Lock()
+	stop, done := b.spin, b.spun
+	b.spin, b.spun = nil, nil
+	b.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
 	}
 }
 
@@ -103,7 +149,11 @@ func (b *barSink) Advance() {
 // Clear wipes the bar mid-run, so a caller can print; the next Describe or
 // Advance redraws it below whatever was printed.
 func (b *barSink) Clear() {
-	if b != nil && b.bar != nil {
+	if b == nil {
+		return
+	}
+	b.stopSpin()
+	if b.bar != nil {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.paused = true

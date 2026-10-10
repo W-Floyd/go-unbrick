@@ -15,6 +15,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
@@ -205,21 +206,35 @@ func Members(path string, headLen int) ([]Member, error) {
 		return nil, err
 	}
 	defer a.close()
-	out := make([]Member, 0, len(a.entries))
-	for _, e := range a.entries {
-		m := Member{Name: e.name, Size: e.size}
+	out := make([]Member, len(a.entries))
+	// Concurrently: over HTTP each head is a round trip, and a package can
+	// have a hundred members.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, headReaders)
+	for i, e := range a.entries {
+		out[i] = Member{Name: e.name, Size: e.size}
 		if e.head != nil {
-			m.Head = e.head[:min(len(e.head), headLen)]
-		} else if rc, err := e.open(); err == nil {
-			head := make([]byte, headLen)
-			n, _ := io.ReadFull(rc, head)
-			m.Head = head[:n]
-			rc.Close()
+			out[i].Head = e.head[:min(len(e.head), headLen)]
+			continue
 		}
-		out = append(out, m)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if rc, err := e.open(); err == nil {
+				head := make([]byte, headLen)
+				n, _ := io.ReadFull(rc, head)
+				out[i].Head = head[:n]
+				rc.Close()
+			}
+		}()
 	}
+	wg.Wait()
 	return out, nil
 }
+
+// headReaders bounds the member heads read at once.
+const headReaders = 8
 
 // Entry is an archive member as a walker of nested containers needs it.
 type Entry struct {

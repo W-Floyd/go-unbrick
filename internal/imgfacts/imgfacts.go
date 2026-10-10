@@ -114,6 +114,9 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 	// recovery's ramdisk and nothing smaller carries it. The bulk images (super,
 	// the sparse chunks) stay past the cap — a manifest states their facts more
 	// cheaply.
+	if p != nil {
+		p.Describe("listing " + base)
+	}
 	members, err := srcfile.Members(path, 8192)
 	if err != nil {
 		return err
@@ -153,14 +156,31 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		p.Describe("reading partition images")
 	}
 	ingestPartitionFiles(b, rs, path, base)
-	for _, m := range read {
+	// Fetched a few at a time, as over HTTP each is round trips the next
+	// need not wait on; recognized in order, as the bag is not concurrent.
+	fetched := make([]chan []byte, len(read))
+	for i := range fetched {
+		fetched[i] = make(chan []byte, 1)
+	}
+	window := make(chan struct{}, memberReaders)
+	go func() {
+		for i, m := range read {
+			window <- struct{}{}
+			go func() {
+				_, data, _ := srcfile.Open(path, filepath.Base(m.Name))
+				fetched[i] <- data
+			}()
+		}
+	}()
+	for i, m := range read {
 		name := filepath.Base(m.Name)
 		if p != nil {
 			p.Describe("reading " + name)
 		}
-		if _, data, err := srcfile.Open(path, name); err == nil {
+		if data := <-fetched[i]; data != nil {
 			facts.Recognize(b, rs, facts.File{Name: name, Data: data, From: base + " " + name})
 		}
+		<-window
 		if p != nil {
 			p.Advance()
 		}
@@ -244,6 +264,9 @@ func isBootKind(head []byte) bool {
 // the sparse chunks) are past all three, and carry no fact a manifest does not
 // state more cheaply.
 const (
+	// memberReaders bounds the members fetched ahead of recognition, which
+	// is also how many are held at once.
+	memberReaders       = 4
 	maxTopRead          = 256 << 20
 	maxMemberRead       = 8 << 20
 	maxBootRead   int64 = 128 << 20
