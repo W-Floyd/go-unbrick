@@ -54,7 +54,7 @@ func Recognizers() []facts.Recognizer {
 			// Except its XBL: the first stage is built per SoC, so it names the
 			// package's.
 			if !f.Top {
-				if !strings.EqualFold(f.Name, "xbl.elf") {
+				if !isXBL(f.Name) {
 					return nil
 				}
 				facts.Set(b, SourceXBL, f.Data, facts.Provenance{Source: f.From, Authority: facts.Attested})
@@ -75,6 +75,13 @@ var SourceImage = facts.Key[[]byte]("source:image", facts.Fmt(facts.ByteLen))
 
 // SourceXBL is a package's xbl.elf.
 var SourceXBL = facts.Key[[]byte]("source:xbl", facts.Fmt(facts.ByteLen))
+
+// isXBL reports the XBL by file name (xbl.elf) or partition (xbl, xbl_a, as an
+// OTA payload names it).
+func isXBL(name string) bool {
+	n := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(filepath.Base(name), ".elf"), ".img"))
+	return n == "xbl" || n == "xbl_a" || n == "xbl_b"
+}
 
 // Keys whose values are cert identities. Two facts, not one: the chain a signed
 // image carries is the boot-time trust, the certs in recovery's otacerts.zip are

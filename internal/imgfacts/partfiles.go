@@ -238,6 +238,30 @@ func partitionProviders() []facts.Provider {
 				return true, nil
 			},
 		},
+		// Without per-SKU files, the odm's own build.prop can name the product
+		// where every other partition keeps the SoC vendor's reference identity
+		// (a FiiO M21 is otherwise qti/bengal_515). A "model" that is just the
+		// device codename names nothing.
+		facts.Rule{
+			Out: facts.Model.Name(), In: []string{SourcePartProps.Name()}, Price: 2, Level: facts.Attested,
+			Fn: func(b *facts.Bag) (bool, error) {
+				ps := partProps(b, "odm")
+				for _, p := range ps {
+					if p.SKU != "" {
+						return false, nil
+					}
+				}
+				for _, p := range ps {
+					m := firstProp(p.Props, "ro.product.odm.marketname", "ro.product.odm.model")
+					if m == "" || strings.EqualFold(m, p.Props["ro.product.odm.device"]) {
+						continue
+					}
+					facts.Set(b, facts.Model, m, facts.Provenance{Source: "odm/" + p.File, Authority: facts.Attested})
+					return true, nil
+				}
+				return false, nil
+			},
+		},
 
 		facts.Rule{
 			Out: facts.DataEncryption.Name(), In: []string{SourceFstab.Name()}, Price: 1, Level: facts.Attested,
