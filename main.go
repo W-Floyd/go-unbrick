@@ -13,6 +13,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // v holds global config, resolved from flags, env (UNBRICK_*), and an optional
@@ -59,6 +60,7 @@ func newRootCmd() *cobra.Command {
 	_ = v.BindPFlag("debug-http", root.PersistentFlags().Lookup("debug-http"))
 	cobra.OnInitialize(func() {
 		infile.CacheDir = v.GetString("http-cache")
+		infile.Mirrors = vendor.Mirrors
 		if v.GetBool("debug-http") {
 			infile.Log = func(format string, args ...any) { fmt.Fprintf(os.Stderr, "[http] "+format+"\n", args...) }
 		}
@@ -79,9 +81,9 @@ func newRootCmd() *cobra.Command {
 		newHarvestCmd(), newForgeCmd(), newInspectCmd(),
 		newCatalogCmd(), newLibraryCmd(), newDeriveCmd(),
 		newStockCmd(), newEFICmd(), newDiffCmd(),
-		newSafeguardCmd(), newFastbootCmd(), newBootimgCmd(),
-		newEDLCmd(), newUnlockCmd(), newCIDCmd(), newModemCmd(), newSLCFCmd(),
-		newReconCmd(), newSSHCmd(), newADBCmd(),
+		newSafeguardCmd(), newFastbootCmd(),
+		newEDLCmd(), newUnlockCmd(), newCIDCmd(), newSLCFCmd(),
+		newReconCmd(), newSSHCmd(), newADBCmd(), newLsCmd(), newTreeCmd(), newExtractCmd(),
 	)
 	return root
 }

@@ -8,6 +8,7 @@ package srcfile
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"fmt"
@@ -86,6 +87,7 @@ type entry struct {
 	size uint64
 	head []byte // prefilled when reading the head again would be costly (tgz)
 	open func() (io.ReadCloser, error)
+	at   io.ReaderAt // the member at random, when its container allows; nil otherwise
 }
 
 type archive struct {
@@ -106,7 +108,11 @@ func openArchive(path string) (*archive, error) {
 			if f.FileInfo().IsDir() {
 				continue
 			}
-			a.entries = append(a.entries, entry{name: f.Name, size: f.UncompressedSize64, open: f.Open})
+			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open}
+			if off, err := f.DataOffset(); err == nil && f.Method == zip.Store {
+				e.at = io.NewSectionReader(zr.Input(), off, int64(f.UncompressedSize64))
+			}
+			a.entries = append(a.entries, e)
 		}
 		return a, nil
 	case tarKind:
@@ -148,7 +154,7 @@ func openTar(path string) (*archive, error) {
 			return nil, err
 		}
 		sr := io.NewSectionReader(f, off, hdr.Size)
-		a.entries = append(a.entries, entry{name: hdr.Name, size: uint64(hdr.Size),
+		a.entries = append(a.entries, entry{name: hdr.Name, size: uint64(hdr.Size), at: sr,
 			open: func() (io.ReadCloser, error) { return io.NopCloser(io.NewSectionReader(sr, 0, sr.Size())), nil }})
 	}
 }
@@ -201,6 +207,38 @@ func Members(path string, headLen int) ([]Member, error) {
 	}
 	return out, nil
 }
+
+// Entry is an archive member as a walker of nested containers needs it.
+type Entry struct {
+	Name string
+	Size uint64
+	Open func() (io.ReadCloser, error)
+	// At reads the member at random without decoding what precedes it: a tar
+	// member, a stored zip member, a .tgz member under rapidgzip. Nil when the
+	// member can only be streamed.
+	At io.ReaderAt
+}
+
+// Entries lists path's members for reading, which stays possible until close.
+// It returns nil (no error) when path is not an archive.
+func Entries(path string) ([]Entry, io.Closer, error) {
+	if !IsArchive(path) {
+		return nil, nil, nil
+	}
+	a, err := openArchive(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make([]Entry, 0, len(a.entries))
+	for _, e := range a.entries {
+		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at})
+	}
+	return out, closerFunc(a.close), nil
+}
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
 
 // Glob returns the base names of members whose base name matches pattern
 // (filepath.Match syntax), in archive order. It returns nil (no error) when path

@@ -1,0 +1,395 @@
+package carve
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"fmt"
+	"io"
+	"io/fs"
+	"path"
+	"strings"
+
+	"github.com/W-Floyd/erofs"
+
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/dtbo"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/lp"
+	"github.com/W-Floyd/go-unbrick/internal/modem"
+	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/sparse"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
+)
+
+func init() {
+	Register(
+		// The input itself, when it is an archive: srcfile knows how to reach
+		// the members of a remote one cheaply.
+		Expander{Kind: "archive", Match: func(n *Node, _ []byte) bool { return n.path != "" && srcfile.IsArchive(n.path) }, Expand: expandInput},
+		Expander{Kind: "zip", Match: kind(filetype.Zip), Expand: expandZip},
+		Expander{Kind: "tar", Match: kind(filetype.Tar), Expand: expandTar},
+		// Before gzip: a boot image's ramdisk is often gzip, and is a cpio.
+		Expander{Kind: "ramdisk", Match: isRamdisk, Expand: expandRamdisk},
+		Expander{Kind: "gzip", Match: kind(filetype.Gzip), Expand: expandGzip},
+		Expander{Kind: "payload", Match: kind(filetype.OTAPayload), Expand: expandPayload},
+		Expander{Kind: "sparse", Match: kind(filetype.SparseImage), Expand: expandSparse},
+		Expander{Kind: "super", Match: func(_ *Node, h []byte) bool { return lp.IsSuper(h) }, Expand: expandSuper},
+		Expander{Kind: "fat", Match: kind(filetype.FAT), Expand: expandFirmwareFS, FS: firmwareFS},
+		Expander{Kind: "ext4", Match: kind(filetype.Ext4), Expand: expandFirmwareFS, FS: firmwareFS},
+		Expander{Kind: "erofs", Match: kind(filetype.EROFS), Expand: expandEROFS, FS: erofsFS},
+		Expander{Kind: "boot", Match: kind(filetype.AndroidBoot, filetype.AndroidVendorBoot), Expand: expandBoot},
+		Expander{Kind: "single_n_lonely", Match: kind(filetype.SingleNLonely), Expand: expandSingleNLonely},
+		Expander{Kind: "dtbo", Match: kind(filetype.DTBOTable), Expand: expandDTBO},
+	)
+}
+
+func kind(ks ...filetype.Kind) func(*Node, []byte) bool {
+	return func(_ *Node, h []byte) bool {
+		d := filetype.Detect(h)
+		for _, k := range ks {
+			if d == k {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func expandInput(n *Node) ([]*Node, error) {
+	es, _, err := srcfile.Entries(n.path) // held open for the process
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, e := range es {
+		if e.At != nil {
+			out = append(out, FromReaderAt(e.Name, e.At, int64(e.Size)))
+		} else {
+			out = append(out, FromStream(e.Name, int64(e.Size), e.Open))
+		}
+	}
+	return out, nil
+}
+
+func expandZip(n *Node) ([]*Node, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	zr, err := zip.NewReader(ra, n.Size)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if off, err := f.DataOffset(); err == nil && f.Method == zip.Store {
+			out = append(out, FromReaderAt(f.Name, io.NewSectionReader(ra, off, int64(f.UncompressedSize64)), int64(f.UncompressedSize64)))
+			continue
+		}
+		open := func() (io.ReadCloser, error) { return f.Open() }
+		out = append(out, FromStream(f.Name, int64(f.UncompressedSize64), open))
+	}
+	return out, nil
+}
+
+// expandTar indexes a tar: tar.Reader seeks past each body, so every member
+// is a section of the parent.
+func expandTar(n *Node) ([]*Node, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	sr := io.NewSectionReader(ra, 0, n.Size)
+	tr := tar.NewReader(sr)
+	var out []*Node
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
+		off, _ := sr.Seek(0, io.SeekCurrent)
+		out = append(out, FromReaderAt(h.Name, io.NewSectionReader(ra, off, h.Size), h.Size))
+	}
+}
+
+// expandGzip has one child, the decompressed stream, named as gzip names it.
+func expandGzip(n *Node) ([]*Node, error) {
+	name := strings.TrimSuffix(path.Base(n.Name), ".gz")
+	if strings.HasSuffix(name, ".tgz") {
+		name = strings.TrimSuffix(name, ".tgz") + ".tar"
+	}
+	if name == path.Base(n.Name) {
+		name += ".out"
+	}
+	open := func() (io.ReadCloser, error) {
+		rc, err := n.Reader()
+		if err != nil {
+			return nil, err
+		}
+		z, err := gzip.NewReader(rc)
+		if err != nil {
+			rc.Close()
+			return nil, err
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{z, rc}, nil
+	}
+	return []*Node{FromStream(name, -1, open)}, nil
+}
+
+func expandPayload(n *Node) ([]*Node, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	p, err := payload.NewFromReaderAt(ra, n.Size)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, name := range p.Partitions() {
+		pra, size, err := p.PartitionReaderAt(name)
+		if err != nil {
+			continue // a delta partition, which needs the old image to apply
+		}
+		out = append(out, FromReaderAt(name, pra, size))
+	}
+	return out, nil
+}
+
+func expandSparse(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := sparse.Decode(b)
+	if err != nil {
+		return nil, err
+	}
+	return []*Node{FromBytes("unsparsed", raw)}, nil
+}
+
+// expandSuper maps super's logical partitions through their extents.
+func expandSuper(n *Node) ([]*Node, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	meta := make([]byte, min(n.Size, 1<<20))
+	if _, err := ra.ReadAt(meta, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	md, err := lp.Parse(meta)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, p := range md.Partitions {
+		if p.SizeBytes == 0 {
+			continue
+		}
+		var parts []extent
+		for _, e := range p.Extents {
+			parts = append(parts, extent{ra: ra, off: int64(e.Offset), size: int64(e.Size), zero: !e.Linear})
+		}
+		out = append(out, FromReaderAt(p.Name, &concat{parts: parts}, int64(p.SizeBytes)))
+	}
+	return out, nil
+}
+
+// expandFirmwareFS lists a FAT or ext4 image's files, and adds each PIL split
+// (an .mdt with its .bNN segments) joined into the ELF it was split from, as
+// "<name>.mdt.joined".
+func expandFirmwareFS(n *Node) ([]*Node, error) {
+	img, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := modem.List(img)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, e := range entries {
+		p := e.Path
+		out = append(out, FromStream(p, int64(e.Size), func() (io.ReadCloser, error) {
+			b, err := modem.Extract(img, p)
+			return io.NopCloser(bytes.NewReader(b)), err
+		}))
+		if strings.EqualFold(path.Ext(p), ".mdt") {
+			if joined, _, err := modem.JoinSplit(img, p); err == nil {
+				out = append(out, FromBytes(p+".joined", joined))
+			}
+		}
+	}
+	return out, nil
+}
+
+func erofsFS(n *Node) (fs.FS, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	return erofs.Open(padReaderAt{ra})
+}
+
+func expandEROFS(n *Node) ([]*Node, error) {
+	img, err := erofsFS(n)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	err = fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
+		return nil
+	})
+	return out, err
+}
+
+func expandBoot(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	im, err := bootimg.Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, s := range im.Sections {
+		out = append(out, FromBytes(s.Name, s.Data))
+	}
+	return out, nil
+}
+
+// isRamdisk claims a boot image's ramdisk section, however compressed, and
+// any plain cpio archive.
+func isRamdisk(n *Node, h []byte) bool {
+	return bytes.HasPrefix(h, []byte("070701")) || bytes.HasPrefix(h, []byte("070702")) ||
+		strings.Contains(n.Name, "ramdisk") && bootimg.DetectCodec(h) != ""
+}
+
+func expandRamdisk(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.HasPrefix(b, []byte("0707")) {
+		if b, _, err = bootimg.DecompressRamdisk(b); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := bootimg.ParseCpioConcat(b)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, e := range entries {
+		if e.IsDir || e.IsLink || e.Name == "TRAILER!!!" {
+			continue
+		}
+		out = append(out, FromBytes(e.Name, e.Data))
+	}
+	return out, nil
+}
+
+func expandSingleNLonely(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	recs, err := blankflash.Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, r := range recs {
+		out = append(out, FromBytes(r.Name, r.Data))
+	}
+	return out, nil
+}
+
+func expandDTBO(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	t, err := dtbo.Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for i, e := range t.Entries {
+		if int(e.Offset)+int(e.Size) > len(b) {
+			return out, fmt.Errorf("dtbo entry %d runs past the image", i)
+		}
+		out = append(out, FromBytes(fmt.Sprintf("%02d-id%x-rev%x.dtb", i, e.ID, e.Rev), b[e.Offset:e.Offset+e.Size]))
+	}
+	return out, nil
+}
+
+// extent is one run of a logical partition: bytes of super, or zeros.
+type extent struct {
+	ra        io.ReaderAt
+	off, size int64
+	zero      bool
+}
+
+// concat reads extents end to end as one image.
+type concat struct{ parts []extent }
+
+func (c *concat) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for _, e := range c.parts {
+		if off >= e.size {
+			off -= e.size
+			continue
+		}
+		k := int(min(int64(len(p)-n), e.size-off))
+		if e.zero {
+			clear(p[n : n+k])
+		} else if _, err := e.ra.ReadAt(p[n:n+k], e.off+off); err != nil && err != io.EOF {
+			return n, err
+		}
+		n += k
+		off = 0
+		if n == len(p) {
+			return n, nil
+		}
+	}
+	return n, io.EOF
+}
+
+// padReaderAt zero-fills reads past the end, which the EROFS reader makes
+// when it over-reads a final physical cluster.
+type padReaderAt struct{ io.ReaderAt }
+
+func (p padReaderAt) ReadAt(b []byte, off int64) (int, error) {
+	n, err := p.ReaderAt.ReadAt(b, off)
+	if err == io.EOF {
+		clear(b[n:])
+		return len(b), nil
+	}
+	return n, err
+}

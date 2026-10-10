@@ -59,7 +59,7 @@ func openTGZ(path string) (*archive, error) {
 			return fail(err)
 		}
 		sr := io.NewSectionReader(z, off, hdr.Size)
-		es = append(es, entry{name: hdr.Name, size: uint64(hdr.Size),
+		es = append(es, entry{name: hdr.Name, size: uint64(hdr.Size), at: sr,
 			open: func() (io.ReadCloser, error) { return io.NopCloser(io.NewSectionReader(sr, 0, sr.Size())), nil }})
 	}
 	tgzCache.m[path] = es

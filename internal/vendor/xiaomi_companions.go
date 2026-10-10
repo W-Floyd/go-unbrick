@@ -1,8 +1,10 @@
 package vendor
 
 import (
+	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -41,12 +43,41 @@ func (xiaomi) Companions(p string, known []string) []Companion {
 	want := regexp.MustCompile("^" + xiaomiHoles.Replace(regexp.QuoteMeta(c.Hint)) + "$")
 	for _, k := range known {
 		if _, kn := splitLocation(k); want.MatchString(kn) {
-			c.URL = k
+			c.URL, c.Found = k, true
 			break
 		}
 	}
 	c.Hint = dir + c.Hint
 	return []Companion{c}
+}
+
+// xiaomiCDN are the hosts that serve Xiaomi's ROM downloads at the same
+// path, all fronting one bucket (they return the same ETag). Measured from one
+// place, any can be the fastest, and any can stall.
+var xiaomiCDN = []string{
+	"cdnorg.d.miui.com",
+	"bn.d.miui.com",
+	"bigota.d.miui.com",
+	"hugeota.d.miui.com",
+	"bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com",
+}
+
+// Mirrors implements Mirrorer: a download on one of Xiaomi's CDN hosts is
+// on the others too.
+func (xiaomi) Mirrors(u string) []string {
+	pu, err := url.Parse(u)
+	if err != nil || !slices.Contains(xiaomiCDN, pu.Host) {
+		return nil
+	}
+	var out []string
+	for _, h := range xiaomiCDN {
+		if h != pu.Host {
+			m := *pu
+			m.Host = h
+			out = append(out, m.String())
+		}
+	}
+	return out
 }
 
 // splitLocation splits a path or URL into the directory part, kept as given

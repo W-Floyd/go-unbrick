@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 	"github.com/W-Floyd/go-unbrick/internal/fastboot"
@@ -275,10 +276,11 @@ type CompanionFinder interface {
 // Companion is another package of the same release.
 type Companion struct {
 	What string // e.g. "full OTA"
-	// URL is where it is, when derived whole or found in known. Otherwise
-	// Hint is its name with the parts that cannot be derived marked.
-	URL  string
-	Hint string
+	// URL is where it is, when derived whole or found in known (Found).
+	// Otherwise Hint is its name with the parts that cannot be derived marked.
+	URL   string
+	Found bool
+	Hint  string
 }
 
 // Companions gathers every registered driver's suggestions for path.
@@ -287,6 +289,41 @@ func Companions(path string, known []string) []Companion {
 	for _, d := range Drivers() {
 		if cf, ok := d.(CompanionFinder); ok {
 			out = append(out, cf.Companions(path, known)...)
+		}
+	}
+	return out
+}
+
+// Mirrorer is an optional Driver capability: the other URLs this OEM serves
+// one download from (its CDN hosts), which a fetch spreads over and falls
+// back to.
+type Mirrorer interface {
+	Mirrors(u string) []string
+}
+
+// Mirrors gathers every registered driver's mirrors for u.
+func Mirrors(u string) []string {
+	var out []string
+	for _, d := range Drivers() {
+		if m, ok := d.(Mirrorer); ok {
+			out = append(out, m.Mirrors(u)...)
+		}
+	}
+	return out
+}
+
+// Carver is an optional Driver capability: this OEM's own container formats,
+// so `ls` and `extract` reach inside them as they do the neutral ones.
+type Carver interface {
+	CarveExpanders() []carve.Expander
+}
+
+// CarveExpanders gathers every registered driver's container formats.
+func CarveExpanders() []carve.Expander {
+	var out []carve.Expander
+	for _, d := range Drivers() {
+		if c, ok := d.(Carver); ok {
+			out = append(out, c.CarveExpanders()...)
 		}
 	}
 	return out

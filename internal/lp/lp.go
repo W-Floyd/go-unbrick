@@ -31,6 +31,15 @@ type Partition struct {
 	// extent. Enough to seek to a logical volume (system, product) inside super
 	// without mapping it.
 	OffsetBytes uint64
+	// Extents maps the partition, in order, onto byte ranges of super. A
+	// non-linear extent (zero fill) has Linear false.
+	Extents []Extent
+}
+
+// Extent is one run of a logical partition.
+type Extent struct {
+	Offset, Size uint64
+	Linear       bool
 }
 
 // Metadata is the parsed super map.
@@ -114,8 +123,13 @@ func Parse(data []byte) (*Metadata, error) {
 		numExtents := le.Uint32(e[44:48])
 		groupIdx := le.Uint32(e[48:52])
 		var sectors uint64
+		var exts []Extent
 		for x := uint32(0); x < numExtents; x++ {
-			sectors += extentSectors(firstExtent + x)
+			n := extentSectors(firstExtent + x)
+			sectors += n
+			b := int(eOff + (firstExtent+x)*eEntry)
+			linear := b+12 <= len(tables) && le.Uint32(tables[b+8:b+12]) == extentLinear
+			exts = append(exts, Extent{Offset: extentTarget(firstExtent+x) * sectorSize, Size: n * sectorSize, Linear: linear})
 		}
 		grp := ""
 		if int(groupIdx) < len(groups) {
@@ -124,6 +138,7 @@ func Parse(data []byte) (*Metadata, error) {
 		m.Partitions = append(m.Partitions, Partition{
 			Name: name, SizeBytes: sectors * sectorSize, Group: grp,
 			OffsetBytes: extentTarget(firstExtent) * sectorSize,
+			Extents:     exts,
 		})
 	}
 	return m, nil
