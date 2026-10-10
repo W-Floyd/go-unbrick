@@ -67,3 +67,31 @@ func TestLoaderLines(t *testing.T) {
 		t.Errorf("a05s: %q", got)
 	}
 }
+
+func TestProductKey(t *testing.T) {
+	p := facts.Provenance{Source: "test", Authority: facts.Attested}
+	bag := func(fp, model string) *facts.Bag {
+		b := facts.NewBag()
+		facts.Set(b, facts.BuildFingerprint, fp, p)
+		if model != "" {
+			facts.Set(b, facts.Model, model, p)
+		}
+		return b
+	}
+	for _, c := range []struct {
+		fp, model, want string
+		ok              bool
+	}{
+		{"samsung/a05sddxx/a05s:13/TP1A/M145FXXSDDZH1:user/release-keys", "", "a05s", true},
+		{"qti/bengal_515/bengal_515:13/TKQ1/eng:user/dev-keys", "FiiO M21", "bengal_515-fiio-m21", true},
+		{"qti/bengal_515/bengal_515:13/TKQ1/eng:user/dev-keys", "", "", false},
+	} {
+		codename := "a05s"
+		if c.want != "a05s" {
+			codename = "bengal_515"
+		}
+		if got, ok := productKey(bag(c.fp, c.model), codename); got != c.want || ok != c.ok {
+			t.Errorf("%s %q: %q %v, want %q %v", c.fp, c.model, got, ok, c.want, c.ok)
+		}
+	}
+}

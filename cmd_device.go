@@ -164,7 +164,12 @@ func transportSerials(tr transport.Transport) []string {
 func learnFromRecon(bag *facts.Bag, pin string, serials []string, detected string) {
 	key := "" // codename is the model-level key; JTAG is the fallback
 	if v, ok := facts.Get(bag, facts.Codename); ok {
-		key = v
+		k, ok := productKey(bag, v)
+		if !ok {
+			fmt.Printf("\n  %s codename %s is the SoC vendor's reference board, and nothing names the product — not learned\n", cWarn("[i]"), v)
+			return
+		}
+		key = k
 	}
 	vendorID := ""
 	if v, ok := facts.Get(bag, facts.OEMID); ok {
@@ -229,6 +234,37 @@ func learnFromRecon(bag *facts.Bag, pin string, serials []string, detected strin
 	if len(added) > 0 {
 		fmt.Printf("\n  knowledge %s: learned %d new fact(s)%s\n", key, len(added), stitched)
 	}
+}
+
+// referenceBrands are the fingerprint brands of SoC vendors' reference builds
+// (Qualcomm's, MediaTek's). A product shipped on one keeps the reference
+// codename (bengal_515), which every such product shares.
+var referenceBrands = map[string]bool{"qti": true, "alps": true}
+
+// productKey is the knowledge key for codename: the codename itself, or for a
+// reference build the codename and the product's model ("bengal_515-fiio-m21").
+// ok is false for a reference build nothing names the product of, which
+// learning under the bare codename would pool with every other.
+func productKey(bag *facts.Bag, codename string) (key string, ok bool) {
+	fp, _ := facts.Get(bag, facts.BuildFingerprint)
+	brand, _, _ := strings.Cut(fp, "/")
+	if !referenceBrands[strings.ToLower(brand)] {
+		return codename, true
+	}
+	model, _ := facts.Get(bag, facts.Model)
+	slug := strings.Trim(strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + 'a' - 'A'
+		}
+		return '-'
+	}, model), "-")
+	if slug == "" {
+		return "", false
+	}
+	return codename + "-" + slug, true
 }
 
 // hashedIDs turns raw hardware serials into stable hashes, so a session can be
