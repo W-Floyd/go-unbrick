@@ -119,6 +119,9 @@ type ZipReader struct {
 
 func (z *ZipReader) Close() error { return z.f.Close() }
 
+// Input is what the zip is read from, for reading a stored member in place.
+func (z *ZipReader) Input() *File { return z.f }
+
 // OpenZip is zip.OpenReader. Over a URL only the end-of-central-directory and
 // the directory itself are fetched; members are fetched as they are read.
 func OpenZip(p string) (*ZipReader, error) {

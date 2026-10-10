@@ -3,6 +3,7 @@ package infile
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -52,6 +53,7 @@ func reset(t *testing.T) {
 	CacheDir = t.TempDir()
 	remotesMu.Lock()
 	remotes = map[string]*remote{}
+	byDir = map[string]*remote{}
 	remotesMu.Unlock()
 }
 
@@ -59,6 +61,7 @@ func reset(t *testing.T) {
 func forget() {
 	remotesMu.Lock()
 	remotes = map[string]*remote{}
+	byDir = map[string]*remote{}
 	remotesMu.Unlock()
 }
 
@@ -173,5 +176,50 @@ func TestRemoteChangedMidRun(t *testing.T) {
 	}
 	if _, err := f.ReadAt(make([]byte, 10), chunkSize); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A response that stops arriving without closing is abandoned and retried,
+// not waited on forever.
+func TestRemoteStalledTransferRetried(t *testing.T) {
+	reset(t)
+	saved := IdleTimeout
+	IdleTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { IdleTimeout = saved })
+	body := randBytes(2 * chunkSize)
+	var gets atomic.Int64
+	release := make(chan struct{})
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		if r.Header.Get("Range") != "bytes=0-0" && gets.Add(1) == 1 {
+			// Headers and a little of the body, then nothing.
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", chunkSize, 2*chunkSize-1, len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(body[chunkSize : chunkSize+100])
+			w.(http.Flusher).Flush()
+			<-release
+			return
+		}
+		http.ServeContent(w, r, "f", time.Unix(0, 0), bytes.NewReader(body))
+	}))
+	t.Cleanup(s.Close)
+	t.Cleanup(func() { close(release) }) // before s.Close, which waits for the stalled handler
+	f, err := Open(s.URL + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 10)
+	done := make(chan error, 1)
+	go func() { _, err := f.ReadAt(got, chunkSize); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil || !bytes.Equal(got, body[chunkSize:chunkSize+10]) {
+			t.Fatalf("ReadAt after a stall: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReadAt hung on a stalled transfer")
+	}
+	if gets.Load() < 2 {
+		t.Errorf("%d range requests, want a retry after the stall", gets.Load())
 	}
 }

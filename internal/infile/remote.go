@@ -1,6 +1,7 @@
 package infile
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +26,10 @@ var (
 	Log func(format string, args ...any)
 	// Client carries no overall timeout: one range read may stream hundreds of MB.
 	Client = &http.Client{}
+	// Mirrors, when set, names other URLs that serve the same object as a
+	// URL (a publisher's CDN hosts). They are tried when it fails or stalls;
+	// If-Range on its strong ETag keeps a mirror from serving anything else.
+	Mirrors func(u string) []string
 )
 
 // chunkSize is the cache's fetch granularity. Small enough that sniffing a zip
@@ -44,10 +50,12 @@ var fetched atomic.Int64
 func Fetched() int64 { return fetched.Load() }
 
 // One *remote per URL per process: every Open shares its validation and file
-// handles, so the many independent opens a recon makes cost one probe.
+// handles, so the many independent opens a recon makes cost one probe. Mirrors
+// of one object share a cache entry, and so one *remote (byDir).
 var (
 	remotesMu sync.Mutex
 	remotes   = map[string]*remote{}
+	byDir     = map[string]*remote{}
 )
 
 type meta struct {
@@ -74,26 +82,42 @@ func (m meta) ifRange() string {
 // same reports whether two observations name the same remote content. With no
 // validator at all, size is the only evidence available.
 func (m meta) same(o meta) bool {
-	return m.Size == o.Size && m.ChunkSize == o.ChunkSize &&
-		m.ETag == o.ETag && m.LastModified == o.LastModified
+	if m.Size != o.Size || m.ChunkSize != o.ChunkSize || m.ETag != o.ETag {
+		return false
+	}
+	// A strong ETag names the content; mirrors can stamp it with their own
+	// Last-Modified.
+	return m.strongETag() || m.LastModified == o.LastModified
 }
 
 // remote is a URL's content as a sparse cache file plus a one-byte-per-chunk
 // presence map. A chunk is marked only after its bytes are written, so an
 // interrupted run leaves a cache that is incomplete but never wrong.
 type remote struct {
-	url  string
+	url  string // what was probed
 	meta meta
 	size int64
+
+	urls    []string        // url and its mirrors, which fetches spread over
+	dropped map[string]bool // mirrors found serving something else
+	dropMu  sync.Mutex
 
 	mu   sync.Mutex
 	data *os.File
 	have *os.File
-	got  []bool
+	got  []atomic.Bool // set by concurrent fetches, which can write a chunk twice
 
-	seqNext  int // chunk just past the last fetch
-	seqAhead int // current readahead, in chunks; grows while misses stay sequential
+	// streams are the recent sequential readers. Several read at once (a
+	// payload partition's operations while a filesystem's metadata), and
+	// tracking only the last miss would read each as random.
+	streams []stream
 }
+
+// stream is one sequential reader: the chunk just past its last fetch, and
+// its readahead, which grows while its misses stay sequential.
+type stream struct{ next, ahead int }
+
+const maxStreams = 8
 
 func openRemote(u string) (*remote, error) {
 	remotesMu.Lock()
@@ -143,19 +167,41 @@ func logf(format string, args ...any) {
 	}
 }
 
-// newRemote probes u with a one-byte range request — some CDNs answer HEAD
-// differently from GET — and opens or (re)creates its cache entry. A server that
-// ignores ranges is refused: the point is never to pull a whole package.
+// newRemote probes u — or, if it fails, each of its mirrors in turn — and
+// opens or (re)creates the object's cache entry.
 func newRemote(u string) (*remote, error) {
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+	m, err := probe(u)
+	if err != nil && Mirrors != nil {
+		for _, alt := range Mirrors(u) {
+			mm, aerr := probe(alt)
+			if aerr == nil {
+				logf("%s failed (%v); using mirror %s", Base(u), err, alt)
+				m, err = mm, nil
+				break
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
+	}
+	return openEntry(m)
+}
+
+// probe asks for one byte — some CDNs answer HEAD differently from GET — to
+// learn the object's size and validators. A server that ignores ranges is
+// refused: the point is never to pull a whole package.
+func probe(u string) (meta, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), IdleTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return meta{}, err
 	}
 	req.Header.Set("Range", "bytes=0-0")
 	logf("probe %s", u)
 	resp, err := Client.Do(req)
 	if err != nil {
-		return nil, err
+		return meta{}, stallErr(ctx, err)
 	}
 	defer resp.Body.Close()
 
@@ -164,26 +210,47 @@ func newRemote(u string) (*remote, error) {
 	case http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable: // 416: empty object
 		total, err := contentRangeTotal(resp.Header.Get("Content-Range"))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", u, err)
+			return meta{}, fmt.Errorf("%s: %w", u, err)
 		}
 		m.Size = total
 	case http.StatusOK:
-		return nil, fmt.Errorf("%s: server does not support range requests; refusing to download it whole", u)
+		return meta{}, fmt.Errorf("%s: server does not support range requests; refusing to download it whole", u)
 	default:
-		return nil, fmt.Errorf("%s: %s", u, resp.Status)
+		return meta{}, fmt.Errorf("%s: %s", u, resp.Status)
 	}
-	return openEntry(m)
+	return m, nil
+}
+
+// strongETag reports an ETag that names exact content, which If-Range accepts.
+func (m meta) strongETag() bool { return m.ETag != "" && !strings.HasPrefix(m.ETag, "W/") }
+
+// entryKey names m's cache entry. An object with a strong ETag is keyed by
+// its path, ETag and size, so the mirrors serving it share one entry;
+// otherwise by its URL.
+func entryKey(m meta) string {
+	k := m.URL
+	if m.strongETag() {
+		p := m.URL
+		if pu, err := url.Parse(m.URL); err == nil {
+			p = pu.Path
+		}
+		k = fmt.Sprintf("etag\x00%s\x00%s\x00%d", p, m.ETag, m.Size)
+	}
+	sum := sha256.Sum256([]byte(k))
+	return hex.EncodeToString(sum[:])
 }
 
 // openEntry opens the cache entry for m, discarding one recorded for different
-// content.
+// content. Called with remotesMu held.
 func openEntry(m meta) (*remote, error) {
 	root, err := cacheRoot()
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(m.URL))
-	dir := filepath.Join(root, hex.EncodeToString(sum[:]))
+	dir := filepath.Join(root, entryKey(m))
+	if r, ok := byDir[dir]; ok {
+		return r, nil
+	}
 	metaPath := filepath.Join(dir, "meta.json")
 
 	var old meta
@@ -222,11 +289,14 @@ func openEntry(m meta) (*remote, error) {
 		have.Close()
 		return nil, err
 	}
-	got := make([]bool, n)
+	got := make([]atomic.Bool, n)
 	for i, b := range bits {
-		got[i] = b == 1
+		got[i].Store(b == 1)
 	}
-	return &remote{url: m.URL, meta: m, size: m.Size, data: data, have: have, got: got}, nil
+	r := &remote{url: m.URL, meta: m, size: m.Size, data: data, have: have, got: got,
+		urls: withMirrors(m.URL), dropped: map[string]bool{}}
+	byDir[dir] = r
+	return r, nil
 }
 
 func (r *remote) ReadAt(p []byte, off int64) (int, error) {
@@ -254,84 +324,40 @@ func (r *remote) ensure(off, end int64) error {
 	defer r.mu.Unlock()
 	last := int((end - 1) / chunkSize)
 	for c := int(off / chunkSize); c <= last; c++ {
-		if r.got[c] {
+		if r.got[c].Load() {
 			continue
 		}
 		run := c
-		for run+1 <= last && !r.got[run+1] {
+		for run+1 <= last && !r.got[run+1].Load() {
 			run++
 		}
-		if c == r.seqNext && c > 0 {
-			r.seqAhead = min(max(2*r.seqAhead, 1), maxReadahead)
-			for n := 0; n < r.seqAhead && run+1 < len(r.got) && !r.got[run+1]; n++ {
+		s := r.stream(c)
+		if s.next == c && c > 0 {
+			s.ahead = min(max(2*s.ahead, 1), maxReadahead)
+			for n := 0; n < s.ahead && run+1 < len(r.got) && !r.got[run+1].Load(); n++ {
 				run++
 			}
-		} else {
-			r.seqAhead = 0
 		}
 		if err := r.fetch(c, run); err != nil {
 			return err
 		}
-		r.seqNext = run + 1
+		s.next = run + 1
 		c = run
 	}
 	return nil
 }
 
-// fetch fills chunks first..last, resuming from the last whole chunk written
-// when a transfer breaks off.
-func (r *remote) fetch(first, last int) error {
-	start := int64(first) * chunkSize
-	stop := min(int64(last+1)*chunkSize, r.size)
-	var lastErr error
-	for attempt := 0; attempt < fetchAttempts && start < stop; attempt++ {
-		req, err := http.NewRequest(http.MethodGet, r.url, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, stop-1))
-		if v := r.meta.ifRange(); v != "" {
-			req.Header.Set("If-Range", v)
-		}
-		logf("GET %s bytes=%d-%d (%d KiB)", Base(r.url), start, stop-1, (stop-start)>>10)
-		resp, err := Client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return fmt.Errorf("%s changed since it was first read; rerun to refetch", r.url)
-			}
-			lastErr = fmt.Errorf("%s: %s", r.url, resp.Status)
-			continue
-		}
-		if s, err := contentRangeStart(resp.Header.Get("Content-Range")); err != nil || s != start {
-			resp.Body.Close()
-			return fmt.Errorf("%s: unexpected Content-Range %q for offset %d", r.url, resp.Header.Get("Content-Range"), start)
-		}
-		before := start
-		err = r.fill(resp.Body, start, stop)
-		resp.Body.Close()
-		start = r.firstMissing(first, last)
-		if err == nil && start >= stop {
-			return nil
-		}
-		lastErr = err
-		if start > before {
-			attempt = -1 // progress made; a break mid-stream is not a failed attempt
-		}
+// stallErr names a request the idle watchdog cancelled for what it was.
+func stallErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("no data for %v: %w", IdleTimeout, err)
 	}
-	if lastErr == nil {
-		lastErr = io.ErrUnexpectedEOF
-	}
-	return fmt.Errorf("fetching %s: %w", r.url, lastErr)
+	return err
 }
 
 func (r *remote) firstMissing(first, last int) int64 {
 	for c := first; c <= last; c++ {
-		if !r.got[c] {
+		if !r.got[c].Load() {
 			return int64(c) * chunkSize
 		}
 	}
@@ -354,7 +380,7 @@ func (r *remote) fill(body io.Reader, at, stop int64) error {
 			if _, werr := r.have.WriteAt([]byte{1}, c); werr != nil {
 				return werr
 			}
-			r.got[c] = true
+			r.got[c].Store(true)
 			at += want
 			continue
 		}
@@ -384,4 +410,22 @@ func contentRangeStart(h string) (int64, error) {
 		return strconv.ParseInt(s[:i], 10, 64)
 	}
 	return 0, fmt.Errorf("bad Content-Range %q", h)
+}
+
+// stream returns the reader a miss at chunk c continues, or starts one,
+// dropping the least recent when there are maxStreams. Under mu.
+func (r *remote) stream(c int) *stream {
+	for i := range r.streams {
+		if r.streams[i].next == c {
+			// Most recent last, so the eviction below takes the stalest.
+			s := r.streams[i]
+			r.streams = append(append(r.streams[:i:i], r.streams[i+1:]...), s)
+			return &r.streams[len(r.streams)-1]
+		}
+	}
+	if len(r.streams) == maxStreams {
+		r.streams = r.streams[1:]
+	}
+	r.streams = append(r.streams, stream{next: -1})
+	return &r.streams[len(r.streams)-1]
 }
