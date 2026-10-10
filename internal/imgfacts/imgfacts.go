@@ -408,6 +408,7 @@ func FactProviders() []facts.Provider {
 		// brand's driver says its copy is stale (see StaleRamdiskProps).
 		RamdiskProp(facts.Codename, ramdiskTrusted, "ro.product.bootimage.device", "ro.product.vendor.device", "ro.product.device"),
 		RamdiskProp(facts.BuildFingerprint, ramdiskTrusted, "ro.bootimage.build.fingerprint", "ro.vendor.build.fingerprint", "ro.build.fingerprint"),
+		RamdiskProp(facts.BoardPlatform, ramdiskTrusted, "ro.board.platform"),
 	}...)
 }
 

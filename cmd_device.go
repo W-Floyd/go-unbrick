@@ -171,8 +171,8 @@ func learnFromRecon(bag *facts.Bag, pin string, serials []string, detected strin
 		}
 		key = k
 	}
-	vendorID := ""
-	if v, ok := facts.Get(bag, facts.OEMID); ok {
+	vendorID := brandVendor(bag)
+	if v, ok := facts.Get(bag, facts.OEMID); ok && vendorID == "" {
 		if drv, ok := vendor.ForOEMID(v); ok {
 			vendorID = drv.ID()
 		}
@@ -234,6 +234,15 @@ func learnFromRecon(bag *facts.Bag, pin string, serials []string, detected strin
 	if len(added) > 0 {
 		fmt.Printf("\n  knowledge %s: learned %d new fact(s)%s\n", key, len(added), stitched)
 	}
+}
+
+// brandVendor is the catalog vendor the build's fingerprint brand names, or
+// "". A brand is specific where an OEM_ID can be shared (0000) or absent (a
+// MediaTek build).
+func brandVendor(bag *facts.Bag) string {
+	fp, _ := facts.Get(bag, facts.BuildFingerprint)
+	brand, _, _ := strings.Cut(fp, "/")
+	return activeCatalog().VendorForBrand(brand)
 }
 
 // referenceBrands are the fingerprint brands of SoC vendors' reference builds

@@ -62,6 +62,9 @@ type VendorConfig struct {
 	UpstreamDir string   `yaml:"upstream_dir,omitempty"`
 	Platform    string   `yaml:"platform,omitempty"`
 	OEMIDs      []string `yaml:"oem_ids,omitempty"`
+	// Brands are the build-fingerprint brands this vendor ships under, which
+	// name it where no OEM_ID does (a MediaTek build).
+	Brands []string `yaml:"brands,omitempty"`
 }
 
 type PartitionRule struct {
@@ -550,6 +553,21 @@ func (c *Catalog) CanonicalPartition(filename string) string {
 		}
 	}
 	return lower
+}
+
+// VendorForBrand returns the vendor whose brands include brand, or "".
+func (c *Catalog) VendorForBrand(brand string) string {
+	if c == nil || brand == "" {
+		return ""
+	}
+	for id, v := range c.vendors {
+		for _, b := range v.Brands {
+			if strings.EqualFold(b, brand) {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // Vendors returns a copy of all loaded vendor configurations.

@@ -960,10 +960,21 @@ func printModemCarrier(ext4 []byte, indent string) {
 }
 
 func reconArchive(path string, bag *facts.Bag) error {
-	// Which vendor's package is this?
-	vendorID := ""
+	// Whose build is this, and whose package format? The brand names the
+	// vendor; the format driver can differ (a Lenovo build in a MediaTek
+	// SP Flash Tool package).
+	vendorID := brandVendor(bag)
+	drvID := ""
 	if drv, ok := vendor.Detect(path); ok {
-		vendorID = drv.ID()
+		drvID = drv.ID()
+	}
+	switch {
+	case vendorID != "" && drvID != "" && drvID != vendorID:
+		fmt.Printf("  Vendor: %s (%s package)\n", vendorID, drvID)
+	case vendorID != "":
+		fmt.Printf("  Vendor: %s\n", vendorID)
+	case drvID != "":
+		vendorID = drvID
 		fmt.Printf("  Vendor: %s\n", vendorID)
 	}
 	if _, pkg, ok := vendor.DetectStock(path); ok && pkg != nil {

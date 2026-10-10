@@ -8,6 +8,7 @@ vendors:
     platform: qualcomm
     oem_ids:
       - "02E8"
+    brands: [motorola, lenovo]
   qualcomm:
     name: Qualcomm Reference
     upstream_dir: qualcomm
@@ -23,16 +24,19 @@ vendors:
       - "0000"
       - "0001"
       - "0003"
+    brands: [xiaomi, redmi, poco]
   samsung:
     name: Samsung Electronics
     platform: qualcomm
     oem_ids:
       - "0020"
+    brands: [samsung]
   google:
     name: Google Pixel
     platform: tensor
     oem_ids:
       - "0000"
+    brands: [google]
   mediatek:
     name: MediaTek
     platform: mediatek
