@@ -8,6 +8,10 @@ variants:
   sm8250: Qualcomm SM8250 Snapdragon 865/870
   kona: Qualcomm SM8250 Snapdragon 865/870
   sockona: Qualcomm SM8250 Snapdragon 865/870
+  canoe: Qualcomm SM8850 Snapdragon 8 Elite Gen 5
+  soccanoe: Qualcomm SM8850 Snapdragon 8 Elite Gen 5
+  sm8850: Qualcomm SM8850 Snapdragon 8 Elite Gen 5
+  kaanapali: Qualcomm SM8850 Snapdragon 8 Elite Gen 5
   sun: Qualcomm SM8750 Snapdragon 8 Elite
   socsun: Qualcomm SM8750 Snapdragon 8 Elite
   sm8750: Qualcomm SM8750 Snapdragon 8 Elite
