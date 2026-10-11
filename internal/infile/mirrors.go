@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -94,8 +95,9 @@ func loadHosts() {
 	}
 }
 
-// observe records a transfer of n bytes in d from host, or a failure.
-func observe(host string, n int64, d time.Duration, failed bool) {
+// observe records a transfer of n bytes in d from host, or a failure. A
+// throttled transfer replaces the host's speed outright, not into the average.
+func observe(host string, n int64, d time.Duration, failed, throttled bool) {
 	hosts.Lock()
 	defer hosts.Unlock()
 	loadHosts()
@@ -111,9 +113,9 @@ func observe(host string, n int64, d time.Duration, failed bool) {
 		s.Fails = 0
 	}
 	// Under a chunk, a transfer's time is mostly the round trip, not speed.
-	if n >= chunkSize && d > 0 {
+	if (n >= chunkSize || throttled) && d > 0 {
 		bps := float64(n) / d.Seconds()
-		if s.BytesPerSec == 0 {
+		if s.BytesPerSec == 0 || throttled {
 			s.BytesPerSec = bps
 		} else {
 			s.BytesPerSec = 0.7*s.BytesPerSec + 0.3*bps
@@ -347,7 +349,7 @@ func (r *remote) get(parent context.Context, u string, start, stop int64) error 
 	t0 := time.Now()
 	resp, err := Client.Do(req)
 	if err != nil {
-		observe(hostOf(u), 0, 0, true)
+		observe(hostOf(u), 0, 0, true, false)
 		return stallErr(ctx, err)
 	}
 	defer resp.Body.Close()
@@ -360,18 +362,50 @@ func (r *remote) get(parent context.Context, u string, start, stop int64) error 
 		r.drop(u)
 		return fmt.Errorf("mirror %s does not serve the same object", hostOf(u))
 	case resp.StatusCode != http.StatusPartialContent:
-		observe(hostOf(u), 0, 0, true)
+		observe(hostOf(u), 0, 0, true, false)
 		return fmt.Errorf("%s: %s", hostOf(u), resp.Status)
 	case serr != nil || s != start:
 		return fatal{fmt.Errorf("%s: unexpected Content-Range %q for offset %d", u, resp.Header.Get("Content-Range"), start)}
 	}
-	cr := &countReader{r: resp.Body, progress: func() { stalled.Reset(IdleTimeout) }}
+	var cr *countReader
+	var slow atomic.Bool
+	cr = &countReader{r: resp.Body, progress: func() {
+		stalled.Reset(IdleTimeout)
+		if r.tooSlow(u, cr.n.Load(), time.Since(t0)) && slow.CompareAndSwap(false, true) {
+			cancel()
+		}
+	}}
 	err = r.fill(cr, start, stop)
-	observe(hostOf(u), cr.n, time.Since(t0), err != nil)
+	n, d := cr.n.Load(), time.Since(t0)
+	observe(hostOf(u), n, d, err != nil, slow.Load())
+	if slow.Load() {
+		logf("%s is serving %d KiB/s; trying another mirror", hostOf(u), int64(float64(n)/d.Seconds())>>10)
+		return fmt.Errorf("%s: throttled", hostOf(u))
+	}
 	if err != nil {
 		return stallErr(ctx, err)
 	}
 	return nil
+}
+
+// A host trickling below minRate after slowGrace is abandoned for another
+// that is unmeasured or faster: a throttling CDN holds a stream open at a
+// few KiB/s, which the idle watchdog never sees.
+const (
+	slowGrace = 3 * time.Second
+	minRate   = 128 << 10
+)
+
+func (r *remote) tooSlow(u string, n int64, d time.Duration) bool {
+	if d < slowGrace || float64(n)/d.Seconds() >= minRate {
+		return false
+	}
+	for _, v := range r.ranked() {
+		if v != u && (stat(hostOf(v)).BytesPerSec == 0 || stat(hostOf(v)).BytesPerSec > minRate) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *remote) drop(u string) {
@@ -385,14 +419,14 @@ func (r *remote) drop(u string) {
 // which holds off the stall watchdog.
 type countReader struct {
 	r        io.Reader
-	n        int64
+	n        atomic.Int64
 	progress func()
 }
 
 func (c *countReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	if n > 0 {
-		c.n += int64(n)
+		c.n.Add(int64(n))
 		c.progress()
 	}
 	return n, err
