@@ -33,33 +33,46 @@ type knownLoader struct {
 // one built for its hardware (JTAG ID) and signed under its root key. Nothing
 // when the bag does not name both.
 func loaderLines(b *facts.Bag) []string {
-	jtags := deviceJTAGs(b)
 	roots := map[string]bool{}
 	for _, v := range b.Values(facts.RootKeyHash.Name()) {
 		if s, ok := v.Data.(string); ok && s != "" {
 			roots[strings.ToLower(s)] = true
 		}
 	}
-	if len(jtags) == 0 || len(roots) == 0 {
+	if len(roots) == 0 {
 		return nil
 	}
+	jtags := deviceJTAGs(b)
 	oem, _ := facts.Get(b, facts.OEMID)
 	target := xblIdentity(b)
 
+	// The package's own Firehose programmers validate by root signature and an
+	// unbound (zero) JTAG, so they are reported even when the device JTAG is
+	// unknown — a new SoC whose codename isn't mapped yet, so JTAGsForSoC gives
+	// nothing. Library and index matching are keyed by JTAG, so they need one.
 	found := packageLoaders(b, jtags, roots, target)
-	held := map[string]bool{}
-	for _, l := range found {
-		held[l.md5] = true
-	}
-	for _, l := range heldLoaders(jtags, roots, target) {
-		if !held[l.md5] {
+	if len(jtags) > 0 {
+		held := map[string]bool{}
+		for _, l := range found {
 			held[l.md5] = true
-			found = append(found, l)
 		}
+		for _, l := range heldLoaders(jtags, roots, target) {
+			if !held[l.md5] {
+				held[l.md5] = true
+				found = append(found, l)
+			}
+		}
+		found = append(found, indexedLoaders(jtags, oem, roots, held)...)
 	}
-	found = append(found, indexedLoaders(jtags, oem, roots, held)...)
 
 	what := strings.Join(jtags, "/")
+	if what == "" {
+		if soc, ok := facts.Get(b, facts.SoC); ok && soc != "" {
+			what = soc
+		} else {
+			what = "unknown JTAG"
+		}
+	}
 	var root string
 	for r := range roots {
 		if root == "" || len(r) < len(root) {
