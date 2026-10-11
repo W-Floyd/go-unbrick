@@ -1069,15 +1069,20 @@ func reconArchive(path string, bag *facts.Bag) error {
 		case kind == filetype.Tar:
 			printNestedTar(path, m.Name, "    ", bar)
 		case int64(m.Size) > maxCascadeRead:
-			// Don't expand anything too big; label it, with the build its
-			// own build.prop states when it can be read in place.
+			// Too big to buffer, but a filesystem carve can walk by range (ext4,
+			// erofs — read via ReaderAt, metadata only) is listed rather than
+			// skipped. Otherwise label it, with the build its own build.prop
+			// states when it can be read in place.
+			bar.Clear()
+			if isRangeWalkable(kind) && printLargeFS(path, base, m, "    ") {
+				break
+			}
 			fp := ""
 			if n, err := carvePath(path, m.Name); err == nil && n.RandomAccess() {
 				if ra, err := n.ReaderAt(); err == nil {
 					fp = partitionFingerprint(ra, n.Size, m.Head)
 				}
 			}
-			bar.Clear()
 			if fp != "" {
 				fmt.Printf("    %-26s [%s]  %s — %s\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)), fp)
 			} else {
@@ -1105,6 +1110,53 @@ func reconArchive(path string, bag *facts.Bag) error {
 		printSuperMap(path, "      ")
 	}
 	return nil
+}
+
+// isRangeWalkable reports whether carve can list a filesystem of this kind from
+// a ReaderAt without buffering it whole (ext4, erofs). f2fs has no reader, and
+// FAT's lister is byte-based, so they are excluded.
+func isRangeWalkable(k filetype.Kind) bool {
+	return k == filetype.Ext4 || k == filetype.EROFS
+}
+
+// printLargeFS lists a filesystem member too big to buffer by walking it through
+// carve (ext4fs/erofs over a ReaderAt, reading directory metadata only, not file
+// contents). It prints the file count and the top-level directory counts, the
+// same shape as the in-memory path. Returns false if the member did not expand
+// to any files, so the caller can fall back to a plain label.
+func printLargeFS(path, base string, m srcfile.Member, indent string) bool {
+	n, err := carvePath(path, m.Name)
+	if err != nil {
+		return false
+	}
+	// Only a seekable member can be read by range. A deflated zip entry is
+	// stream-only, so walking it would decompress the whole multi-GiB image
+	// (and overrun MaxBuffer) — not a range read at all, so leave it labelled.
+	if !n.RandomAccess() {
+		return false
+	}
+	_, kids, err := n.Children()
+	if err != nil || len(kids) == 0 {
+		return false
+	}
+	fmt.Printf("%s%-26s [%s]  %s — %d files\n", indent, base, typeLabel(base, m.Head), humanBytes(int64(m.Size)), len(kids))
+	count := map[string]int{}
+	var dirs []string
+	for _, k := range kids {
+		d, _, ok := strings.Cut(strings.TrimPrefix(k.Name, "/"), "/")
+		if !ok {
+			d = "."
+		}
+		if count[d] == 0 {
+			dirs = append(dirs, d)
+		}
+		count[d]++
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		fmt.Printf("%s  %-24s %d files\n", indent, d+"/", count[d])
+	}
+	return true
 }
 
 // partitionFingerprint is the build fingerprint a partition image's own
