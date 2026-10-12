@@ -7,7 +7,7 @@ go 1.26.1
 godebug x509negativeserial=1
 
 require (
-	github.com/W-Floyd/erofs v0.8.1-0.20261011235821-423f37db1349
+	github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76
 	github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/electricbubble/gadb v0.1.0
