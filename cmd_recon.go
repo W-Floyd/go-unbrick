@@ -309,7 +309,7 @@ func identityFactLines(b *facts.Bag) []string {
 		add("Platform: %s", strings.Join(plat, ", "))
 	}
 	if v, ok := facts.Get(b, facts.BluetoothFirmware); ok {
-		add("Bluetooth firmware: %s (chip is picked at runtime)", v)
+		add("Bluetooth firmware: %s", v)
 	}
 	if v, ok := facts.Get(b, facts.SecurityPatch); ok {
 		line := "Patch level: " + v

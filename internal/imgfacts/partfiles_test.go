@@ -107,8 +107,15 @@ func TestBluetoothFirmware(t *testing.T) {
 		facts.File{Name: "bluetooth/image/cmbtfw13.tlv", Data: []byte{0}},
 		facts.File{Name: "bluetooth/image/cmbtfw13.ver", Data: []byte("BTFM.CMC.1.3.0-00101\n")},
 	)
-	want := "Apache (10, 11), Comanche (12, 13; BTFM.CMC.1.3.0-00101)"
+	want := "Apache (10, 11), Comanche (12, 13; BTFM.CMC.1.3.0-00101) (chip is picked at runtime)"
 	if v, _ := facts.Get(b, facts.BluetoothFirmware); v != want {
 		t.Errorf("bluetooth firmware = %q, want %q", v, want)
+	}
+	one := resolve(t,
+		facts.File{Name: "bluetooth/image/cgobtfw10.tlv", Data: []byte{0}},
+		facts.File{Name: "bluetooth/image/cgobtfw20.tlv", Data: []byte{0}},
+	)
+	if v, _ := facts.Get(one, facts.BluetoothFirmware); v != "Congo (10, 20)" {
+		t.Errorf("single family = %q", v)
 	}
 }

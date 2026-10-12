@@ -19,7 +19,7 @@ type BTFirmwareFile struct {
 // btChips names the two-letter prefix of a BTFM file by the chip codename the
 // Bluetooth HAL's own version table gives it.
 var btChips = map[string]string{
-	"ap": "Apache", "cm": "Comanche", "cr": "Cherokee", "gn": "Genoa",
+	"ap": "Apache", "cgo": "Congo", "cm": "Comanche", "cr": "Cherokee", "gn": "Genoa",
 	"hp": "HSP", "ht": "Hastings", "hmt": "Hamilton", "ms": "Moselle",
 }
 
@@ -74,7 +74,11 @@ var btFirmwareRule = facts.Rule{
 			}
 			parts = append(parts, s)
 		}
-		facts.Set(b, facts.BluetoothFirmware, strings.Join(parts, ", "), facts.Provenance{Source: "bluetooth partition firmware", Authority: facts.Attested})
+		summary := strings.Join(parts, ", ")
+		if len(parts) > 1 {
+			summary += " (chip is picked at runtime)"
+		}
+		facts.Set(b, facts.BluetoothFirmware, summary, facts.Provenance{Source: "bluetooth partition firmware", Authority: facts.Attested})
 		return true, nil
 	},
 }
