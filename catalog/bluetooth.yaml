@@ -1,0 +1,13 @@
+# Qualcomm Bluetooth firmware: the two/three-letter prefix of a BTFM patch file
+# (<prefix>btfw<NN>.tlv) -> the chip codename in the Bluetooth HAL's own version
+# table.
+bt_chips:
+  ap: Apache
+  cgo: Congo
+  cm: Comanche
+  cr: Cherokee
+  gn: Genoa
+  hp: HSP
+  ht: Hastings
+  hmt: Hamilton
+  ms: Moselle

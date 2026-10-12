@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
@@ -14,13 +15,6 @@ import (
 type BTFirmwareFile struct {
 	Name  string
 	Build string // first line of a .ver
-}
-
-// btChips names the two-letter prefix of a BTFM file by the chip codename the
-// Bluetooth HAL's own version table gives it.
-var btChips = map[string]string{
-	"ap": "Apache", "cgo": "Congo", "cm": "Comanche", "cr": "Cherokee", "gn": "Genoa",
-	"hp": "HSP", "ht": "Hastings", "hmt": "Hamilton", "ms": "Moselle",
 }
 
 var btFile = regexp.MustCompile(`^([a-z]+)btfw([0-9a-z]+)\.(tlv|ver)$`)
@@ -60,11 +54,12 @@ var btFirmwareRule = facts.Rule{
 			prefixes = append(prefixes, p)
 		}
 		sort.Strings(prefixes)
+		cat, _ := catalog.Default()
 		var parts []string
 		for _, p := range prefixes {
 			c := chips[p]
 			sort.Strings(c.vers)
-			name := btChips[p]
+			name := cat.BTChipName(p)
 			if name == "" {
 				name = p
 			}

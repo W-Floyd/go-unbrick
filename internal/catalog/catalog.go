@@ -82,6 +82,8 @@ type catalogFile struct {
 	Vendors    map[string]*VendorConfig `yaml:"vendors,omitempty"`
 	SWIDs      map[uint64]string        `yaml:"sw_ids,omitempty"`
 	EFIGUIDs   map[string]string        `yaml:"efi_guids,omitempty"`
+	BTChips    map[string]string        `yaml:"bt_chips,omitempty"`
+	DTParts    map[string]DTPart        `yaml:"dt_parts,omitempty"`
 	Partitions map[string]PartitionRule `yaml:"partitions,omitempty"`
 	// Distros is how an ssh recon reads a Linux-on-phone distribution: where its
 	// own device definition lives and how it is spelled. Reference data like
@@ -124,8 +126,10 @@ type Catalog struct {
 	vendors    map[string]*VendorConfig
 	swIDs      map[uint64]string
 	efiGUIDs   map[string]string
+	btChips    map[string]string
+	dtParts    map[string]DTPart
 	partitions map[string]PartitionRule
-	distros    []*distro.Distro          // Linux-on-phone distribution profiles
+	distros  []*distro.Distro          // Linux-on-phone distribution profiles
 	bloat      []bloat.Rule              // removable-preload rules
 	provision  []*provision.Profile      // device-setup recipes
 	harvest    harvest.Sources           // loader harvest sources
@@ -198,6 +202,8 @@ func Load(dir string) (*Catalog, error) {
 		vendors:    map[string]*VendorConfig{},
 		swIDs:      map[uint64]string{},
 		efiGUIDs:   map[string]string{},
+		btChips:    map[string]string{},
+		dtParts:    map[string]DTPart{},
 		partitions: map[string]PartitionRule{},
 		vendorRef:  map[string]*vendorRefData{},
 	}
@@ -252,6 +258,18 @@ func Load(dir string) (*Catalog, error) {
 			vClean := strings.TrimSpace(v)
 			if kClean != "" && vClean != "" {
 				c.efiGUIDs[kClean] = vClean
+			}
+		}
+		for k, v := range cf.BTChips {
+			kClean := strings.ToLower(strings.TrimSpace(k))
+			vClean := strings.TrimSpace(v)
+			if kClean != "" && vClean != "" {
+				c.btChips[kClean] = vClean
+			}
+		}
+		for k, v := range cf.DTParts {
+			if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
+				c.dtParts[k] = v
 			}
 		}
 		for k, v := range cf.Partitions {
@@ -685,6 +703,30 @@ func parseCID(cid string) (uint64, error) {
 		v, base = lower[2:], 16
 	}
 	return strconv.ParseUint(v, base, 64)
+}
+
+// DTPart is a board part a device tree names by compatible string.
+type DTPart struct {
+	Class string `yaml:"class"`
+	Desc  string `yaml:"desc"`
+}
+
+// DTPartFor looks a device-tree compatible string up in the parts table.
+func (c *Catalog) DTPartFor(compatible string) (DTPart, bool) {
+	if c == nil {
+		return DTPart{}, false
+	}
+	p, ok := c.dtParts[strings.ToLower(strings.TrimSpace(compatible))]
+	return p, ok
+}
+
+// BTChipName names a BTFM firmware file prefix ("cgo") by its chip codename
+// ("Congo"), or "" if unknown.
+func (c *Catalog) BTChipName(prefix string) string {
+	if c == nil {
+		return ""
+	}
+	return c.btChips[strings.ToLower(strings.TrimSpace(prefix))]
 }
 
 // EFIGUIDName returns the human-readable name for a canonical UEFI GUID.

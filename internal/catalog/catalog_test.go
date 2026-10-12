@@ -572,3 +572,16 @@ func TestShippedHarvestCatalog(t *testing.T) {
 		}
 	}
 }
+
+func TestBTChipName(t *testing.T) {
+	c, err := Load(writeCatalog(t, map[string]string{"bt.yaml": "bt_chips:\n  cgo: Congo\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.BTChipName("CGO"); got != "Congo" {
+		t.Errorf("BTChipName(CGO) = %q", got)
+	}
+	if got := c.BTChipName("zz"); got != "" {
+		t.Errorf("unknown prefix = %q", got)
+	}
+}

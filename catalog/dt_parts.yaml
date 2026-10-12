@@ -1,0 +1,39 @@
+# Board parts a device tree names by compatible string -> what they are.
+# `class` groups the hardware inventory; `desc` is the part. Only compatibles
+# that name a physical component or board-level driver belong here, not SoC
+# blocks every khaje carries.
+dt_parts:
+  awinic,aw882xx_smartpa:        {class: audio,    desc: "Awinic AW882xx smart speaker amplifier"}
+  qcom,wcd937x-codec:            {class: audio,    desc: "Qualcomm WCD937x audio codec"}
+  qcom,wcd937x-slave:            {class: audio,    desc: "WCD937x SoundWire slave"}
+  qcom,wsa881x-i2c-codec:        {class: audio,    desc: "WSA881x speaker amplifier"}
+  qcom,va-macro:                 {class: audio,    desc: "Bolero VA macro"}
+  qcom,tx-macro:                 {class: audio,    desc: "Bolero TX macro"}
+  qcom,rx-macro:                 {class: audio,    desc: "Bolero RX macro"}
+  novatek,NVT-ts-spi:            {class: touch,    desc: "Novatek NT36xxx touchscreen (SPI)"}
+  tchip,ilitek:                  {class: touch,    desc: "Ilitek touchscreen (SPI)"}
+  chipone-tddi:                  {class: touch,    desc: "Chipone TDDI touch/display controller (SPI)"}
+  fpc,fpc1020:                   {class: sensor,   desc: "FPC fingerprint sensor"}
+  qcom,fingerprint-gpio:         {class: sensor,   desc: "Fingerprint GPIO glue"}
+  Semtech,sx933x:                {class: sensor,   desc: "Semtech SX933x SAR/proximity sensor"}
+  awinic,aw9610x_sar_0:          {class: sensor,   desc: "Awinic AW9610x SAR sensor"}
+  qcom,cam-sensor:               {class: camera,   desc: "Camera sensor"}
+  qcom,eeprom:                   {class: camera,   desc: "Camera calibration EEPROM"}
+  qcom,actuator:                 {class: camera,   desc: "Camera focus actuator"}
+  qcom,camera-flash:             {class: camera,   desc: "Camera flash"}
+  qualcomm,pm6125_flash_gpio:    {class: camera,   desc: "PM6125 flash LED GPIO"}
+  cellwise,cw2217:               {class: power,    desc: "Cellwise CW2217 fuel gauge"}
+  sm,sm5602:                     {class: power,    desc: "SM5602 fuel gauge"}
+  richtek,rt9426a:               {class: power,    desc: "Richtek RT9426A fuel gauge"}
+  ti,bq2589x-1:                  {class: power,    desc: "TI BQ2589x battery charger"}
+  sgm,sgm41542:                  {class: power,    desc: "SGMicro SGM41542 battery charger"}
+  ti,tps61280a:                  {class: power,    desc: "TI TPS61280A boost converter"}
+  mmi,mmi-discrete-charger:      {class: power,    desc: "Motorola discrete-charger glue"}
+  mmi,mmi-charger:               {class: power,    desc: "Motorola charger glue"}
+  sgm,usb_type_c_sgm7220:        {class: usb,      desc: "SGMicro SGM7220 USB Type-C controller"}
+  awinic,usb_type_c_aw35616:     {class: usb,      desc: "Awinic AW35616 USB Type-C controller"}
+  richtek,rt-pd-manager:         {class: usb,      desc: "Richtek PD manager"}
+  moto,vibrator-ldo:             {class: haptics,  desc: "Motorola LDO vibrator"}
+  st,st21nfc:                    {class: nfc,      desc: "ST21NFC NFC controller"}
+  qcom,dsi-display:             {class: display,  desc: "MIPI DSI display"}
+  qcom,wb-display:               {class: display,  desc: "Writeback display"}
