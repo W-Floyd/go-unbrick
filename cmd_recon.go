@@ -1866,6 +1866,11 @@ func summarize(head, data []byte) string {
 		if entries, err := modem.List(data); err == nil {
 			return fmt.Sprintf(" — %d files", len(entries))
 		}
+	case filetype.EROFS:
+		if data == nil {
+			return ""
+		}
+		return erofsSummary(data)
 	case filetype.GPT:
 		if data == nil {
 			return ""
@@ -2066,4 +2071,20 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
+}
+
+// erofsSummary is the file count and the build fingerprint of an erofs image
+// held in memory, as the large-image path gives for one read by range.
+func erofsSummary(data []byte) string {
+	ra := bytes.NewReader(data)
+	n := carve.FromReaderAt("", ra, int64(len(data)))
+	_, kids, err := n.Children()
+	if err != nil || len(kids) == 0 {
+		return ""
+	}
+	s := fmt.Sprintf(" — %d files", len(kids))
+	if fp := partitionFingerprint(ra, int64(len(data)), data); fp != "" {
+		s += ", " + fp
+	}
+	return s
 }
