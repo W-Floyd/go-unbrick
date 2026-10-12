@@ -84,7 +84,6 @@ type catalogFile struct {
 	EFIGUIDs   map[string]string        `yaml:"efi_guids,omitempty"`
 	BTChips    map[string]string        `yaml:"bt_chips,omitempty"`
 	DTParts    map[string]DTPart        `yaml:"dt_parts,omitempty"`
-	FWSubs     []FWSubsystem            `yaml:"fw_subsystems,omitempty"`
 	Partitions map[string]PartitionRule `yaml:"partitions,omitempty"`
 	// Distros is how an ssh recon reads a Linux-on-phone distribution: where its
 	// own device definition lives and how it is spelled. Reference data like
@@ -120,22 +119,21 @@ type VendorReference struct {
 }
 
 type Catalog struct {
-	devices      []*Device
-	byCode       map[string]*Device
-	variants     map[string]string
-	aliases      map[string]string
-	vendors      map[string]*VendorConfig
-	swIDs        map[uint64]string
-	efiGUIDs     map[string]string
-	btChips      map[string]string
-	dtParts      map[string]DTPart
-	fwSubsystems []FWSubsystem
-	partitions   map[string]PartitionRule
-	distros      []*distro.Distro          // Linux-on-phone distribution profiles
-	bloat        []bloat.Rule              // removable-preload rules
-	provision    []*provision.Profile      // device-setup recipes
-	harvest      harvest.Sources           // loader harvest sources
-	vendorRef    map[string]*vendorRefData // per-vendor CID/carrier/channel tables
+	devices    []*Device
+	byCode     map[string]*Device
+	variants   map[string]string
+	aliases    map[string]string
+	vendors    map[string]*VendorConfig
+	swIDs      map[uint64]string
+	efiGUIDs   map[string]string
+	btChips    map[string]string
+	dtParts    map[string]DTPart
+	partitions map[string]PartitionRule
+	distros    []*distro.Distro          // Linux-on-phone distribution profiles
+	bloat      []bloat.Rule              // removable-preload rules
+	provision  []*provision.Profile      // device-setup recipes
+	harvest    harvest.Sources           // loader harvest sources
+	vendorRef  map[string]*vendorRefData // per-vendor CID/carrier/channel tables
 }
 
 // Harvest returns the loader sources the catalog declares.
@@ -274,7 +272,6 @@ func Load(dir string) (*Catalog, error) {
 				c.dtParts[k] = v
 			}
 		}
-		c.fwSubsystems = append(c.fwSubsystems, cf.FWSubs...)
 		for k, v := range cf.Partitions {
 			kClean := strings.ToLower(strings.TrimSpace(k))
 			if kClean != "" {
@@ -712,27 +709,10 @@ func parseCID(cid string) (uint64, error) {
 type DTPart struct {
 	Class string `yaml:"class"`
 	Desc  string `yaml:"desc"`
-	// Firmware names the files the part's driver loads, each "a|b" for
-	// alternatives (the loader may expose .mdt where a kernel wants .mbn).
-	Firmware []string `yaml:"firmware,omitempty"`
 }
 
-// FWSubsystem is firmware a Qualcomm SoC's remote processors load whatever the
-// board: every file in Files must be provided, each "a|b" being alternatives.
-type FWSubsystem struct {
-	Name  string   `yaml:"name"`
-	Files []string `yaml:"files"`
-}
-
-// FWSubsystems returns the SoC subsystem firmware the catalog lists.
-func (c *Catalog) FWSubsystems() []FWSubsystem {
-	if c == nil {
-		return nil
-	}
-	return c.fwSubsystems
-}
-
-// DTPartFor looks a device-tree compatible string up in the parts table.
+// DTPartFor looks a device-tree compatible string up in the optional labels
+// table. A part's driver and description come from the stock modules first.
 func (c *Catalog) DTPartFor(compatible string) (DTPart, bool) {
 	if c == nil {
 		return DTPart{}, false

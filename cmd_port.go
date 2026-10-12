@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,28 +15,34 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/arsc"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/fdt"
-	"github.com/W-Floyd/go-unbrick/internal/nura"
+	"github.com/W-Floyd/go-unbrick/internal/port"
+	_ "github.com/W-Floyd/go-unbrick/internal/port/nura" // registers the Nura emitter
 	"github.com/W-Floyd/go-unbrick/internal/qfil"
 )
 
-func newNuraCmd() *cobra.Command {
-	var out, sizeMM string
+func newPortCmd() *cobra.Command {
+	var out, sizeMM, distro string
 	c := &cobra.Command{
-		Use:   "nura <stock package>",
-		Short: "draft a Nura port (deviceinfo and hardware report) from a stock package",
+		Use:   "port <stock package>",
+		Short: "draft a Linux port (device packaging and hardware report) from a stock package",
 		Long: `Reads a stock Android package for what a port needs to know: the boot image
 layout, the partition table, the board's device-tree overlays (variants,
-displays, touch, audio, charging, camera parts) and the vendor build.prop, and
-writes a deviceinfo draft plus a hardware report. A field the package cannot
+displays, touch, audio, charging, camera parts), the screen's shape and the
+vendor build.prop, and writes a hardware report, a gmobile display file, and
+the chosen distribution's packaging (--distro). A field the package cannot
 settle is a TODO in the draft, not a guess.
 
 Reading the vendor build.prop opens the dynamic-partition super image, which
 for a package that ships it as sparse chunks takes about half a minute.
 
-  unbrick nura XT2413-2_FOGONA_….xml.zip -o port/`,
+  unbrick port XT2413-2_FOGONA_….xml.zip --distro nura -o port/`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pkg, unknown, err := readNuraPackage(args[0])
+			em, ok := port.Lookup(distro)
+			if !ok {
+				return fmt.Errorf("no emitter for distribution %q (have: %s)", distro, strings.Join(port.IDs(), ", "))
+			}
+			pkg, unknown, err := readPackage(args[0])
 			if err != nil {
 				return err
 			}
@@ -47,46 +54,57 @@ for a package that ships it as sparse chunks takes about half a minute.
 					return fmt.Errorf("--size-mm wants WIDTHxHEIGHT in millimetres, e.g. 68x151")
 				}
 			}
-			pkg.Loader = nura.CheckLoader(pkg, activeCatalog())
-			info, report := nura.Render(nura.Deviceinfo(pkg)), nura.Report(pkg, unknown)
-			files := map[string]string{"deviceinfo": info, "HARDWARE.md": report}
+			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog()})
+			if err != nil {
+				return err
+			}
+			files := bundle.Files
+			files["HARDWARE.md"] = []byte(port.Report(pkg, unknown, bundle.Report...))
 			gmFile, gm, notes, haveGM := pkg.Gmobile()
 			if haveGM {
-				files[gmFile] = gm.JSON()
+				files["gmobile/"+gmFile] = []byte(gm.JSON())
 			}
-			for _, n := range notes {
-				fmt.Fprintln(os.Stderr, "gmobile:", n)
+			for _, n := range append(notes, bundle.Notes...) {
+				fmt.Fprintln(os.Stderr, "port:", n)
 			}
+
+			names := make([]string, 0, len(files))
+			for n := range files {
+				names = append(names, n)
+			}
+			sort.Strings(names)
 			if out == "" {
-				fmt.Print(info, "\n", report)
-				if haveGM {
-					fmt.Printf("\n# %s (gmobile)\n\n%s", gmFile, gm.JSON())
+				for _, n := range names {
+					fmt.Printf("\n# ---- %s ----\n\n%s", n, files[n])
 				}
 				return nil
 			}
-			if err := os.MkdirAll(out, 0o755); err != nil {
-				return err
-			}
-			for name, body := range files {
-				if err := os.WriteFile(filepath.Join(out, name), []byte(body), 0o644); err != nil {
+			for _, n := range names {
+				dst := filepath.Join(out, n)
+				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(dst, files[n], 0o644); err != nil {
 					return err
 				}
 			}
-			fmt.Printf("wrote %d files -> %s\n", len(files), out)
+			fmt.Printf("wrote %d files (%s) -> %s\n", len(files), em.Title(), out)
 			return nil
 		},
 	}
-	c.Flags().StringVarP(&out, "out", "o", "", "write deviceinfo and HARDWARE.md here instead of printing")
+	c.Flags().StringVarP(&out, "out", "o", "", "write the files here instead of printing them")
+	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
 	return c
 }
 
 var kernelBanner = regexp.MustCompile(`Linux version (\d+\.\d+\.\d+)`)
 
-func readNuraPackage(input string) (nura.Package, []string, error) {
+// readPackage reads everything a port draws on from a stock package.
+func readPackage(input string) (port.Package, []string, error) {
 	root, err := carveRoot(input)
 	if err != nil {
-		return nura.Package{}, nil, err
+		return port.Package{}, nil, err
 	}
 	bytesOf := func(p string) ([]byte, error) {
 		n, err := root.Walk(p)
@@ -95,13 +113,13 @@ func readNuraPackage(input string) (nura.Package, []string, error) {
 		}
 		return n.Bytes()
 	}
-	var pkg nura.Package
+	var pkg port.Package
 
 	vb, err := bytesOf("vendor_boot.img")
 	if err != nil {
 		return pkg, nil, err
 	}
-	if pkg.Boot, err = nura.ParseVendorBoot(vb); err != nil {
+	if pkg.Boot, err = port.ParseVendorBoot(vb); err != nil {
 		return pkg, nil, err
 	}
 
@@ -123,8 +141,9 @@ func readNuraPackage(input string) (nura.Package, []string, error) {
 			}
 		}
 	}
+	pkg.Modules = readModules(root)
 	var unknown []string
-	pkg.DT, unknown = nura.ReadDT(base, overlays, activeCatalog())
+	pkg.DT, unknown = port.ReadDT(base, overlays, pkg.Modules, activeCatalog())
 
 	if g, err := bytesOf("gpt.bin"); err == nil {
 		if t, err := qfil.ParseGPT(g); err == nil {
@@ -139,25 +158,17 @@ func readNuraPackage(input string) (nura.Package, []string, error) {
 			pkg.Kernel = string(m[1])
 		}
 	}
-	if rd, err := root.Walk("vendor_boot.img/vendor_ramdisk_0"); err == nil {
-		_, kids, _ := rd.Children()
-		for _, k := range kids {
-			if strings.HasSuffix(k.Name, ".ko") {
-				pkg.Modules = append(pkg.Modules, filepath.Base(k.Name))
-			}
-		}
-		if fs, err := bytesOf("vendor_boot.img/vendor_ramdisk_0/first_stage_ramdisk/fstab.qcom"); err == nil {
-			pkg.Fstab = nura.ParseFstab(string(fs))
-		}
+	if fs, err := bytesOf("vendor_boot.img/vendor_ramdisk_0/first_stage_ramdisk/fstab.qcom"); err == nil {
+		pkg.Fstab = port.ParseFstab(string(fs))
 	}
 	if b, err := bytesOf("super.img/vendor_a/build.prop"); err == nil {
-		pkg.Props = nura.ParseProps(string(b))
+		pkg.Props = port.ParseProps(string(b))
 	} else {
 		fmt.Fprintf(os.Stderr, "vendor build.prop not read (%v); name and codename will be TODOs\n", err)
 	}
 	density, _ := strconv.Atoi(pkg.Props["ro.sf.lcd_density"])
 	pkg.Display = readAndroidDisplay(root, density)
-	pkg.LoaderSlot, pkg.LoaderParts, pkg.FileIndex = readLoaderParts(root, pkg.Partitions)
+	pkg.Slot, pkg.PartFiles, pkg.FileIndex = readPartFiles(root, pkg.Partitions)
 	if v, err := root.Walk("super.img/vendor_a"); err == nil {
 		_, kids, _ := v.Children()
 		for _, k := range kids {
@@ -167,20 +178,40 @@ func readNuraPackage(input string) (nura.Package, []string, error) {
 	return pkg, unknown, nil
 }
 
+// readModules reads every kernel module the package ships: the vendor_boot
+// ramdisk's, and those on the dlkm partitions of super.
+func readModules(root *carve.Node) []port.Module {
+	var mods []port.Module
+	for _, from := range []string{"vendor_boot.img/vendor_ramdisk_0", "super.img/vendor_dlkm_a", "super.img/system_dlkm_a"} {
+		n, err := root.Walk(from)
+		if err != nil {
+			continue
+		}
+		_, kids, _ := n.Children()
+		for _, k := range kids {
+			if !strings.HasSuffix(k.Name, ".ko") {
+				continue
+			}
+			if b, err := k.Bytes(); err == nil {
+				mods = append(mods, port.ReadModule(k.Name, b))
+			}
+		}
+	}
+	return mods
+}
+
 var (
 	flashStep   = regexp.MustCompile(`<step [^>]*filename="([^"]+)"[^>]*operation="flash"[^>]*partition="([^"]+)"`)
 	recipeFlash = regexp.MustCompile(`<flash\s+partition="([^"]+)"\s+filename="([^"]+)"`)
 )
 
-// loaderBases are the partitions msm-firmware-loader walks, by base name.
-var loaderBases = []string{"apnhlos", "bluetooth", "dsp", "fsg", "modem", "persist", "vendor"}
-
-// readLoaderParts finds the content of each partition msm-firmware-loader
-// walks that the package carries, and lists its files. A partition is found
-// by the package's own flash steps (including a radio container's recipe), by
-// the catalog's file-name aliases, or as a logical partition of super. The A/B
-// slot is the GPT's: "_a" when its partitions carry that suffix.
-func readLoaderParts(root *carve.Node, gpt []string) (slot string, parts []nura.PartFiles, index map[string][]string) {
+// readPartFiles finds the content of each firmware-bearing partition
+// (port.FirmwarePartitions) that the package carries, and lists its files. A
+// partition is found by the package's own flash steps (including a radio
+// container's recipe), by the catalog's file-name aliases, or as a logical
+// partition of super. The A/B slot is the GPT's: "_a" when its partitions
+// carry that suffix.
+func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.PartFiles, index map[string][]string) {
 	for _, n := range gpt {
 		if strings.HasSuffix(n, "_a") {
 			slot = "_a"
@@ -225,7 +256,7 @@ func readLoaderParts(root *carve.Node, gpt []string) (slot string, parts []nura.
 			}
 		}
 	}
-	for _, base := range loaderBases {
+	for _, base := range port.FirmwarePartitions {
 		if _, ok := nodes[base]; ok {
 			continue
 		}
@@ -235,13 +266,13 @@ func readLoaderParts(root *carve.Node, gpt []string) (slot string, parts []nura.
 	}
 
 	index = map[string][]string{}
-	for _, base := range loaderBases {
+	for _, base := range port.FirmwarePartitions {
 		n, ok := nodes[base]
 		if !ok {
 			continue
 		}
 		files := nodeFiles(n)
-		parts = append(parts, nura.PartFiles{Name: base, Files: files})
+		parts = append(parts, port.PartFiles{Name: base, Files: files})
 		for _, f := range files {
 			b := path.Base(f)
 			index[b] = append(index[b], base+slot+":"+f)
@@ -286,7 +317,7 @@ var overlayDirs = []string{"system_ext_a", "vendor_a", "product_a"}
 // readAndroidDisplay reads the framework's display resources and every
 // overlay's over them. Nil when the framework table cannot be read, since
 // then even the defaults are unknown.
-func readAndroidDisplay(root *carve.Node, density int) *nura.AndroidDisplay {
+func readAndroidDisplay(root *carve.Node, density int) *port.AndroidDisplay {
 	tableOf := func(p string) *arsc.Table {
 		n, err := root.Walk(p)
 		if err != nil {
@@ -328,6 +359,6 @@ func readAndroidDisplay(root *carve.Node, density int) *nura.AndroidDisplay {
 			}
 		}
 	}
-	d := nura.ReadAndroidDisplay(density, base, overlays, order)
+	d := port.ReadAndroidDisplay(density, base, overlays, order)
 	return &d
 }

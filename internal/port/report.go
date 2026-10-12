@@ -1,4 +1,4 @@
-package nura
+package port
 
 import (
 	"fmt"
@@ -7,8 +7,9 @@ import (
 
 // Report renders what the package says about the board as markdown: the
 // variants and displays a port must choose between, the parts that need
-// drivers, and the stock partition and module picture.
-func Report(p Package, unknown []string) string {
+// drivers, and the stock partition and module picture. extra are sections an
+// Emitter appends (its own findings about the package).
+func Report(p Package, unknown []string, extra ...string) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 
@@ -46,31 +47,23 @@ func Report(p Package, unknown []string) string {
 	}
 
 	w("\n## Parts\n")
-	class := ""
+	w("Nodes on an I2C or SPI bus, or named by a third party's compatible, with the stock driver that binds each (found through the modules' aliases).\n")
+	w("| bus | node | compatible | stock driver | in overlays |")
+	w("|---|---|---|---|---|")
 	for _, pt := range p.DT.Parts {
-		if pt.Class != class {
-			class = pt.Class
-			w("\n**%s**\n", class)
+		driver := "—"
+		if pt.Driver != "" {
+			driver = pt.Driver
+			if pt.Desc != "" {
+				driver += ": " + pt.Desc
+			}
+		} else if pt.Desc != "" {
+			driver = "(no module: built in, or absent) " + pt.Desc
 		}
-		w("- %s (`%s`, in %d of %d overlays)", pt.Desc, pt.Compatible, pt.Overlays, len(p.DT.Variants))
+		w("| %s | %s | `%s` | %s | %d of %d |", pt.Bus, pt.Node, pt.Compatible, driver, pt.Overlays, len(p.DT.Variants))
 	}
 	if len(unknown) > 0 {
-		w("\nCompatibles not in the parts table (add to `catalog/dt_parts.yaml`): `%s`.", strings.Join(unknown, "`, `"))
-	}
-
-	if l := p.Loader; l != nil {
-		w("\n## Firmware: msm-firmware-loader\n")
-		w("%s.\n", l.Verdict)
-		if len(l.Plan.Missing) > 0 {
-			w("Not in the package: %s (`persist` is a device partition, read on the device).\n", strings.Join(l.Plan.Missing, ", "))
-		}
-		w("| needed by | file | status | where |")
-		w("|---|---|---|---|")
-		for _, c := range l.Coverage {
-			w("| %s | %s | %s | %s |", c.Need, strings.ReplaceAll(c.File, "|", " or "), c.Status, c.Where)
-		}
-		w("\n`loader`: exposed by the loader's flat link tree. `outside`: in the package, but not in an `image/` or `firmware/` directory of a partition the loader walks, so a firmware package must ship it. `absent`: not in the package at all.")
-		w("\nThis is about file *names*. The loader links them flat (plus `venus`, `qca/` and `fsg/`, and a prefix directory for each `firmware-name` in the running device tree), so a driver that asks for `qcom/<name>` or a path the port's DTS chooses still needs that path to resolve; the table cannot see the port's requests.")
+		w("\nNo stock module binds, and nothing describes: `%s`. The driver may be built into the stock kernel; a mainline port needs one from elsewhere either way.", strings.Join(unknown, "`, `"))
 	}
 
 	if len(p.Fstab) > 0 {
@@ -85,6 +78,9 @@ func Report(p Package, unknown []string) string {
 	}
 	if p.Boot.Cmdline != "" {
 		w("\n## Stock cmdline (vendor_boot)\n\n`%s`", p.Boot.Cmdline)
+	}
+	for _, s := range extra {
+		w("\n%s", strings.TrimRight(s, "\n"))
 	}
 	return b.String()
 }

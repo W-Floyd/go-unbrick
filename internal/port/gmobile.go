@@ -1,4 +1,4 @@
-package nura
+package port
 
 import (
 	"encoding/json"
@@ -236,11 +236,11 @@ func (p Package) Gmobile() (file string, g Gmobile, notes []string, ok bool) {
 	if p.Display == nil {
 		return "", g, []string{"Android display resources were not read"}, false
 	}
-	w, h, same := commonResolution(p.DT.Panels)
+	w, h, same := CommonResolution(p.DT.Panels)
 	if !same {
-		return "", g, []string{"no single panel resolution: " + panelSizes(p.DT.Panels)}, false
+		return "", g, []string{"no single panel resolution: " + PanelSizes(p.DT.Panels)}, false
 	}
-	brand, code, name := p.identity()
+	brand, code, name := p.Identity()
 	// Precedence: a size the caller measured; the diagonal in a vendor panel
 	// file's name; the device tree's size, which on fogona (70x156mm) ran about
 	// 3% over the visible area (68x151mm by ruler, and by the 6.52in in the name).

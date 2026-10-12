@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/port"
 )
 
 func parts() []PartFiles {
@@ -82,6 +82,22 @@ func TestCheckClassifiesNeeds(t *testing.T) {
 	}
 }
 
+func TestOutsideFileInAWalkedDirIsExplainedWhenShadowed(t *testing.T) {
+	// The loader skips firmware/adsp.elf: modem's image/adsp.mdt already has the name adsp.
+	pl := PlanLoader("_a", []PartFiles{
+		{Name: "modem", Files: []string{"image/adsp.mdt"}},
+		{Name: "vendor", Files: []string{"firmware/adsp.elf", "etc/cfg.ini"}},
+	})
+	cov := Check(pl, []Need{{Name: "n", Files: []string{"adsp.elf"}}, {Name: "m", Files: []string{"cfg.ini"}}},
+		map[string][]string{"adsp.elf": {"vendor_a:firmware/adsp.elf"}, "cfg.ini": {"vendor_a:etc/cfg.ini"}})
+	if cov[0].Status != OutsideLoader || !strings.Contains(cov[0].Where, "skipped: modem:image/adsp.mdt already has this name") {
+		t.Errorf("shadowed file: %+v", cov[0])
+	}
+	if cov[1].Status != OutsideLoader || strings.Contains(cov[1].Where, "skipped") {
+		t.Errorf("a file somewhere the loader never looks needs no shadow note: %+v", cov[1])
+	}
+}
+
 func TestVerdictWithNothingToMount(t *testing.T) {
 	pl := PlanLoader("", []PartFiles{{Name: "boot", Files: nil}})
 	if got := Verdict(pl, nil); !strings.Contains(got, "nothing to mount") {
@@ -89,23 +105,23 @@ func TestVerdictWithNothingToMount(t *testing.T) {
 	}
 }
 
-func TestNeedsDeriveGPUAndParts(t *testing.T) {
-	cat, err := catalog.Load("../../catalog")
-	if err != nil {
-		t.Fatal(err)
+func TestNeedsComeFromTheBoardsOwnReferences(t *testing.T) {
+	p := port.Package{
+		PartFiles: parts(),
+		FileIndex: map[string][]string{"adsp.mdt": {"modem_a:image/adsp.mdt"}, "touch.bin": {"vendor_a:firmware/touch.bin"}},
+		Modules:   []port.Module{{Name: "touch_drv", Firmware: []string{"touch.bin", "not-in-the-package.bin"}}},
 	}
-	p := Package{DT: DT{GPU: "Adreno610v2", Parts: []Part{{Compatible: "chipone-tddi"}, {Compatible: "qcom,rx-macro"}}}}
-	var names []string
-	for _, n := range Needs(p, cat) {
-		names = append(names, n.Name+"="+strings.Join(n.Files, ","))
+	var got []string
+	for _, n := range Needs(p) {
+		got = append(got, n.Name+"="+strings.Join(n.Files, ","))
 	}
-	got := strings.Join(names, " ")
-	for _, want := range []string{"adsp=adsp.mbn|adsp.mdt", "gpu=a610_zap.mbn|a610_zap.mdt", "chipone_firmware.bin"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in %s", want, got)
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"driver touch_drv=touch.bin", "shipped in the modem partition=adsp.mdt"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in %s", want, joined)
 		}
 	}
-	if strings.Contains(got, "rx-macro") {
-		t.Errorf("a part with no firmware must add no need: %s", got)
+	if strings.Contains(joined, "not-in-the-package") {
+		t.Errorf("a name a driver mentions but the package lacks is not a need: %s", joined)
 	}
 }

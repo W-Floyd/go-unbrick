@@ -1,22 +1,24 @@
-# Board parts a device tree names by compatible string -> what they are.
-# `class` groups the hardware inventory; `desc` is the part. Only compatibles
-# that name a physical component or board-level driver belong here, not SoC
-# blocks every khaje carries.
+# Optional labels for board parts, by device-tree compatible. Nothing depends on
+# this: a part's driver and description are read from the stock kernel modules
+# that bind it (their aliases and .modinfo), its firmware from the device tree
+# and those drivers. A label here only fills in a part the package has no module
+# for (a driver built into the stock kernel), so an entry is a convenience, not
+# a requirement for a new device.
 dt_parts:
-  awinic,aw882xx_smartpa:        {class: audio,    desc: "Awinic AW882xx smart speaker amplifier", firmware: [aw882xx_acf.bin]}
+  awinic,aw882xx_smartpa:        {class: audio,    desc: "Awinic AW882xx smart speaker amplifier"}
   qcom,wcd937x-codec:            {class: audio,    desc: "Qualcomm WCD937x audio codec"}
   qcom,wcd937x-slave:            {class: audio,    desc: "WCD937x SoundWire slave"}
   qcom,wsa881x-i2c-codec:        {class: audio,    desc: "WSA881x speaker amplifier"}
   qcom,va-macro:                 {class: audio,    desc: "Bolero VA macro"}
   qcom,tx-macro:                 {class: audio,    desc: "Bolero TX macro"}
   qcom,rx-macro:                 {class: audio,    desc: "Bolero RX macro"}
-  novatek,NVT-ts-spi:            {class: touch,    desc: "Novatek NT36xxx touchscreen (SPI)", firmware: [djn_novatek_ts_fw.bin, djn_novatek_ts_mp.bin]}
-  tchip,ilitek:                  {class: touch,    desc: "Ilitek touchscreen (SPI)", firmware: [ILITEK_FW_TXD_9883C]}
-  chipone-tddi:                  {class: touch,    desc: "Chipone TDDI touch/display controller (SPI)", firmware: [chipone_firmware.bin]}
+  novatek,NVT-ts-spi:            {class: touch,    desc: "Novatek NT36xxx touchscreen (SPI)"}
+  tchip,ilitek:                  {class: touch,    desc: "Ilitek touchscreen (SPI)"}
+  chipone-tddi:                  {class: touch,    desc: "Chipone TDDI touch/display controller (SPI)"}
   fpc,fpc1020:                   {class: sensor,   desc: "FPC fingerprint sensor"}
   qcom,fingerprint-gpio:         {class: sensor,   desc: "Fingerprint GPIO glue"}
   Semtech,sx933x:                {class: sensor,   desc: "Semtech SX933x SAR/proximity sensor"}
-  awinic,aw9610x_sar_0:          {class: sensor,   desc: "Awinic AW9610x SAR sensor", firmware: [aw9610x_0.bin]}
+  awinic,aw9610x_sar_0:          {class: sensor,   desc: "Awinic AW9610x SAR sensor"}
   qcom,cam-sensor:               {class: camera,   desc: "Camera sensor"}
   qcom,eeprom:                   {class: camera,   desc: "Camera calibration EEPROM"}
   qcom,actuator:                 {class: camera,   desc: "Camera focus actuator"}

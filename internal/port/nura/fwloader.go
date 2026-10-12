@@ -3,11 +3,10 @@ package nura
 import (
 	"fmt"
 	"path"
-	"regexp"
 	"sort"
 	"strings"
 
-	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/port"
 )
 
 // The msm-firmware-loader rules, from its shell script (1.8.0, with the fsg
@@ -22,10 +21,7 @@ import (
 var loaderPartitions = []string{"apnhlos", "bluetooth", "dsp", "fsg", "modem", "persist", "vendor"}
 
 // PartFiles is the file list of one partition a package carries.
-type PartFiles struct {
-	Name  string   // base name, without a slot suffix: "modem"
-	Files []string // paths inside the partition: "image/adsp.mdt"
-}
+type PartFiles = port.PartFiles
 
 // LoaderPlan is what the loader would expose.
 type LoaderPlan struct {
@@ -193,23 +189,13 @@ type Coverage struct {
 	Where  string // the exposed path or where the package holds it
 }
 
-var gpuModel = regexp.MustCompile(`(?i)adreno(\d+)`)
-
-// Needs lists the firmware the package's SoC subsystems and board parts load:
-// the catalog's subsystem table, the GPU's zap shader named by the device
-// tree, and each recognised part's own files.
-func Needs(p Package, cat *catalog.Catalog) []Need {
+// Needs lists the firmware the package's board names, as port.FirmwareRefs
+// finds it: in the device tree, in the stock drivers, or shipped by the SoC
+// vendor. Nothing is looked up in a table.
+func Needs(p port.Package) []Need {
 	var out []Need
-	for _, s := range cat.FWSubsystems() {
-		out = append(out, Need{Name: s.Name, Files: s.Files})
-	}
-	if m := gpuModel.FindStringSubmatch(p.DT.GPU); m != nil {
-		out = append(out, Need{Name: "gpu", Files: []string{fmt.Sprintf("a%s_zap.mbn|a%s_zap.mdt", m[1], m[1])}})
-	}
-	for _, part := range p.DT.Parts {
-		if pt, ok := cat.DTPartFor(part.Compatible); ok && len(pt.Firmware) > 0 {
-			out = append(out, Need{Name: pt.Desc, Files: pt.Firmware})
-		}
+	for _, r := range port.FirmwareRefs(p) {
+		out = append(out, Need{Name: strings.Join(r.By, "; "), Files: []string{strings.Join(r.Names, "|")}})
 	}
 	return out
 }
@@ -231,7 +217,7 @@ func Check(pl LoaderPlan, needs []Need, index map[string][]string) []Coverage {
 			if c.Status == Absent {
 				for _, name := range names {
 					if where := index[name]; len(where) > 0 {
-						c.Status, c.Where = OutsideLoader, where[0]
+						c.Status, c.Where = OutsideLoader, where[0]+shadow(pl, name, where[0])
 						break
 					}
 				}
@@ -240,6 +226,48 @@ func Check(pl LoaderPlan, needs []Need, index map[string][]string) []Coverage {
 		}
 	}
 	return out
+}
+
+func isMainImage(src string) bool {
+	return strings.HasSuffix(src, ".mdt") || strings.HasSuffix(src, ".mbn") || strings.HasSuffix(src, "(as .mbn)")
+}
+
+// shadow explains a file the package has, in a directory the loader walks, but
+// the loader does not expose: it skips a blob whose name (before the extension)
+// is already linked, so another partition's image of that name wins. It
+// returns "" when the file is simply somewhere the loader does not look.
+func shadow(pl LoaderPlan, name, where string) string {
+	part, p, _ := strings.Cut(where, ":")
+	dir := path.Dir(p)
+	if dir != "image" && dir != "firmware" {
+		return ""
+	}
+	walked := false
+	for _, m := range pl.Mounted {
+		walked = walked || m == part
+	}
+	if !walked {
+		return ""
+	}
+	base := strings.TrimSuffix(name, path.Ext(name))
+	var winner []string
+	for k, v := range pl.Target {
+		if strings.HasPrefix(k, base+".") && !strings.Contains(k, "/") {
+			winner = append(winner, v)
+		}
+	}
+	if len(winner) == 0 {
+		return ""
+	}
+	// Name the main image, not one of its .bNN segments.
+	sort.Slice(winner, func(i, j int) bool {
+		mi, mj := isMainImage(winner[i]), isMainImage(winner[j])
+		if mi != mj {
+			return mi
+		}
+		return winner[i] < winner[j]
+	})
+	return " (skipped: " + winner[0] + " already has this name)"
 }
 
 // LoaderCheck is the whole answer to "could msm-firmware-loader supply this
@@ -252,12 +280,12 @@ type LoaderCheck struct {
 
 // CheckLoader runs the model over the package's partitions and the firmware its
 // SoC and parts need. Nil when the package gave no partition lists.
-func CheckLoader(p Package, cat *catalog.Catalog) *LoaderCheck {
-	if len(p.LoaderParts) == 0 {
+func CheckLoader(p port.Package) *LoaderCheck {
+	if len(p.PartFiles) == 0 {
 		return nil
 	}
-	pl := PlanLoader(p.LoaderSlot, p.LoaderParts)
-	cov := Check(pl, Needs(p, cat), p.FileIndex)
+	pl := PlanLoader(p.Slot, p.PartFiles)
+	cov := Check(pl, Needs(p), p.FileIndex)
 	return &LoaderCheck{Plan: pl, Coverage: cov, Verdict: Verdict(pl, cov)}
 }
 

@@ -1,16 +1,17 @@
-// Package nura turns what a stock Android package already holds into a draft
-// Nura (formerly postmarketOS) port: a deviceinfo with every field the package can settle, and
-// a hardware inventory naming what the package cannot decide on its own.
+// Package port turns what a stock Android package already holds into the
+// ingredients of a Linux port: the boot layout, the board's device-tree parts
+// and displays, the screen's shape, and a hardware report. It is
+// distribution-neutral; an Emitter (see port.go) turns the result into one
+// distribution's packaging.
 //
-// It reads; it does not guess. A field the package cannot determine is left as
-// a TODO in the output, never filled with a plausible value.
-package nura
+// It reads; it does not guess. A field the package cannot determine is left
+// unset or a TODO in the output, never filled with a plausible value.
+package port
 
 import (
 	"encoding/binary"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/fdt"
@@ -59,10 +60,24 @@ type Panel struct {
 	Referenced, Default bool
 }
 
-// Part is one board component a device tree names.
+// Part is one board component a device tree names: a node on an external bus
+// (I2C, SPI) or one a third party's compatible names, with the driver in the
+// package that binds it when there is one.
 type Part struct {
-	Class, Desc, Compatible string
-	Overlays                int
+	Compatible string
+	Node       string // "sgm7220@47"
+	Bus        string // the bus controller the overlay attaches it to, "qupv3_se1_i2c"
+	Driver     string // module that binds the compatible, "" if none in the package
+	Desc       string // the driver's own description, else the catalog's
+	Class      string // optional label from the catalog's dt_parts, cosmetic
+	Overlays   int    // how many board overlays carry it
+}
+
+// FirmwareName is a firmware file name a device tree property gives, as the
+// vendor DTs do ("firmware-name", "vidc,firmware-name", "aw9610x,firmware_name").
+type FirmwareName struct {
+	Node, Prop string
+	Value      string
 }
 
 // Variant is one board overlay: the ids it is selected by and the displays it carries.
@@ -81,14 +96,16 @@ type DT struct {
 	Panels   []Panel
 	Parts    []Part
 	// Unreferenced are panel nodes the overlays define but nothing selects.
-	Unreferenced []string
-	GPU          string // base DTB qcom,gpu-model, "Adreno610v2"
+	Unreferenced  []string
+	GPU           string // base DTB qcom,gpu-model, "Adreno610v2"
+	FirmwareNames []FirmwareName
 }
 
-// ReadDT summarizes the base DTBs and the board overlays. Parts are named by
-// the catalog's dt_parts table; a compatible it does not know is dropped from
-// Parts but counted in Unknown.
-func ReadDT(base, overlays []*fdt.Node, cat *catalog.Catalog) (dt DT, unknown []string) {
+// ReadDT summarizes the base DTBs and the board overlays. Each part is bound to
+// its driver through mods' aliases; the catalog's dt_parts, when it has the
+// compatible, only adds a label. unknown are parts nothing in the package binds
+// and the catalog does not describe.
+func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt DT, unknown []string) {
 	for _, b := range base {
 		if dt.SoC == "" {
 			if c := b.Strs("compatible"); len(c) > 0 {
@@ -106,6 +123,7 @@ func ReadDT(base, overlays []*fdt.Node, cat *catalog.Catalog) (dt DT, unknown []
 			dt.MSMIDs = append(dt.MSMIDs, ids[0])
 		}
 	}
+	dt.FirmwareNames = firmwareNames(append(append([]*fdt.Node{}, base...), overlays...))
 	parts := map[string]*Part{}
 	panels := map[string]*Panel{}
 	unk := map[string]bool{}
@@ -134,23 +152,30 @@ func ReadDT(base, overlays []*fdt.Node, cat *catalog.Catalog) (dt DT, unknown []
 				panels[p.Name] = &p
 			}
 		}
-		o.Walk(func(_ string, n *fdt.Node) {
-			for _, c := range n.Strs("compatible") {
-				if seen[c] {
-					continue
-				}
-				seen[c] = true
-				if pt, ok := cat.DTPartFor(c); ok {
-					if e := parts[c]; e != nil {
-						e.Overlays++
-					} else {
-						parts[c] = &Part{Class: pt.Class, Desc: pt.Desc, Compatible: c, Overlays: 1}
-					}
-				} else if strings.Contains(c, ",") && !strings.HasPrefix(c, "qcom,") && !strings.HasPrefix(c, "mmi,") && !strings.HasPrefix(c, "android,") {
-					unk[c] = true
+		for _, rp := range overlayParts(o) {
+			if seen[rp.Compatible] {
+				continue
+			}
+			seen[rp.Compatible] = true
+			if e := parts[rp.Compatible]; e != nil {
+				e.Overlays++
+				continue
+			}
+			p := &Part{Compatible: rp.Compatible, Node: rp.Node, Bus: rp.Bus, Overlays: 1}
+			if m, ok := Binding(mods, rp.Compatible); ok {
+				p.Driver, p.Desc = m.Name, m.Description
+			}
+			if pt, ok := cat.DTPartFor(rp.Compatible); ok {
+				p.Class = pt.Class
+				if p.Desc == "" {
+					p.Desc = pt.Desc
 				}
 			}
-		})
+			if p.Desc == "" {
+				unk[rp.Compatible] = true
+			}
+			parts[rp.Compatible] = p
+		}
 		dt.Variants = append(dt.Variants, v)
 	}
 	for _, p := range parts {
@@ -158,8 +183,8 @@ func ReadDT(base, overlays []*fdt.Node, cat *catalog.Catalog) (dt DT, unknown []
 	}
 	sort.Slice(dt.Parts, func(i, j int) bool {
 		a, b := dt.Parts[i], dt.Parts[j]
-		if a.Class != b.Class {
-			return a.Class < b.Class
+		if a.Bus != b.Bus {
+			return a.Bus < b.Bus
 		}
 		return a.Compatible < b.Compatible
 	})
