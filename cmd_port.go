@@ -21,7 +21,7 @@ import (
 )
 
 func newPortCmd() *cobra.Command {
-	var out, sizeMM, distro string
+	var out, sizeMM, distro, kernelTree string
 	c := &cobra.Command{
 		Use:   "port <stock package>",
 		Short: "draft a Linux port (device packaging and hardware report) from a stock package",
@@ -53,6 +53,16 @@ for a package that ships it as sparse chunks takes about half a minute.
 				if !ok || pkg.SizeMM[0] <= 0 || pkg.SizeMM[1] <= 0 {
 					return fmt.Errorf("--size-mm wants WIDTHxHEIGHT in millimetres, e.g. 68x151")
 				}
+			}
+			if kernelTree != "" {
+				var compats []string
+				for _, pt := range pkg.DT.Parts {
+					compats = append(compats, pt.Compatible)
+				}
+				if pkg.Mainline, err = port.ScanKernelTree(kernelTree, compats); err != nil {
+					return fmt.Errorf("--kernel-tree: %w", err)
+				}
+				pkg.KernelTree = kernelTree
 			}
 			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog()})
 			if err != nil {
@@ -94,6 +104,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	}
 	c.Flags().StringVarP(&out, "out", "o", "", "write the files here instead of printing them")
 	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
+	c.Flags().StringVar(&kernelTree, "kernel-tree", "", "target kernel source tree: report which parts it supports and the firmware its drivers name")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
 	return c
 }

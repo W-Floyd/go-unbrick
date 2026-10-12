@@ -66,6 +66,10 @@ func Report(p Package, unknown []string, extra ...string) string {
 		w("\nNo stock module binds, and nothing describes: `%s`. The driver may be built into the stock kernel; a mainline port needs one from elsewhere either way.", strings.Join(unknown, "`, `"))
 	}
 
+	if p.Mainline != nil {
+		b.WriteString(mainlineSection(p))
+	}
+
 	if len(p.Fstab) > 0 {
 		w("\n## Stock mounts\n")
 		for _, e := range p.Fstab {
@@ -83,6 +87,48 @@ func Report(p Package, unknown []string, extra ...string) string {
 		w("\n%s", strings.TrimRight(s, "\n"))
 	}
 	return b.String()
+}
+
+// mainlineSection says what the target kernel tree already supports of the
+// board's parts: the porting work list.
+func mainlineSection(p Package) string {
+	var b strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	var driver, bindingOnly, neither int
+	for _, pt := range p.DT.Parts {
+		md := p.Mainline[pt.Compatible]
+		switch {
+		case md != nil && len(md.Sources) > 0:
+			driver++
+		case md != nil && len(md.Bindings) > 0:
+			bindingOnly++
+		default:
+			neither++
+		}
+	}
+	w("\n## Mainline support (%s)\n", p.KernelTree)
+	w("Of %d parts: %d have a driver in the tree, %d a binding but no driver, %d neither. The last two are the porting work.\n", len(p.DT.Parts), driver, bindingOnly, neither)
+	w("`similar` lists same-vendor compatibles in the tree that share a name prefix, or a small vendor's whole list: somewhere to start, not the same part.\n")
+	w("| compatible | driver | binding | firmware the driver names | similar in the tree |")
+	w("|---|---|---|---|---|")
+	for _, pt := range p.DT.Parts {
+		md := p.Mainline[pt.Compatible]
+		if md == nil {
+			md = &MainlineDriver{}
+		}
+		w("| `%s` | %s | %s | %s | %s |", pt.Compatible, listOrDash(md.Sources), listOrDash(md.Bindings), listOrDash(md.Firmware), listOrDash(md.Similar))
+	}
+	return b.String()
+}
+
+func listOrDash(ss []string) string {
+	if len(ss) == 0 {
+		return "—"
+	}
+	if len(ss) > 3 {
+		return strings.Join(ss[:3], ", ") + fmt.Sprintf(" (+%d)", len(ss)-3)
+	}
+	return strings.Join(ss, ", ")
 }
 
 func ids(v []uint32) string {

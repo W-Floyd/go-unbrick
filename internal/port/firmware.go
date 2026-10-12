@@ -67,6 +67,17 @@ func FirmwareRefs(p Package) []FirmwareRef {
 		}
 	}
 
+	// What the target kernel's drivers ask for, which is what a port gets
+	// (the stock drivers' names are a proxy). Named even when the package does
+	// not carry the file: that gap is the finding.
+	for _, part := range p.DT.Parts {
+		if md := p.Mainline[part.Compatible]; md != nil && len(md.Sources) > 0 {
+			for _, n := range md.Firmware {
+				r.add(r.satisfying(n), "mainline "+md.Sources[0])
+			}
+		}
+	}
+
 	for _, part := range p.PartFiles {
 		if part.Name != "modem" {
 			continue

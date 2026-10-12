@@ -32,6 +32,11 @@ type Package struct {
 	Slot      string
 	PartFiles []PartFiles
 	FileIndex map[string][]string
+
+	// KernelTree and Mainline are set when a target kernel source tree was
+	// scanned: what it supports of the board's parts, by compatible.
+	KernelTree string
+	Mainline   map[string]*MainlineDriver
 }
 
 // FirmwarePartitions are the partitions a Qualcomm Android device keeps its

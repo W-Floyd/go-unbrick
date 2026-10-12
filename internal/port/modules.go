@@ -24,7 +24,7 @@ type Module struct {
 }
 
 // firmwareName is a string shaped like a firmware file name.
-var firmwareName = regexp.MustCompile(`[A-Za-z0-9_][A-Za-z0-9_.\-]{2,60}\.(?:bin|fw|mbn|mdt|elf|tlv|hex|ini|csv|img|jsn)`)
+var firmwareName = regexp.MustCompile(`[A-Za-z0-9_][A-Za-z0-9_.\-]{2,60}\.(?:bin|fw|mbn|mdt|elf|tlv|hex|ini|csv|img|jsn)\b`)
 
 // ReadModule reads a module's identity from its bytes. name is the file name.
 func ReadModule(name string, b []byte) Module {
