@@ -178,10 +178,10 @@ func writeNode(b *strings.Builder, p Package, pt Part) {
 		}
 	}
 	if len(supplies) > 0 {
-		w("\t\t/* TODO supplies the stock node has, as phandles into the stock PMIC tree: %s */", strings.Join(supplies, ", "))
+		w("\t\t/* TODO: supplies the stock node has, as phandles into the stock PMIC tree: %s */", strings.Join(supplies, ", "))
 	}
 	if len(unmapped) > 0 {
-		w("\t\t/* TODO stock properties not mapped: %s */", capList(unmapped, 12))
+		w("\t\t/* TODO: stock properties not mapped: %s */", capList(unmapped, 12))
 	}
 	var kids []string
 	for _, c := range n.Children {

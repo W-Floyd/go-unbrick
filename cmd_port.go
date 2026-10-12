@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -43,10 +44,14 @@ for a package that ships it as sparse chunks takes about half a minute.
 			if !ok {
 				return fmt.Errorf("no emitter for distribution %q (have: %s)", distro, strings.Join(port.IDs(), ", "))
 			}
-			pkg, unknown, blob, err := readPackage(args[0])
+			prog := newPortProgress()
+			defer prog.done()
+			carve.Progress = prog.detail
+			pkg, unknown, blob, err := readPackage(args[0], prog.say)
 			if err != nil {
 				return err
 			}
+			prog.say("writing the bundle")
 			if sizeMM != "" {
 				w, h, ok := strings.Cut(sizeMM, "x")
 				pkg.SizeMM[0], _ = strconv.Atoi(w)
@@ -118,6 +123,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 			if haveGM {
 				files["gmobile/"+gmFile] = []byte(gm.JSON())
 			}
+			prog.done() // clear the bar before anything is printed under it
 			for _, n := range append(notes, bundle.Notes...) {
 				fmt.Fprintln(os.Stderr, "port:", n)
 			}
@@ -158,9 +164,65 @@ for a package that ships it as sparse chunks takes about half a minute.
 
 var kernelBanner = regexp.MustCompile(`Linux version (\d+\.\d+\.\d+)`)
 
+// portStages is how many steps reading and writing a bundle has, for the bar.
+const portStages = 6
+
+// portProgress tells the person running the command what a slow stage is doing:
+// reading a stock package takes tens of seconds, and a silent terminal looks
+// like a hang. On a terminal it is the shared step bar (one step per stage, the
+// super image's unpacking as detail on its step); off one it prints a line per
+// stage with the time since the start, since the bar draws nothing there and a
+// log wants them.
+type portProgress struct {
+	start time.Time
+	bar   *barSink // nil off a terminal
+	stage string
+	n     int
+}
+
+func newPortProgress() *portProgress {
+	p := &portProgress{start: time.Now(), bar: newBar()}
+	p.bar.Begin(portStages)
+	return p
+}
+
+// say starts the next stage.
+func (p *portProgress) say(format string, args ...any) {
+	p.stage = fmt.Sprintf(format, args...)
+	if p.bar == nil {
+		fmt.Fprintf(os.Stderr, "port: [%3.0fs] %s\n", time.Since(p.start).Seconds(), p.stage)
+		return
+	}
+	if p.n > 0 {
+		p.bar.Advance()
+	}
+	p.n++
+	p.bar.Describe(p.stage)
+}
+
+// detail reports progress inside the current stage.
+func (p *portProgress) detail(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if p.bar == nil {
+		fmt.Fprintf(os.Stderr, "port: [%3.0fs] %s\n", time.Since(p.start).Seconds(), msg)
+		return
+	}
+	p.bar.Describe(p.stage + " — " + strings.TrimSpace(msg))
+}
+
+// done finishes the bar and clears it, so what is printed next is not drawn over.
+func (p *portProgress) done() {
+	if p.bar != nil && p.n > 0 {
+		p.bar.Advance()
+	}
+	p.bar.Clear()
+	p.n = 0
+}
+
 // readPackage reads everything a port draws on from a stock package.
 // blob reads a file out of the package by its "partition:path" location.
-func readPackage(input string) (pkg port.Package, unknown []string, blob func(string) ([]byte, error), err error) {
+func readPackage(input string, say func(string, ...any)) (pkg port.Package, unknown []string, blob func(string) ([]byte, error), err error) {
+	say("opening the package")
 	root, err := carveRoot(input)
 	if err != nil {
 		return port.Package{}, nil, nil, err
@@ -172,6 +234,7 @@ func readPackage(input string) (pkg port.Package, unknown []string, blob func(st
 		}
 		return n.Bytes()
 	}
+	say("reading the boot images and device trees")
 	vb, err := bytesOf("vendor_boot.img")
 	if err != nil {
 		return pkg, nil, nil, err
@@ -198,6 +261,7 @@ func readPackage(input string) (pkg port.Package, unknown []string, blob func(st
 			}
 		}
 	}
+	say("reading the kernel modules")
 	pkg.Modules = readModules(root)
 	pkg.DT, unknown = port.ReadDT(base, overlays, pkg.Modules, activeCatalog())
 
@@ -222,8 +286,10 @@ func readPackage(input string) (pkg port.Package, unknown []string, blob func(st
 	} else {
 		fmt.Fprintf(os.Stderr, "vendor build.prop not read (%v); name and codename will be TODOs\n", err)
 	}
+	say("reading the display resources")
 	density, _ := strconv.Atoi(pkg.Props["ro.sf.lcd_density"])
 	pkg.Display = readAndroidDisplay(root, density)
+	say("listing the firmware partitions")
 	var nodes map[string]*carve.Node
 	pkg.Slot, pkg.PartFiles, pkg.FileIndex, nodes = readPartFiles(root, pkg.Partitions)
 	if v, err := root.Walk("super.img/vendor_a"); err == nil {

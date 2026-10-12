@@ -80,7 +80,7 @@ func Render(lines []Line) string {
 	for _, l := range lines {
 		switch {
 		case l.Todo != "":
-			fmt.Fprintf(&b, "# TODO deviceinfo_%s: %s\n", l.Key, l.Todo)
+			fmt.Fprintf(&b, "# TODO: deviceinfo_%s: %s\n", l.Key, l.Todo)
 		case l.Why != "":
 			fmt.Fprintf(&b, "deviceinfo_%s=%q # %s\n", l.Key, l.Val, l.Why)
 		default:

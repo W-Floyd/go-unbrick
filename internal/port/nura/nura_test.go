@@ -23,9 +23,9 @@ func TestDeviceinfoDerivesAndFlagsTodos(t *testing.T) {
 		`deviceinfo_flash_fastboot_partition_rootfs="super"`,
 		`deviceinfo_rootfs_image_sector_size="4096"`,
 		`deviceinfo_flash_offset_dtb="0x01f00000"`,
-		"# TODO deviceinfo_year",
-		"# TODO deviceinfo_dtb",
-		"# TODO deviceinfo_chassis",
+		"# TODO: deviceinfo_year",
+		"# TODO: deviceinfo_dtb",
+		"# TODO: deviceinfo_chassis",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -46,7 +46,7 @@ func TestDeviceinfoLoaderNeedsUdev(t *testing.T) {
 func TestDeviceinfoPanelsDisagree(t *testing.T) {
 	p := port.Package{DT: port.DT{Panels: []port.Panel{{Name: "a", W: 720, H: 1600}, {Name: "b", W: 1080, H: 2400}}}}
 	out := Render(Deviceinfo(p, false))
-	if strings.Contains(out, `deviceinfo_screen_width=`) || !strings.Contains(out, "# TODO deviceinfo_screen_width") {
+	if strings.Contains(out, `deviceinfo_screen_width=`) || !strings.Contains(out, "# TODO: deviceinfo_screen_width") {
 		t.Errorf("disagreeing panels must not set a size:\n%s", out)
 	}
 }

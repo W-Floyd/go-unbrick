@@ -550,20 +550,65 @@ type lazyOverlay struct {
 	err    error
 }
 
+// Progress, when set, is told about work too slow to be silent (unpacking a
+// multi-gigabyte image to a temporary file). The command line points it at
+// stderr; a library user leaves it nil.
+var Progress func(format string, args ...any)
+
+func progress(format string, args ...any) {
+	if Progress != nil {
+		Progress(format, args...)
+	}
+}
+
+// spoolWorkers is how many chunks are unpacked at once.
+const spoolWorkers = 4
+
 func (l *lazyOverlay) ReadAt(p []byte, off int64) (int, error) {
 	l.once.Do(func() {
 		files := make([]io.ReaderAt, len(l.chunks))
+		var todo []int
 		for i, c := range l.chunks {
 			if c.at != nil {
 				files[i] = c.at
-				continue
+			} else {
+				todo = append(todo, i)
 			}
-			f, err := spool(c)
-			if err != nil {
-				l.err = err
+		}
+		if len(todo) > 0 {
+			progress("unpacking the super image, a few GB in %s", os.TempDir())
+			var (
+				wg   sync.WaitGroup
+				mu   sync.Mutex
+				done int
+				sem  = make(chan struct{}, spoolWorkers)
+			)
+			for _, i := range todo {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func() {
+					defer wg.Done()
+					defer func() { <-sem }()
+					f, err := spool(l.chunks[i])
+					mu.Lock()
+					defer mu.Unlock()
+					if err != nil {
+						if l.err == nil {
+							l.err = err
+						}
+						return
+					}
+					files[i] = f
+					done++
+					if done%11 == 0 || done == len(todo) {
+						progress("  unpacked %d of %d chunks", done, len(todo))
+					}
+				}()
+			}
+			wg.Wait()
+			if l.err != nil {
 				return
 			}
-			files[i] = f
 		}
 		l.o, l.err = sparse.NewOverlay(files)
 	})

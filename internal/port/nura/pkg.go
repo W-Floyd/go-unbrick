@@ -107,11 +107,11 @@ func apkbuild(p port.Package, c config, deviceinfo []byte, lines []Line, loader 
 	w("pkgdesc=%q", name)
 	w("pkgver=0")
 	w("pkgrel=0")
-	w(`url="" # TODO`)
+	w(`url="" # TODO: the project's URL`)
 	if c.License != "" {
 		w("license=%q", c.License)
 	} else {
-		w(`license="" # TODO`)
+		w(`license="" # TODO: the license`)
 	}
 	arch := ""
 	for _, l := range lines {
@@ -150,7 +150,7 @@ func apkbuild(p port.Package, c config, deviceinfo []byte, lines []Line, loader 
 	if len(c.MakeDepends) > 0 {
 		w("makedepends=\"%s\"", strings.Join(c.MakeDepends, " "))
 	} else {
-		w(`makedepends="" # TODO`)
+		w(`makedepends="" # TODO: the packaging build dependency`)
 	}
 	w(`source="deviceinfo"`)
 	w("")
@@ -230,7 +230,7 @@ func firmwarePackage(p port.Package, o port.Options, c config, ship []string) (f
 	w("pkgver=0")
 	w("pkgrel=0")
 	w("pkgdesc=%q", "Firmware for "+name)
-	w(`url="" # TODO`)
+	w(`url="" # TODO: the project's URL`)
 	w(`arch="aarch64"`)
 	w(`license="proprietary"`)
 	w(`options="!check !strip !archcheck !tracedeps"`)

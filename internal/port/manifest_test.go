@@ -7,7 +7,7 @@ import (
 
 func TestManifestCountsOpenDecisions(t *testing.T) {
 	files := map[string][]byte{
-		"a/deviceinfo": []byte("# Draft. Lines marked TODO need a decision.\n# TODO year: not recorded\nname=\"x\"\n# TODO dtb: pick one\n"),
+		"a/deviceinfo": []byte("# Draft. Lines marked TODO need a decision.\n# TODO: year: not recorded\nname=\"x\"\n# TODO: dtb: pick one\n"),
 		"b.dts":        []byte("/* TODO: chassis */\nmodel = \"x\";\n"),
 		"clean.json":   []byte("{}"),
 		"blob.bin":     {0, 1, 2, 'T', 'O', 'D', 'O'},
@@ -19,7 +19,7 @@ func TestManifestCountsOpenDecisions(t *testing.T) {
 		"| clean.json | 2 B | 0 |",
 		"| blob.bin | 7 B | — |",
 		"3 open decisions in all.",
-		"`a/deviceinfo`: TODO year: not recorded",
+		"`a/deviceinfo`: TODO: year: not recorded",
 		"`b.dts`: TODO: chassis",
 	} {
 		if !strings.Contains(out, want) {

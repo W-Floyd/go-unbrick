@@ -389,12 +389,12 @@ func (d PanelDriver) CSource() string {
 		lanes = fmt.Sprint(d.Lanes)
 	}
 	w("\tdsi->lanes = %s;", lanes)
-	format := "/* TODO */ MIPI_DSI_FMT_RGB888"
+	format := "/* TODO: the stock node gives no pixel depth */ MIPI_DSI_FMT_RGB888"
 	if d.Format != "" {
 		format = d.Format
 	}
 	w("\tdsi->format = %s;", format)
-	flags := "0 /* TODO */"
+	flags := "0 /* TODO: the stock node's panel type is not a video-mode one this tool maps */"
 	if len(d.Flags) > 0 {
 		flags = strings.Join(d.Flags, " | ")
 	}

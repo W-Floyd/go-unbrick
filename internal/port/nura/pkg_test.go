@@ -84,7 +84,7 @@ func TestAPKBUILDCarriesTheDeviceinfoChecksumAndDependencies(t *testing.T) {
 func TestAPKBUILDWithoutACatalogLeavesTODOsNotGuesses(t *testing.T) {
 	p := fogona()
 	out := apkbuild(p, configFrom(nil), []byte("x"), nil, nil, "")
-	for _, want := range []string{"TODO: no packaging conventions", "# TODO: the kernel package", "# TODO: the distribution's base package", `makedepends="" # TODO`, "TODO_function"} {
+	for _, want := range []string{"TODO: no packaging conventions", "# TODO: the kernel package", "# TODO: the distribution's base package", `makedepends="" # TODO: `, "TODO_function"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
