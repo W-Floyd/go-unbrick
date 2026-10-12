@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
 	"strings"
 	"testing"
 
@@ -93,5 +95,22 @@ func TestProductKey(t *testing.T) {
 		if got, ok := productKey(bag(c.fp, c.model), codename); got != c.want || ok != c.ok {
 			t.Errorf("%s %q: %q %v, want %q %v", c.fp, c.model, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+func TestQDBNote(t *testing.T) {
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	zw.Write([]byte("# Qshrink 4.0 Hash Database File\n<Baseline> QC_IMAGE_VERSION_STRING=MPSS.KI.1.0-02822.20 <\\Baseline>\n<Content>\n"))
+	zw.Close()
+	guid := []byte{0x3d, 0x1e, 0x8c, 0xbb, 0x74, 0x8f, 0x78, 0xef, 0x20, 0xc8, 0x92, 0xda, 0xd2, 0xe2, 0x98, 0xbc}
+	img := append(append([]byte("\x7fQDB"), guid...), make([]byte, 0x40-20)...)
+	img = append(img, z.Bytes()...)
+	want := "Qshrink hash db, GUID 3d1e8cbb-748f-78ef-20c8-92dad2e298bc, baseline MPSS.KI.1.0-02822.20"
+	if got := qdbNote(img); got != want {
+		t.Errorf("qdbNote = %q, want %q", got, want)
+	}
+	if qdbNote([]byte("nope")) != "" {
+		t.Error("non-QDB gave a note")
 	}
 }

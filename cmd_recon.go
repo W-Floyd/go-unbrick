@@ -1637,6 +1637,12 @@ func leafNote(img []byte, path string) string {
 		line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
 		return strings.TrimSpace(line)
 	}
+	if strings.EqualFold(filepath.Ext(path), ".qdb") {
+		if data, err := modem.Extract(img, path); err == nil {
+			return qdbNote(data)
+		}
+		return ""
+	}
 	if note := mcfgNote(img, path); note != "" {
 		return note
 	}
