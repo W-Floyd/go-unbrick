@@ -71,6 +71,11 @@ type Part struct {
 	Desc       string // the driver's own description, else the catalog's
 	Class      string // optional label from the catalog's dt_parts, cosmetic
 	Overlays   int    // how many board overlays carry it
+
+	// Source is the stock node, from the first overlay that has it, and Labels
+	// names the controller each of its phandle properties points at ("tlmm").
+	Source *fdt.Node
+	Labels map[string]string
 }
 
 // FirmwareName is a firmware file name a device tree property gives, as the
@@ -161,7 +166,7 @@ func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt
 				e.Overlays++
 				continue
 			}
-			p := &Part{Compatible: rp.Compatible, Node: rp.Node, Bus: rp.Bus, Overlays: 1}
+			p := &Part{Compatible: rp.Compatible, Node: rp.Node, Bus: rp.Bus, Overlays: 1, Source: rp.N, Labels: rp.Labels}
 			if m, ok := Binding(mods, rp.Compatible); ok {
 				p.Driver, p.Desc = m.Name, m.Description
 			}

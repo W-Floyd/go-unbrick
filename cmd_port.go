@@ -22,6 +22,7 @@ import (
 
 func newPortCmd() *cobra.Command {
 	var out, sizeMM, distro, kernelTree string
+	var referenceDTS []string
 	c := &cobra.Command{
 		Use:   "port <stock package>",
 		Short: "draft a Linux port (device packaging and hardware report) from a stock package",
@@ -69,6 +70,21 @@ for a package that ships it as sparse chunks takes about half a minute.
 				return err
 			}
 			files := bundle.Files
+			dts, dtsNotes := port.PeripheralDTS(pkg)
+			files["dts/peripherals.dtsi"] = []byte(dts)
+			bundle.Notes = append(bundle.Notes, dtsNotes...)
+			if len(referenceDTS) > 0 {
+				var ref strings.Builder
+				for _, f := range referenceDTS {
+					b, err := os.ReadFile(f)
+					if err != nil {
+						return fmt.Errorf("--reference-dts: %w", err)
+					}
+					ref.Write(b)
+					ref.WriteString("\n")
+				}
+				bundle.Report = append(bundle.Report, port.CompareDTS(pkg, ref.String()))
+			}
 			files["HARDWARE.md"] = []byte(port.Report(pkg, unknown, bundle.Report...))
 			gmFile, gm, notes, haveGM := pkg.Gmobile()
 			if haveGM {
@@ -104,6 +120,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	}
 	c.Flags().StringVarP(&out, "out", "o", "", "write the files here instead of printing them")
 	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
+	c.Flags().StringSliceVar(&referenceDTS, "reference-dts", nil, "an existing hand-written board dts (repeat or comma-separate for several): compare the generated peripherals against it, by bus and address")
 	c.Flags().StringVar(&kernelTree, "kernel-tree", "", "target kernel source tree: report which parts it supports and the firmware its drivers name")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
 	return c

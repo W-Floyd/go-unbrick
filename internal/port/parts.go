@@ -11,6 +11,29 @@ import (
 // rawPart is a compatible-bearing node of an overlay.
 type rawPart struct {
 	Compatible, Node, Bus string
+	N                     *fdt.Node
+	Labels                map[string]string // property -> label of the node its first phandle names
+}
+
+// fixupLabels reads an overlay's __fixups__ (label -> "/path:property:offset"
+// entries) into "path:property" -> label, for the phandles that sit at offset
+// 0 of a property: the controller a gpio or interrupt specifier names.
+func fixupLabels(o *fdt.Node) map[string]string {
+	out := map[string]string{}
+	for _, c := range o.Children {
+		if c.Name != "__fixups__" {
+			continue
+		}
+		for _, label := range c.Keys {
+			for _, ref := range strings.Split(strings.TrimRight(string(c.Props[label]), "\x00"), "\x00") {
+				parts := strings.Split(strings.TrimPrefix(ref, "/"), ":")
+				if len(parts) == 3 && parts[2] == "0" {
+					out[parts[0]+":"+parts[1]] = label
+				}
+			}
+		}
+	}
+	return out
 }
 
 // socVendors are compatible prefixes that name the SoC's own blocks and the
@@ -49,6 +72,7 @@ func fragmentTargets(o *fdt.Node) map[string]string {
 // blocks and the OEM's own glue drivers are not parts.
 func overlayParts(o *fdt.Node) []rawPart {
 	targets := fragmentTargets(o)
+	fix := fixupLabels(o)
 	var out []rawPart
 	for _, frag := range o.Children {
 		ov := childNamed(frag, "__overlay__")
@@ -56,10 +80,16 @@ func overlayParts(o *fdt.Node) []rawPart {
 			continue
 		}
 		bus := targets[frag.Name]
-		ov.Walk(func(_ string, n *fdt.Node) {
+		ov.Walk(func(p string, n *fdt.Node) {
 			for _, c := range n.Strs("compatible") {
 				if externalBus(bus) || (strings.Contains(c, ",") || strings.Contains(c, "-")) && !glueVendor.MatchString(c) {
-					out = append(out, rawPart{Compatible: c, Node: n.Name, Bus: bus})
+					labels := map[string]string{}
+					for _, k := range n.Keys {
+						if l, ok := fix[frag.Name+"/"+p+":"+k]; ok {
+							labels[k] = l
+						}
+					}
+					out = append(out, rawPart{Compatible: c, Node: n.Name, Bus: bus, N: n, Labels: labels})
 				}
 			}
 		})
