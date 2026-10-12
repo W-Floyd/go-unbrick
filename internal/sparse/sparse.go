@@ -255,3 +255,69 @@ func Decode(blob []byte) ([]byte, error) {
 	}
 	return out.Bytes(), nil
 }
+
+// Apply writes a sparse blob's raw and fill records into dst at their output
+// offsets, skipping don't-care regions, and returns the image's full size. Called
+// once per super sparsechunk on one file, the chunks overlay into the whole
+// image; on a sparse-capable filesystem the skipped spans stay holes. A
+// non-sparse blob is written at offset 0 as the raw image itself.
+func Apply(blob []byte, dst io.WriterAt) (size int64, err error) {
+	if !IsSparse(blob) {
+		_, err = dst.WriteAt(blob, 0)
+		return int64(len(blob)), err
+	}
+	le := binary.LittleEndian
+	if len(blob) < 28 {
+		return 0, fmt.Errorf("sparse: header truncated (%d bytes)", len(blob))
+	}
+	fileHdrSz := int(le.Uint16(blob[8:10]))
+	chunkHdrSz := int(le.Uint16(blob[10:12]))
+	blkSz := int64(le.Uint32(blob[12:16]))
+	totalBlks := int64(le.Uint32(blob[16:20]))
+	totalChunks := le.Uint32(blob[20:24])
+	if fileHdrSz < 28 || chunkHdrSz < 12 {
+		return 0, fmt.Errorf("sparse: bad header sizes file=%d chunk=%d", fileHdrSz, chunkHdrSz)
+	}
+	p, pos := fileHdrSz, int64(0)
+	for i := uint32(0); i < totalChunks; i++ {
+		if p+chunkHdrSz > len(blob) {
+			return 0, fmt.Errorf("sparse: chunk %d header past end", i)
+		}
+		ctype := le.Uint16(blob[p : p+2])
+		n := int64(le.Uint32(blob[p+4:p+8])) * blkSz
+		totalSz := int(le.Uint32(blob[p+8 : p+12]))
+		if totalSz < chunkHdrSz || p+totalSz > len(blob) {
+			return 0, fmt.Errorf("sparse: chunk %d size %d out of range", i, totalSz)
+		}
+		data := blob[p+chunkHdrSz : p+totalSz]
+		switch ctype {
+		case chunkRaw:
+			if int64(len(data)) < n {
+				return 0, fmt.Errorf("sparse: raw chunk %d short", i)
+			}
+			if _, err := dst.WriteAt(data[:n], pos); err != nil {
+				return 0, err
+			}
+		case chunkFill:
+			if len(data) < 4 {
+				return 0, fmt.Errorf("sparse: fill chunk %d short", i)
+			}
+			if fill := le.Uint32(data[:4]); fill != 0 {
+				if _, err := dst.WriteAt(bytes.Repeat(data[:4], int(n/4)), pos); err != nil {
+					return 0, err
+				}
+			}
+		case chunkDontCare:
+		case chunkCRC:
+			n = 0
+		default:
+			return 0, fmt.Errorf("sparse: unknown chunk type 0x%04x at %d", ctype, i)
+		}
+		pos += n
+		p += totalSz
+	}
+	if t := totalBlks * blkSz; t > pos {
+		pos = t
+	}
+	return pos, nil
+}

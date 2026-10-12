@@ -17,6 +17,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/sparse"
 )
 
 // motorola: Qualcomm/qboot blankflash — a SINGLE_N_LONELY singleimage.bin plus
@@ -313,6 +314,7 @@ func joinSuper(chunks map[int]*zip.File, dest string) (string, error) {
 		return "", err
 	}
 	defer out.Close()
+	var end int64
 	for i := 0; i < len(chunks); i++ {
 		f, ok := chunks[i]
 		if !ok {
@@ -322,11 +324,29 @@ func joinSuper(chunks map[int]*zip.File, dest string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		_, err = io.Copy(out, rc)
+		blob, err := io.ReadAll(rc)
 		rc.Close()
 		if err != nil {
 			return "", err
 		}
+		// Each sparse chunk addresses the whole image with don't-care outside
+		// its own span, so they overlay; concatenating them yields nothing any
+		// reader can parse. A raw chunk is a plain continuation.
+		if !sparse.IsSparse(blob) {
+			if _, err := out.WriteAt(blob, end); err != nil {
+				return "", err
+			}
+			end += int64(len(blob))
+			continue
+		}
+		size, err := sparse.Apply(blob, out)
+		if err != nil {
+			return "", fmt.Errorf("super chunk %d: %w", i, err)
+		}
+		end = max(end, size)
+	}
+	if err := out.Truncate(end); err != nil {
+		return "", err
 	}
 	return filepath.Base(dest), nil
 }

@@ -128,3 +128,60 @@ func TestReaderAtMatchesDecode(t *testing.T) {
 		t.Fatalf("read at EOF: err=%v, want EOF", err)
 	}
 }
+
+// Two chunks of one image, each carrying data only for its own span, overlay
+// into the whole image; the don't-care span of one must not erase the other.
+func TestApplyOverlaysChunks(t *testing.T) {
+	const blk = 8
+	a := bytes.Repeat([]byte{0xAA}, blk)
+	b := bytes.Repeat([]byte{0xBB}, blk)
+	c1 := buildSparse(blk, []func(*bytes.Buffer){rawChunk(blk, a), dontCareChunk(1)})
+	c2 := buildSparse(blk, []func(*bytes.Buffer){dontCareChunk(1), rawChunk(blk, b)})
+	dst := &memWriterAt{}
+	var size int64
+	for _, c := range [][]byte{c1, c2} {
+		n, err := Apply(c, dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size = max(size, n)
+	}
+	if want := append(append([]byte{}, a...), b...); !bytes.Equal(dst.b, want) || size != 2*blk {
+		t.Errorf("got %x size %d, want %x", dst.b, size, want)
+	}
+}
+
+type memWriterAt struct{ b []byte }
+
+func (m *memWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	if end := int(off) + len(p); end > len(m.b) {
+		m.b = append(m.b, make([]byte, end-len(m.b))...)
+	}
+	return copy(m.b[off:], p), nil
+}
+
+func TestOverlayReadsChunksLazily(t *testing.T) {
+	const blk = 8
+	a := bytes.Repeat([]byte{0xAA}, blk)
+	b := bytes.Repeat([]byte{0xBB}, blk)
+	c1 := buildSparse(blk, []func(*bytes.Buffer){rawChunk(blk, a), dontCareChunk(2)})
+	c2 := buildSparse(blk, []func(*bytes.Buffer){dontCareChunk(1), rawChunk(blk, b), fillChunk(1, [4]byte{1, 2, 3, 4})})
+	// header total_blocks is unused by buildSparse; patch it so Size is known.
+	for _, c := range [][]byte{c1, c2} {
+		binary.LittleEndian.PutUint32(c[16:], 3)
+	}
+	o, err := NewOverlay([]io.ReaderAt{bytes.NewReader(c1), bytes.NewReader(c2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append(append([]byte{}, a...), b...), 1, 2, 3, 4, 1, 2, 3, 4)
+	got := make([]byte, o.Size())
+	if _, err := o.ReadAt(got, 0); err != nil || !bytes.Equal(got, want) {
+		t.Errorf("got %x err %v, want %x", got, err, want)
+	}
+	mid := make([]byte, 6)
+	o.ReadAt(mid, 5) // spans a/b boundary
+	if !bytes.Equal(mid, want[5:11]) {
+		t.Errorf("mid read %x, want %x", mid, want[5:11])
+	}
+}

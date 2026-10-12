@@ -9,8 +9,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/W-Floyd/erofs"
 	"github.com/pierrec/lz4/v4"
@@ -80,7 +85,7 @@ func expandInput(n *Node) ([]*Node, error) {
 			out = append(out, k)
 		}
 	}
-	return out, nil
+	return joinSuperChunks(out), nil
 }
 
 func expandZip(n *Node) ([]*Node, error) {
@@ -108,7 +113,7 @@ func expandZip(n *Node) ([]*Node, error) {
 		}
 		out = append(out, k)
 	}
-	return out, nil
+	return joinSuperChunks(out), nil
 }
 
 // expandDeflatedTar lists a tar held deflated in a zip without decoding it
@@ -490,4 +495,98 @@ func (p padReaderAt) ReadAt(b []byte, off int64) (int, error) {
 		return len(b), nil
 	}
 	return n, err
+}
+
+var superChunk = regexp.MustCompile(`^super\.img_sparsechunk\.(\d+)$`)
+
+// joinSuperChunks replaces a package's super.img_sparsechunk.N members with one
+// super.img node reading them as the image they overlay into. Its size is the
+// first chunk's declared image size; the chunks are only read, and if deflated
+// spooled to temp files, when something reads the image.
+func joinSuperChunks(nodes []*Node) []*Node {
+	var chunks, out []*Node
+	for _, n := range nodes {
+		if superChunk.MatchString(path.Base(n.Name)) {
+			chunks = append(chunks, n)
+		} else {
+			out = append(out, n)
+		}
+	}
+	if len(chunks) == 0 {
+		return nodes
+	}
+	idx := func(n *Node) int { i, _ := strconv.Atoi(superChunk.FindStringSubmatch(path.Base(n.Name))[1]); return i }
+	sort.Slice(chunks, func(i, j int) bool { return idx(chunks[i]) < idx(chunks[j]) })
+	size, err := sparseImageSize(chunks[0])
+	if err != nil {
+		return nodes
+	}
+	return append(out, FromReaderAt("super.img", &lazyOverlay{chunks: chunks}, size))
+}
+
+// sparseImageSize reads the raw image size a sparse node's header declares.
+func sparseImageSize(n *Node) (int64, error) {
+	rc, err := n.Reader()
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+	h := make([]byte, 28)
+	if _, err := io.ReadFull(rc, h); err != nil {
+		return 0, err
+	}
+	if !sparse.IsSparse(h) {
+		return 0, fmt.Errorf("%s is not sparse", n.Name)
+	}
+	return int64(binary.LittleEndian.Uint32(h[16:])) * int64(binary.LittleEndian.Uint32(h[12:])), nil
+}
+
+// lazyOverlay is sparse.Overlay over chunk nodes, built on first read. A chunk
+// that cannot be read at random is spooled to an unlinked temp file.
+type lazyOverlay struct {
+	chunks []*Node
+	once   sync.Once
+	o      *sparse.Overlay
+	err    error
+}
+
+func (l *lazyOverlay) ReadAt(p []byte, off int64) (int, error) {
+	l.once.Do(func() {
+		files := make([]io.ReaderAt, len(l.chunks))
+		for i, c := range l.chunks {
+			if c.at != nil {
+				files[i] = c.at
+				continue
+			}
+			f, err := spool(c)
+			if err != nil {
+				l.err = err
+				return
+			}
+			files[i] = f
+		}
+		l.o, l.err = sparse.NewOverlay(files)
+	})
+	if l.err != nil {
+		return 0, l.err
+	}
+	return l.o.ReadAt(p, off)
+}
+
+func spool(n *Node) (*os.File, error) {
+	rc, err := n.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	f, err := os.CreateTemp("", "unbrick-spool-*")
+	if err != nil {
+		return nil, err
+	}
+	os.Remove(f.Name()) // gone once closed; Windows keeps it until exit
+	if _, err := io.Copy(f, rc); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%s: %w", n.Name, err)
+	}
+	return f, nil
 }
