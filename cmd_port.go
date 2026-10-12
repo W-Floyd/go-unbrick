@@ -22,7 +22,7 @@ import (
 
 func newPortCmd() *cobra.Command {
 	var out, sizeMM, distro, kernelTree string
-	var referenceDTS []string
+	var referenceDTS, referencePanel []string
 	c := &cobra.Command{
 		Use:   "port <stock package>",
 		Short: "draft a Linux port (device packaging and hardware report) from a stock package",
@@ -87,6 +87,20 @@ for a package that ships it as sparse chunks takes about half a minute.
 				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC))
 			}
 			bundle.Report = append(bundle.Report, port.MemorySection(pkg))
+			drivers := port.PanelDrivers(pkg)
+			for _, d := range drivers {
+				files["panels/"+port.PanelFileName(d.Name)] = []byte(d.CSource())
+			}
+			var refPanel strings.Builder
+			for _, f := range referencePanel {
+				b, err := os.ReadFile(f)
+				if err != nil {
+					return fmt.Errorf("--reference-panel: %w", err)
+				}
+				refPanel.Write(b)
+				refPanel.WriteString("\n")
+			}
+			bundle.Report = append(bundle.Report, port.PanelSection(drivers, refPanel.String()))
 			if len(referenceDTS) > 0 {
 				var ref strings.Builder
 				for _, f := range referenceDTS {
@@ -134,6 +148,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	}
 	c.Flags().StringVarP(&out, "out", "o", "", "write the files here instead of printing them")
 	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
+	c.Flags().StringSliceVar(&referencePanel, "reference-panel", nil, "an existing hand-written panel driver: compare the drafted panels' command bytes and modes against it")
 	c.Flags().StringSliceVar(&referenceDTS, "reference-dts", nil, "an existing hand-written board dts (repeat or comma-separate for several): compare the generated peripherals against it, by bus and address")
 	c.Flags().StringVar(&kernelTree, "kernel-tree", "", "target kernel source tree: report which parts it supports and the firmware its drivers name")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")

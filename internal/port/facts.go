@@ -58,6 +58,8 @@ type Panel struct {
 	// controller, or the display's default. The rest are Qualcomm reference
 	// panels the overlay carries but the board never selects.
 	Referenced, Default bool
+	// Source is the stock panel node, from the first overlay that has it.
+	Source *fdt.Node
 }
 
 // Part is one board component a device tree names: a node on an external bus
@@ -225,7 +227,7 @@ func overlayPanels(o *fdt.Node) []Panel {
 		if !ok {
 			return
 		}
-		p := Panel{Name: name}
+		p := Panel{Name: name, Source: n}
 		for _, c := range n.Children {
 			c.Walk(func(_ string, t *fdt.Node) {
 				if w := t.U32s("qcom,mdss-dsi-panel-width"); len(w) > 0 && p.W == 0 {
