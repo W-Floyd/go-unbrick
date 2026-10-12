@@ -47,6 +47,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 					return fmt.Errorf("--size-mm wants WIDTHxHEIGHT in millimetres, e.g. 68x151")
 				}
 			}
+			pkg.Loader = nura.CheckLoader(pkg, activeCatalog())
 			info, report := nura.Render(nura.Deviceinfo(pkg)), nura.Report(pkg, unknown)
 			files := map[string]string{"deviceinfo": info, "HARDWARE.md": report}
 			gmFile, gm, notes, haveGM := pkg.Gmobile()
@@ -156,6 +157,7 @@ func readNuraPackage(input string) (nura.Package, []string, error) {
 	}
 	density, _ := strconv.Atoi(pkg.Props["ro.sf.lcd_density"])
 	pkg.Display = readAndroidDisplay(root, density)
+	pkg.LoaderSlot, pkg.LoaderParts, pkg.FileIndex = readLoaderParts(root, pkg.Partitions)
 	if v, err := root.Walk("super.img/vendor_a"); err == nil {
 		_, kids, _ := v.Children()
 		for _, k := range kids {
@@ -163,6 +165,118 @@ func readNuraPackage(input string) (nura.Package, []string, error) {
 		}
 	}
 	return pkg, unknown, nil
+}
+
+var (
+	flashStep   = regexp.MustCompile(`<step [^>]*filename="([^"]+)"[^>]*operation="flash"[^>]*partition="([^"]+)"`)
+	recipeFlash = regexp.MustCompile(`<flash\s+partition="([^"]+)"\s+filename="([^"]+)"`)
+)
+
+// loaderBases are the partitions msm-firmware-loader walks, by base name.
+var loaderBases = []string{"apnhlos", "bluetooth", "dsp", "fsg", "modem", "persist", "vendor"}
+
+// readLoaderParts finds the content of each partition msm-firmware-loader
+// walks that the package carries, and lists its files. A partition is found
+// by the package's own flash steps (including a radio container's recipe), by
+// the catalog's file-name aliases, or as a logical partition of super. The A/B
+// slot is the GPT's: "_a" when its partitions carry that suffix.
+func readLoaderParts(root *carve.Node, gpt []string) (slot string, parts []nura.PartFiles, index map[string][]string) {
+	for _, n := range gpt {
+		if strings.HasSuffix(n, "_a") {
+			slot = "_a"
+			break
+		}
+	}
+	nodes := map[string]*carve.Node{}
+	add := func(part string, n *carve.Node) {
+		if _, dup := nodes[part]; !dup {
+			nodes[part] = n
+		}
+	}
+	if n, err := root.Walk("flashfile.xml"); err == nil {
+		if b, err := n.Bytes(); err == nil {
+			for _, m := range flashStep.FindAllStringSubmatch(string(b), -1) {
+				file, part := m[1], m[2]
+				if fn, err := root.Walk(file); err == nil {
+					add(part, fn)
+					// A container's own recipe names the partitions inside it.
+					_, kids, _ := fn.Children()
+					for _, k := range kids {
+						if !strings.HasSuffix(k.Name, ".xml") {
+							continue
+						}
+						if rb, err := k.Bytes(); err == nil {
+							for _, r := range recipeFlash.FindAllStringSubmatch(string(rb), -1) {
+								if inner, err := fn.Walk(r[2]); err == nil {
+									add(r[1], inner)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	cat := activeCatalog()
+	if kids, err := rootKids(root); err == nil {
+		for _, k := range kids {
+			if part := cat.CanonicalPartition(strings.Trim(k.Name, "/")); part != "" {
+				add(part, k)
+			}
+		}
+	}
+	for _, base := range loaderBases {
+		if _, ok := nodes[base]; ok {
+			continue
+		}
+		if n, err := root.Walk("super.img/" + base + slot); err == nil {
+			nodes[base] = n
+		}
+	}
+
+	index = map[string][]string{}
+	for _, base := range loaderBases {
+		n, ok := nodes[base]
+		if !ok {
+			continue
+		}
+		files := nodeFiles(n)
+		parts = append(parts, nura.PartFiles{Name: base, Files: files})
+		for _, f := range files {
+			b := path.Base(f)
+			index[b] = append(index[b], base+slot+":"+f)
+		}
+	}
+	return slot, parts, index
+}
+
+func rootKids(root *carve.Node) ([]*carve.Node, error) {
+	_, kids, err := root.Children()
+	return kids, err
+}
+
+// nodeFiles lists a partition image's files, looking through the wrappers a
+// package puts around one (a sparse image's single "unsparsed" child).
+func nodeFiles(n *carve.Node) []string {
+	for depth := 0; depth < 4; depth++ {
+		kind, kids, err := n.Children()
+		if err != nil || kind == "" {
+			return nil
+		}
+		if kind == "sparse" && len(kids) == 1 {
+			n = kids[0]
+			continue
+		}
+		var out []string
+		for _, k := range kids {
+			name := strings.Trim(k.Name, "/")
+			if name != "" && !strings.HasSuffix(name, ".joined") {
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // overlayDirs are the partitions that carry runtime resource overlays, lowest

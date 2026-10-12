@@ -82,6 +82,7 @@ type DT struct {
 	Parts    []Part
 	// Unreferenced are panel nodes the overlays define but nothing selects.
 	Unreferenced []string
+	GPU          string // base DTB qcom,gpu-model, "Adreno610v2"
 }
 
 // ReadDT summarizes the base DTBs and the board overlays. Parts are named by
@@ -93,6 +94,13 @@ func ReadDT(base, overlays []*fdt.Node, cat *catalog.Catalog) (dt DT, unknown []
 			if c := b.Strs("compatible"); len(c) > 0 {
 				dt.SoC = c[0]
 			}
+		}
+		if dt.GPU == "" {
+			b.Walk(func(_ string, n *fdt.Node) {
+				if m, ok := n.Str("qcom,gpu-model"); ok && dt.GPU == "" {
+					dt.GPU = m
+				}
+			})
 		}
 		if ids := b.U32s("qcom,msm-id"); len(ids) > 0 {
 			dt.MSMIDs = append(dt.MSMIDs, ids[0])

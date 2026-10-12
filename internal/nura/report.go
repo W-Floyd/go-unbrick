@@ -58,6 +58,21 @@ func Report(p Package, unknown []string) string {
 		w("\nCompatibles not in the parts table (add to `catalog/dt_parts.yaml`): `%s`.", strings.Join(unknown, "`, `"))
 	}
 
+	if l := p.Loader; l != nil {
+		w("\n## Firmware: msm-firmware-loader\n")
+		w("%s.\n", l.Verdict)
+		if len(l.Plan.Missing) > 0 {
+			w("Not in the package: %s (`persist` is a device partition, read on the device).\n", strings.Join(l.Plan.Missing, ", "))
+		}
+		w("| needed by | file | status | where |")
+		w("|---|---|---|---|")
+		for _, c := range l.Coverage {
+			w("| %s | %s | %s | %s |", c.Need, strings.ReplaceAll(c.File, "|", " or "), c.Status, c.Where)
+		}
+		w("\n`loader`: exposed by the loader's flat link tree. `outside`: in the package, but not in an `image/` or `firmware/` directory of a partition the loader walks, so a firmware package must ship it. `absent`: not in the package at all.")
+		w("\nThis is about file *names*. The loader links them flat (plus `venus`, `qca/` and `fsg/`, and a prefix directory for each `firmware-name` in the running device tree), so a driver that asks for `qcom/<name>` or a path the port's DTS chooses still needs that path to resolve; the table cannot see the port's requests.")
+	}
+
 	if len(p.Fstab) > 0 {
 		w("\n## Stock mounts\n")
 		for _, e := range p.Fstab {

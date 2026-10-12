@@ -23,6 +23,14 @@ type Package struct {
 	// VendorFiles are the file names on the vendor partition, searched for a
 	// panel's diagonal (see DiagonalFromNames).
 	VendorFiles []string
+
+	// LoaderSlot and LoaderParts are the A/B suffix and the file lists of the
+	// partitions msm-firmware-loader would walk; FileIndex locates any file by
+	// base name across the partitions the package carries.
+	LoaderSlot  string
+	LoaderParts []PartFiles
+	FileIndex   map[string][]string
+	Loader      *LoaderCheck // set by CheckLoader
 }
 
 // FstabEntry is one mount of the first-stage fstab.
