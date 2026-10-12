@@ -24,7 +24,14 @@ func parseMiscTxt(data []byte) map[string]string {
 
 // mi_ext is Xiaomi's own extension partition; its build.prop names the
 // release.
-func init() { imgfacts.ReadPartitionFiles("mi_ext", "etc/build.prop") }
+func init() {
+	imgfacts.ReadPartitionFiles("mi_ext", "etc/build.prop")
+	// HyperOS builds one system target, "missi", for every device: its boot
+	// ramdisk props say Xiaomi/missi/missi, not the device (madrid, tapas).
+	for _, brand := range []string{"xiaomi", "redmi", "poco"} {
+		imgfacts.StaleRamdiskProps(brand)
+	}
+}
 
 // xiaomiSKUProp is Xiaomi's name for odm's per-SKU props (m7g_build.prop,
 // m7g_ss_build.prop), where AOSP's is build_<sku>.prop.
