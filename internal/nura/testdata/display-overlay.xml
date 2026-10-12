@@ -1,0 +1,4 @@
+<resources>
+  <string name="config_mainBuiltInDisplayCutout" translatable="false">M -35,0 L 35,0 L 35,80 L -35,80 Z</string>
+  <dimen name="real_rounded_corner_radius">62px</dimen>
+</resources>

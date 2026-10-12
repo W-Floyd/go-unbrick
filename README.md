@@ -88,7 +88,7 @@ git submodule update --init third_party/librapidarchive
 | `unbrick adb debloat [--apply]` | list, and optionally remove, preloaded carrier/OEM packages (per-user, reversible, no root) |
 | `unbrick adb provision <recipe> [--apply]` | set a device up from a recipe: install, grant, configure headlessly, verify |
 | `unbrick recon <file \| url>` | identify any file (stock zip, image, container, config) and report what it is; an http(s) URL is read with range requests into a local cache (`--http-cache`), never downloaded whole |
-| `unbrick nura <stock package> [-o dir]` | draft a Nura (formerly postmarketOS) port from a stock package: a `deviceinfo` with every field the package settles and a TODO for the rest, plus a hardware report (board variants, displays and their touch controllers, audio/power/camera/sensor parts, stock mounts) |
+| `unbrick nura <stock package> [-o dir]` | draft a Nura (formerly postmarketOS) port from a stock package: a `deviceinfo` with every field the package settles and a TODO for the rest, plus a hardware report (board variants, displays and their touch controllers, audio/power/camera/sensor parts, stock mounts) and a gmobile display file (resolution, corner radius and cutouts converted from the package's Android resources) |
 | `unbrick fastboot edl` | drop a fastboot device into EDL (9008) |
 | `unbrick edl setcid <bundle> <value>` | write a software channel to the `cid` partition (verified by read-back; see *CID provisioning*) |
 | `unbrick edl readcid <bundle>` | read the `cid` partition and print its channel |

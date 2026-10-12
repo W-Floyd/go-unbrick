@@ -129,7 +129,7 @@ type Catalog struct {
 	btChips    map[string]string
 	dtParts    map[string]DTPart
 	partitions map[string]PartitionRule
-	distros  []*distro.Distro          // Linux-on-phone distribution profiles
+	distros    []*distro.Distro          // Linux-on-phone distribution profiles
 	bloat      []bloat.Rule              // removable-preload rules
 	provision  []*provision.Profile      // device-setup recipes
 	harvest    harvest.Sources           // loader harvest sources

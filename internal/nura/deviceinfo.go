@@ -16,6 +16,13 @@ type Package struct {
 	Kernel     string // "5.15.167" from the stock kernel's banner
 	Modules    []string
 	Fstab      []FstabEntry
+	Display    *AndroidDisplay // Android's screen shape resources, if read
+	// SizeMM is the visible panel size in millimetres, when known. A package
+	// does not carry a trustworthy one, so it is supplied from outside.
+	SizeMM [2]int
+	// VendorFiles are the file names on the vendor partition, searched for a
+	// panel's diagonal (see DiagonalFromNames).
+	VendorFiles []string
 }
 
 // FstabEntry is one mount of the first-stage fstab.
@@ -32,19 +39,26 @@ type Line struct {
 	Todo     string
 }
 
+// identity is the maker, the codename and the marketing name from the vendor
+// build.prop, the codename falling back to the overlay's model.
+func (p Package) identity() (brand, code, name string) {
+	brand = firstProp(p.Props, "ro.product.vendor.manufacturer", "ro.product.vendor.brand")
+	code = firstProp(p.Props, "ro.product.vendor.device", "ro.product.board")
+	if code == "" {
+		code = p.DT.Model
+	}
+	model := strings.ReplaceAll(firstProp(p.Props, "ro.product.vendor.model"), " - ", " ")
+	return brand, code, titleWords(brand) + " " + titleWords(model)
+}
+
 // Deviceinfo derives the deviceinfo fields the package settles.
 func Deviceinfo(p Package) []Line {
 	var out []Line
 	set := func(k, v, why string) { out = append(out, Line{Key: k, Val: v, Why: why}) }
 	todo := func(k, why string) { out = append(out, Line{Key: k, Todo: why}) }
 
-	brand := firstProp(p.Props, "ro.product.vendor.manufacturer", "ro.product.vendor.brand")
-	code := firstProp(p.Props, "ro.product.vendor.device", "ro.product.board")
-	if code == "" {
-		code = p.DT.Model
-	}
-	model := strings.ReplaceAll(firstProp(p.Props, "ro.product.vendor.model"), " - ", " ")
-	set("name", titleWords(brand)+" "+titleWords(model), "vendor build.prop")
+	brand, code, name := p.identity()
+	set("name", name, "vendor build.prop")
 	set("manufacturer", titleWords(brand), "vendor build.prop")
 	set("codename", strings.ToLower(brand)+"-"+code, "vendor build.prop")
 	todo("year", "not recorded in a package")
