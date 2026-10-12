@@ -2,6 +2,7 @@ package port
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -64,7 +65,7 @@ func PeripheralDTS(p Package) (text string, notes []string) {
 		if pt.Source == nil {
 			continue
 		}
-		bus, ok := MainlineBus(pt.Bus)
+		bus, _, ok := p.busLabel(pt.Bus)
 		if !ok || pt.Node == "" || !strings.Contains(pt.Node, "@") && len(pt.Source.U32s("reg")) == 0 {
 			unplaced = append(unplaced, pt.Compatible+" (stock bus "+orNone(pt.Bus)+")")
 			continue
@@ -81,7 +82,11 @@ func PeripheralDTS(p Package) (text string, notes []string) {
 	for _, bus := range buses {
 		w("")
 		w("&%s {", bus)
-		w("\tstatus = \"okay\"; /* TODO: the stock label %s is assumed to be mainline's %s */", stockBusOf(byBus[bus]), bus)
+		if _, verified, _ := p.busLabel(stockBusOf(byBus[bus])); verified {
+			w("\tstatus = \"okay\"; /* stock %s: same register address as %s in the SoC dtsi */", stockBusOf(byBus[bus]), bus)
+		} else {
+			w("\tstatus = \"okay\"; /* TODO: the stock label %s is assumed to be mainline's %s (no SoC dtsi to check) */", stockBusOf(byBus[bus]), bus)
+		}
 		parts := byBus[bus]
 		sort.Slice(parts, func(i, j int) bool { return addrOf(parts[i]) < addrOf(parts[j]) })
 		for _, pt := range parts {
@@ -272,6 +277,57 @@ func sharedPins(p Package, pt Part, uses []PinUse) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// BoardName is the file stem of the board's device tree: "motorola-fogona".
+func BoardName(p Package) string {
+	brand, code, _ := p.Identity()
+	return strings.ToLower(brand) + "-" + code
+}
+
+// BoardDTS drafts the board's top-level device tree: the SoC include the
+// register-map match chose, the peripherals file, the model and the compatible
+// chain. What a package cannot say is a TODO.
+func BoardDTS(p Package) string {
+	var b strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	brand, code, name := p.Identity()
+	w("// SPDX-License-Identifier: BSD-3-Clause")
+	w("/*")
+	w(" * %s", name)
+	w(" * Draft from a stock package; lines marked TODO need a decision.")
+	w(" */")
+	w("")
+	w("/dts-v1/;")
+	w("")
+
+	soc := ""
+	if len(p.SoC) > 0 {
+		soc = strings.TrimSuffix(filepath.Base(p.SoC[0].File), ".dtsi")
+		w("#include %q", soc+".dtsi")
+	} else {
+		w("/* TODO: the SoC include; pass --kernel-tree to pick it by register map */")
+	}
+	w("#include %q", BoardName(p)+"-peripherals.dtsi")
+	w("")
+	w("/ {")
+	w("\tmodel = %q;", name)
+	compat := []string{strings.ToLower(brand) + "," + code}
+	if soc != "" {
+		compat = append(compat, "qcom,"+soc)
+	}
+	var quoted []string
+	for _, c := range compat {
+		quoted = append(quoted, fmt.Sprintf("%q", c))
+	}
+	w("\tcompatible = %s;", strings.Join(quoted, ", "))
+	if len(p.SoC) > 1 {
+		w("\t/* TODO: the next closest SoC is %s (%.2f against %.2f); a board often lists that family as a fallback compatible */",
+			strings.TrimSuffix(filepath.Base(p.SoC[1].File), ".dtsi"), p.SoC[1].Score, p.SoC[0].Score)
+	}
+	w("\t/* TODO: chassis-type: a package does not say handset or tablet */")
+	w("};")
+	return b.String()
 }
 
 // compatibleLine chooses the compatible to write. The stock string stands when

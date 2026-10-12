@@ -179,7 +179,7 @@ func CompareDTS(p Package, reference string) string {
 	used := map[key]bool{}
 	var rows []string
 	for _, pt := range p.DT.Parts {
-		bus, ok := MainlineBus(pt.Bus)
+		bus, _, ok := p.busLabel(pt.Bus)
 		if !ok || pt.Source == nil {
 			continue
 		}

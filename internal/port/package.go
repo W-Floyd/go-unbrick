@@ -37,6 +37,22 @@ type Package struct {
 	// scanned: what it supports of the board's parts, by compatible.
 	KernelTree string
 	Mainline   map[string]*MainlineDriver
+	// SoC are the tree's SoC dtsi files ranked against the stock register map,
+	// best first, and BusLabels maps stock bus labels to the best one's labels
+	// (see FindSoCDTSI and BusLabels).
+	SoC       []SoCMatch
+	BusLabels map[string]string
+}
+
+// busLabel is the mainline label for a stock bus label: read from the SoC
+// dtsi by register address when that was possible, else assumed from the
+// serial-engine number. verified says which.
+func (p Package) busLabel(stock string) (label string, verified, ok bool) {
+	if l, found := p.BusLabels[stock]; found {
+		return l, true, true
+	}
+	l, ok := MainlineBus(stock)
+	return l, false, ok
 }
 
 // FirmwarePartitions are the partitions a Qualcomm Android device keeps its

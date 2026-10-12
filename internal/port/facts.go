@@ -101,8 +101,13 @@ type DT struct {
 	Panels   []Panel
 	Parts    []Part
 	// Unreferenced are panel nodes the overlays define but nothing selects.
-	Unreferenced  []string
-	GPU           string // base DTB qcom,gpu-model, "Adreno610v2"
+	Unreferenced []string
+	GPU          string // base DTB qcom,gpu-model, "Adreno610v2"
+	// Symbols maps a base DTB label to its node path ("qupv3_se1_i2c" ->
+	// "/soc/geniqup@4ac0000/i2c@4a84000"); UnitAddrs holds the unit addresses
+	// of its peripherals, lower-case hex, the SoC's register fingerprint.
+	Symbols       map[string]string
+	UnitAddrs     map[string]bool
 	FirmwareNames []FirmwareName
 }
 
@@ -111,12 +116,14 @@ type DT struct {
 // compatible, only adds a label. unknown are parts nothing in the package binds
 // and the catalog does not describe.
 func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt DT, unknown []string) {
+	dt.Symbols, dt.UnitAddrs = map[string]string{}, map[string]bool{}
 	for _, b := range base {
 		if dt.SoC == "" {
 			if c := b.Strs("compatible"); len(c) > 0 {
 				dt.SoC = c[0]
 			}
 		}
+		collectAddrs(b, &dt)
 		if dt.GPU == "" {
 			b.Walk(func(_ string, n *fdt.Node) {
 				if m, ok := n.Str("qcom,gpu-model"); ok && dt.GPU == "" {

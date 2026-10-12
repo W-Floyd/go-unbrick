@@ -64,6 +64,14 @@ for a package that ships it as sparse chunks takes about half a minute.
 					return fmt.Errorf("--kernel-tree: %w", err)
 				}
 				pkg.KernelTree = kernelTree
+				if ms, err := port.FindSoCDTSI(kernelTree, pkg.DT.UnitAddrs); err == nil {
+					pkg.SoC = ms
+					if len(ms) > 0 {
+						if dtsi, err := os.ReadFile(filepath.Join(kernelTree, ms[0].File)); err == nil {
+							pkg.BusLabels = port.BusLabels(pkg.DT, string(dtsi))
+						}
+					}
+				}
 			}
 			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog()})
 			if err != nil {
@@ -71,8 +79,12 @@ for a package that ships it as sparse chunks takes about half a minute.
 			}
 			files := bundle.Files
 			dts, dtsNotes := port.PeripheralDTS(pkg)
-			files["dts/peripherals.dtsi"] = []byte(dts)
+			files["dts/"+port.BoardName(pkg)+"-peripherals.dtsi"] = []byte(dts)
+			files["dts/"+port.BoardName(pkg)+".dts"] = []byte(port.BoardDTS(pkg))
 			bundle.Notes = append(bundle.Notes, dtsNotes...)
+			if pkg.KernelTree != "" {
+				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC))
+			}
 			if len(referenceDTS) > 0 {
 				var ref strings.Builder
 				for _, f := range referenceDTS {
