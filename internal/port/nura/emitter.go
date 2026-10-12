@@ -23,15 +23,30 @@ func (emitter) Emit(p port.Package, o port.Options) (*port.Bundle, error) {
 	if brand == "" || code == "" {
 		return nil, fmt.Errorf("nura: the package names no maker or codename, so there is no device package name")
 	}
-	pkg := "device-" + strings.ToLower(brand) + "-" + code
+	c := configFrom(o.Catalog)
+	pkg := c.deviceName(p)
 
 	loader := CheckLoader(p)
-	uses := loader != nil && len(loader.Plan.Mounted) > 0
-	b := &port.Bundle{Files: map[string][]byte{
-		pkg + "/deviceinfo": []byte(Render(Deviceinfo(p, uses))),
-	}}
+	uses := loader != nil && loaderCovers(loader) > 0
+	lines := Deviceinfo(p, uses)
+	deviceinfo := []byte(Render(lines))
+
+	b := &port.Bundle{Files: map[string][]byte{pkg + "/deviceinfo": deviceinfo}}
+	firmwarePkg := ""
 	if loader != nil {
 		b.Report = append(b.Report, loaderSection(loader))
+		if ship := loader.ToShip(); len(ship) > 0 {
+			firmwarePkg = c.firmwareName(p)
+			files, notes := firmwarePackage(p, o, c, ship)
+			for k, v := range files {
+				b.Files[k] = v
+			}
+			b.Notes = append(b.Notes, notes...)
+		}
+	}
+	b.Files[pkg+"/APKBUILD"] = []byte(apkbuild(p, c, deviceinfo, lines, loader, firmwarePkg))
+	if loader != nil && firmwarePkg == "" && uses {
+		b.Notes = append(b.Notes, "firmware: msm-firmware-loader covers everything the board names, so no firmware package is written")
 	}
 	return b, nil
 }

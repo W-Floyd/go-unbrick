@@ -182,6 +182,12 @@ type Distro struct {
 	// Notes is for whoever maintains the table: what is known about this
 	// distribution's device definition first-hand, and what is inference.
 	Notes string `yaml:"notes,omitempty"`
+
+	// Bundle holds the packaging conventions a port emitter for this
+	// distribution reads (package names, dependencies, directories). Its keys
+	// belong to the emitter, which says which it reads and what each defaults
+	// to; a rename of a distribution's packages is an edit here.
+	Bundle map[string]any `yaml:"bundle,omitempty"`
 }
 
 // Need is a declarative precondition. It is deliberately narrow — "a file is

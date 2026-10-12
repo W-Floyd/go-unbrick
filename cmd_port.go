@@ -43,7 +43,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 			if !ok {
 				return fmt.Errorf("no emitter for distribution %q (have: %s)", distro, strings.Join(port.IDs(), ", "))
 			}
-			pkg, unknown, err := readPackage(args[0])
+			pkg, unknown, blob, err := readPackage(args[0])
 			if err != nil {
 				return err
 			}
@@ -74,7 +74,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 					}
 				}
 			}
-			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog()})
+			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog(), Blob: blob})
 			if err != nil {
 				return err
 			}
@@ -122,6 +122,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 				fmt.Fprintln(os.Stderr, "port:", n)
 			}
 
+			files["BUNDLE.md"] = []byte(port.Manifest(files))
 			names := make([]string, 0, len(files))
 			for n := range files {
 				names = append(names, n)
@@ -158,10 +159,11 @@ for a package that ships it as sparse chunks takes about half a minute.
 var kernelBanner = regexp.MustCompile(`Linux version (\d+\.\d+\.\d+)`)
 
 // readPackage reads everything a port draws on from a stock package.
-func readPackage(input string) (port.Package, []string, error) {
+// blob reads a file out of the package by its "partition:path" location.
+func readPackage(input string) (pkg port.Package, unknown []string, blob func(string) ([]byte, error), err error) {
 	root, err := carveRoot(input)
 	if err != nil {
-		return port.Package{}, nil, err
+		return port.Package{}, nil, nil, err
 	}
 	bytesOf := func(p string) ([]byte, error) {
 		n, err := root.Walk(p)
@@ -170,14 +172,12 @@ func readPackage(input string) (port.Package, []string, error) {
 		}
 		return n.Bytes()
 	}
-	var pkg port.Package
-
 	vb, err := bytesOf("vendor_boot.img")
 	if err != nil {
-		return pkg, nil, err
+		return pkg, nil, nil, err
 	}
 	if pkg.Boot, err = port.ParseVendorBoot(vb); err != nil {
-		return pkg, nil, err
+		return pkg, nil, nil, err
 	}
 
 	var base, overlays []*fdt.Node
@@ -199,7 +199,6 @@ func readPackage(input string) (port.Package, []string, error) {
 		}
 	}
 	pkg.Modules = readModules(root)
-	var unknown []string
 	pkg.DT, unknown = port.ReadDT(base, overlays, pkg.Modules, activeCatalog())
 
 	if g, err := bytesOf("gpt.bin"); err == nil {
@@ -225,14 +224,31 @@ func readPackage(input string) (port.Package, []string, error) {
 	}
 	density, _ := strconv.Atoi(pkg.Props["ro.sf.lcd_density"])
 	pkg.Display = readAndroidDisplay(root, density)
-	pkg.Slot, pkg.PartFiles, pkg.FileIndex = readPartFiles(root, pkg.Partitions)
+	var nodes map[string]*carve.Node
+	pkg.Slot, pkg.PartFiles, pkg.FileIndex, nodes = readPartFiles(root, pkg.Partitions)
 	if v, err := root.Walk("super.img/vendor_a"); err == nil {
 		_, kids, _ := v.Children()
 		for _, k := range kids {
 			pkg.VendorFiles = append(pkg.VendorFiles, strings.Trim(k.Name, "/"))
 		}
 	}
-	return pkg, unknown, nil
+	slot := pkg.Slot
+	blob = func(location string) ([]byte, error) {
+		part, p, ok := strings.Cut(location, ":")
+		n := nodes[strings.TrimSuffix(part, slot)]
+		if !ok || n == nil {
+			return nil, fmt.Errorf("no partition for %q", location)
+		}
+		fsn, err := n.Walk(p)
+		if err != nil {
+			// A sparse image wraps its filesystem in one "unsparsed" child.
+			if fsn, err = n.Walk("unsparsed/" + p); err != nil {
+				return nil, err
+			}
+		}
+		return fsn.Bytes()
+	}
+	return pkg, unknown, blob, nil
 }
 
 // readModules reads every kernel module the package ships: the vendor_boot
@@ -268,14 +284,14 @@ var (
 // container's recipe), by the catalog's file-name aliases, or as a logical
 // partition of super. The A/B slot is the GPT's: "_a" when its partitions
 // carry that suffix.
-func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.PartFiles, index map[string][]string) {
+func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.PartFiles, index map[string][]string, nodes map[string]*carve.Node) {
 	for _, n := range gpt {
 		if strings.HasSuffix(n, "_a") {
 			slot = "_a"
 			break
 		}
 	}
-	nodes := map[string]*carve.Node{}
+	nodes = map[string]*carve.Node{}
 	add := func(part string, n *carve.Node) {
 		if _, dup := nodes[part]; !dup {
 			nodes[part] = n
@@ -335,7 +351,7 @@ func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.Pa
 			index[b] = append(index[b], base+slot+":"+f)
 		}
 	}
-	return slot, parts, index
+	return slot, parts, index, nodes
 }
 
 func rootKids(root *carve.Node) ([]*carve.Node, error) {

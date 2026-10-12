@@ -32,6 +32,21 @@ distros:
         why: it is what names the device by the OEM codename the catalog and the bootloader both use
         fix: install this device's device package (apk add device-<vendor>-<codename>)
         when_no_device_files: true
+    # Read by `unbrick port --distro nura` to write a device package. These are
+    # the package names as pmaports had them before the rename to Nura: check
+    # them against the tree you are porting into.
+    bundle:
+      category: testing
+      device_prefix: device
+      firmware_prefix: firmware
+      license: MIT
+      kernel_package: "linux-{vendor}-{codename}"
+      base_package: postmarketos-base
+      depends: [mkbootimg]
+      makedepends: [devicepkg-dev]
+      loader_package: msm-firmware-loader
+      build_func: devicepkg_build
+      package_func: devicepkg_package
     notes: >
       Device packages are named <vendor>-<codename> (motorola-fogona), and the
       part after the dash is the OEM's own codename — the same string the

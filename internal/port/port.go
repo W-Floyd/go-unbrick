@@ -27,6 +27,10 @@ type Options struct {
 	// Catalog is the reference data (distribution packaging conventions, parts
 	// tables); nil means none.
 	Catalog *catalog.Catalog
+	// Blob reads a file out of the stock package, by the "partition:path"
+	// locations a Package gives (the same form as FileIndex). Nil when the
+	// package is not at hand; an Emitter that needs file bytes then says so.
+	Blob func(location string) ([]byte, error)
 }
 
 // Bundle is what an Emitter produces.
