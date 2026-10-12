@@ -69,6 +69,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 					if len(ms) > 0 {
 						if dtsi, err := os.ReadFile(filepath.Join(kernelTree, ms[0].File)); err == nil {
 							pkg.BusLabels = port.BusLabels(pkg.DT, string(dtsi))
+							pkg.SoCRegions = port.ParseDTSRegions(string(dtsi))
 						}
 					}
 				}
@@ -85,6 +86,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 			if pkg.KernelTree != "" {
 				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC))
 			}
+			bundle.Report = append(bundle.Report, port.MemorySection(pkg))
 			if len(referenceDTS) > 0 {
 				var ref strings.Builder
 				for _, f := range referenceDTS {

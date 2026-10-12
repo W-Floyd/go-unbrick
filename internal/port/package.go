@@ -42,6 +42,9 @@ type Package struct {
 	// (see FindSoCDTSI and BusLabels).
 	SoC       []SoCMatch
 	BusLabels map[string]string
+	// SoCRegions are the reserved-memory regions the best SoC dtsi defines; nil
+	// when there was no tree to read it from.
+	SoCRegions []Region
 }
 
 // busLabel is the mainline label for a stock bus label: read from the SoC

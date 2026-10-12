@@ -326,6 +326,13 @@ func BoardDTS(p Package) string {
 			strings.TrimSuffix(filepath.Base(p.SoC[1].File), ".dtsi"), p.SoC[1].Score, p.SoC[0].Score)
 	}
 	w("\t/* TODO: chassis-type: a package does not say handset or tablet */")
+	if p.SoCRegions != nil {
+		if board, _ := BoardRegions(p.DT.Reserved, p.SoCRegions); len(board) > 0 {
+			w("")
+			w("\t/* Reserved regions the stock trees have that %s does not: the board's own. */", filepath.Base(p.SoC[0].File))
+			b.WriteString(regionsText(board))
+		}
+	}
 	w("};")
 	return b.String()
 }

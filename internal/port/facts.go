@@ -109,6 +109,8 @@ type DT struct {
 	Symbols       map[string]string
 	UnitAddrs     map[string]bool
 	FirmwareNames []FirmwareName
+	// Reserved are the stock reserved-memory regions, base and overlays.
+	Reserved []Region
 }
 
 // ReadDT summarizes the base DTBs and the board overlays. Each part is bound to
@@ -136,6 +138,7 @@ func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt
 		}
 	}
 	dt.FirmwareNames = firmwareNames(append(append([]*fdt.Node{}, base...), overlays...))
+	dt.Reserved = readRegions(base, overlays)
 	parts := map[string]*Part{}
 	panels := map[string]*Panel{}
 	unk := map[string]bool{}

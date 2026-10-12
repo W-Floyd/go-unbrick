@@ -218,6 +218,28 @@ func CompareDTS(p Package, reference string) string {
 	for _, r := range rows {
 		w("%s", r)
 	}
+	if p.SoCRegions != nil {
+		board, _ := BoardRegions(p.DT.Reserved, p.SoCRegions)
+		have := map[string]bool{}
+		for _, r := range ParseDTSRegions(reference) {
+			have[r.key()] = true
+		}
+		var in, out []string
+		for _, r := range board {
+			if have[r.key()] {
+				in = append(in, r.String())
+			} else {
+				out = append(out, r.String())
+			}
+		}
+		w("\nBoard-level reserved regions (stock, not in the SoC dtsi): %d of %d are in the reference at the same address and size.", len(in), len(board))
+		if len(in) > 0 {
+			w("In the reference: %s.", strings.Join(in, ", "))
+		}
+		if len(out) > 0 {
+			w("Not in the reference (debug or vendor regions you may not need): %s.", strings.Join(out, ", "))
+		}
+	}
 	var extra []string
 	for _, r := range ref {
 		if !used[key{r.Bus, r.Addr}] {
