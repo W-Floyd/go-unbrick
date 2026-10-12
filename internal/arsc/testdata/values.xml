@@ -1,0 +1,9 @@
+<resources>
+  <string name="cutout">M -35,0 L 35,0 L 35,80 L -35,80 Z</string>
+  <dimen name="corner">62px</dimen>
+  <dimen name="radius">24dp</dimen>
+  <integer name="answer">42</integer>
+  <bool name="flag">true</bool>
+  <color name="tint">#ff112233</color>
+  <string-array name="list"><item>a</item><item>b</item></string-array>
+</resources>
