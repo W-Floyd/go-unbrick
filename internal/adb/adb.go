@@ -37,6 +37,10 @@ type Options struct {
 	// Elevate names the root helper for partition reads ("su", "none"); empty
 	// or "auto" uses whatever the device proves works.
 	Elevate string
+	// BTCycle turns Bluetooth off and on before collecting, so the HAL logs its
+	// chip init afresh: the log buffer may have rolled past boot. It changes
+	// device state, so it is opt-in.
+	BTCycle bool
 }
 
 // CommandTimeout is what the transport allows one command. It is gadb's own

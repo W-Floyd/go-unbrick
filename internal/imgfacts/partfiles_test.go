@@ -98,3 +98,17 @@ func TestPartitionProps(t *testing.T) {
 		t.Errorf("patch lag findings = %+v", fs)
 	}
 }
+
+func TestBluetoothFirmware(t *testing.T) {
+	b := resolve(t,
+		facts.File{Name: "bluetooth/image/apbtfw10.tlv", Data: []byte{0}},
+		facts.File{Name: "bluetooth/image/apbtfw11.tlv", Data: []byte{0}},
+		facts.File{Name: "bluetooth/image/cmbtfw12.tlv", Data: []byte{0}},
+		facts.File{Name: "bluetooth/image/cmbtfw13.tlv", Data: []byte{0}},
+		facts.File{Name: "bluetooth/image/cmbtfw13.ver", Data: []byte("BTFM.CMC.1.3.0-00101\n")},
+	)
+	want := "Apache (10, 11), Comanche (12, 13; BTFM.CMC.1.3.0-00101)"
+	if v, _ := facts.Get(b, facts.BluetoothFirmware); v != want {
+		t.Errorf("bluetooth firmware = %q, want %q", v, want)
+	}
+}

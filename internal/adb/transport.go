@@ -28,6 +28,9 @@ func Open(o Options) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.BTCycle {
+		c.Run(btCycleScript)
+	}
 	r, cerr := Collect(c)
 	if r == nil {
 		return nil, cerr

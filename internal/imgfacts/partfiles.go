@@ -34,6 +34,8 @@ type PartProps struct {
 var (
 	SourcePartProps = facts.Key[PartProps]("source:partition.prop",
 		facts.Fmt(func(p PartProps) string { return p.Partition + "/" + p.File }))
+	SourceBTFirmware = facts.Key[BTFirmwareFile]("source:bluetooth.firmware",
+		facts.Fmt(func(f BTFirmwareFile) string { return f.Name }))
 	SourceFstab          = facts.Key[[]byte]("source:fstab", facts.Fmt(facts.ByteLen))
 	SourceMacPermissions = facts.Key[[]byte]("source:mac_permissions", facts.Fmt(facts.ByteLen))
 )
@@ -43,7 +45,9 @@ var (
 var partitionFiles = map[string][]string{
 	"vendor": {"build.prop", "etc/fstab.*"},
 	"odm":    {"etc/build.prop", "etc/*build*.prop"},
-	"system": {"system/etc/selinux/plat_mac_permissions.xml", "etc/selinux/plat_mac_permissions.xml"},
+	// Qualcomm BTFM firmware: patch (.tlv) and build stamp (.ver) per chip.
+	"bluetooth": {"image/*btfw*.tlv", "image/*btfw*.ver"},
+	"system":    {"system/etc/selinux/plat_mac_permissions.xml", "etc/selinux/plat_mac_permissions.xml"},
 }
 
 // ReadPartitionFiles adds files (fs.Glob patterns) to what is read out of a
@@ -127,6 +131,13 @@ func recognizePartitionFile(b *facts.Bag, f facts.File) []string {
 	}
 	prov := facts.Provenance{Source: f.From, Authority: facts.Attested}
 	switch base := path.Base(file); {
+	case part == "bluetooth":
+		bf := BTFirmwareFile{Name: base}
+		if strings.HasSuffix(base, ".ver") {
+			bf.Build, _, _ = strings.Cut(strings.TrimSpace(string(f.Data)), "\n")
+		}
+		facts.Set(b, SourceBTFirmware, bf, prov)
+		return []string{SourceBTFirmware.Name()}
 	case strings.HasSuffix(base, ".prop"):
 		props := ParseProps(f.Data)
 		if len(props) == 0 {
@@ -201,6 +212,7 @@ func str(v string) (string, bool) { return v, v != "" }
 func partitionProviders() []facts.Provider {
 	return []facts.Provider{
 		vendorProp(facts.BoardPlatform, "ro.board.platform", str),
+		btFirmwareRule,
 		vendorProp(facts.FirstAPILevel, "ro.product.first_api_level", func(v string) (int, bool) {
 			n, err := strconv.Atoi(v)
 			return n, err == nil

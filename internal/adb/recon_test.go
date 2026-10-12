@@ -207,3 +207,20 @@ func TestShellQuote(t *testing.T) {
 		t.Errorf("shellQuote of an embedded quote = %s", got)
 	}
 }
+
+func TestBluetoothChip(t *testing.T) {
+	r := Parse(`===unbrick:bt-log===
+10-11 19:00:01.1 I vendor.qti.bluetooth: hci_initializer: chip_ver: (0x0000000100020000), chip_ver_str: APACHE_VER_1_1_0
+10-11 19:00:01.2 I vendor.qti.bluetooth: Opening /vendor/bt_firmware/image/apbtfw11.tlv
+10-11 19:00:01.3 I vendor.qti.bluetooth: Opening /vendor/bt_firmware/image/apnv11.bin
+10-11 19:00:02.0 I vendor.qti.bluetooth: apbtfw11.tlv done
+===unbrick:root===
+`)
+	chip, files := r.BluetoothChip()
+	if chip != "APACHE_VER_1_1_0" || strings.Join(files, ",") != "apbtfw11.tlv,apnv11.bin" {
+		t.Errorf("chip %q files %v", chip, files)
+	}
+	if c, f := Parse("").BluetoothChip(); c != "" || len(f) != 0 {
+		t.Errorf("empty log: %q %v", c, f)
+	}
+}

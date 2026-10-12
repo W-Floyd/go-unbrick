@@ -103,6 +103,10 @@ var (
 	// BoardPlatform is ro.board.platform, the SoC family the vendor image is
 	// built for ("bengal"). A third namespace beside SoC and Platform.
 	BoardPlatform = Key[string]("board_platform")
+	// BluetoothFirmware is the Bluetooth chip families a build ships firmware
+	// for. The HAL picks among them from the chip's own version at runtime, so
+	// this bounds the chip rather than naming it.
+	BluetoothFirmware = Key[string]("bluetooth_firmware")
 	// FirstAPILevel is the API level the device launched with.
 	FirstAPILevel = Key[int]("first_api_level")
 	// VendorRelease and VendorSecurityPatch are the vendor image's own Android

@@ -60,6 +60,7 @@ func newADBReconCmd(o *adb.Options, f *deviceReconFlags) *cobra.Command {
 		},
 	}
 	f.register(c)
+	c.Flags().BoolVar(&o.BTCycle, "bt-cycle", false, "turn Bluetooth off and on first so its HAL logs the chip it initializes (changes device state)")
 	return c
 }
 
@@ -114,6 +115,12 @@ func printADBSections(dev *adb.Device, cat *catalog.Catalog, lib *library.Librar
 	printField("Device Tree", r.DTModel)
 	printField("Carrier", r.Props["ro.carrier"])
 	printField("Baseband", firstNonEmpty(r.Props["gsm.version.baseband"], r.Props["ro.boot.baseband"]))
+	if chip, files := r.BluetoothChip(); chip != "" || len(files) > 0 {
+		printField("Bluetooth chip", chip)
+		printField("Bluetooth firmware", strings.Join(files, ", "))
+	} else {
+		printField("Bluetooth chip", "not in the log buffer; rerun with --bt-cycle")
+	}
 	if pct := r.BatteryPercent(); pct >= 0 {
 		printField("Battery", fmt.Sprintf("%d%%", pct))
 	}

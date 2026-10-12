@@ -84,7 +84,7 @@ git submodule update --init third_party/librapidarchive
 | `unbrick derive <codename> -o dir` | extrapolate a blankflash from a stored family loader + stock |
 | `unbrick fastboot recon [--raw] [--redact]` | device recon: getvar, slot health, `oem` probes (incl. `cid_prov_req` decode), catalog/library match |
 | `unbrick ssh recon <user@host> [--read-partitions]` | recon a phone booted into Linux (postmarketOS, Mobian, …) over ssh |
-| `unbrick adb recon [--read-partitions]` | recon a phone booted into Android over adb |
+| `unbrick adb recon [--read-partitions] [--bt-cycle]` | recon a phone booted into Android over adb |
 | `unbrick adb debloat [--apply]` | list, and optionally remove, preloaded carrier/OEM packages (per-user, reversible, no root) |
 | `unbrick adb provision <recipe> [--apply]` | set a device up from a recipe: install, grant, configure headlessly, verify |
 | `unbrick recon <file \| url>` | identify any file (stock zip, image, container, config) and report what it is; an http(s) URL is read with range requests into a local cache (`--http-cache`), never downloaded whole |

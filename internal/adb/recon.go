@@ -9,6 +9,7 @@ package adb
 import (
 	"encoding/base64"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/transport"
@@ -38,6 +39,8 @@ type Recon struct {
 const collectScript = transport.CommonShellScript + `
 u getprop
 getprop 2>/dev/null
+u bt-log
+logcat -d -b all 2>/dev/null </dev/null | grep -E 'chip_ver_str|Soc version|btfw|nv[0-9a-z]*\.bin' | tail -40
 u root
 id -u 2>/dev/null
 su -c id -u 2>/dev/null
@@ -58,6 +61,39 @@ for i in $d/qcom_socinfo/*/; do
 done
 [ -n "$m" ] && umount $d' 2>/dev/null
 `
+
+// btCycleScript restarts Bluetooth so its HAL logs chip init again; the sleeps
+// let the firmware download finish before the log is read.
+const btCycleScript = `(svc bluetooth disable || cmd bluetooth_manager disable) >/dev/null 2>&1
+sleep 3
+(svc bluetooth enable || cmd bluetooth_manager enable) >/dev/null 2>&1
+sleep 8
+`
+
+var (
+	btChipLine = regexp.MustCompile(`chip_ver_str: *(\S+)`)
+	btFileName = regexp.MustCompile(`\b[a-z]{2,3}(?:btfw|nv)[0-9a-z]*\.(?:tlv|bin)\b`)
+)
+
+// BluetoothChip is the chip version string the Bluetooth HAL logged when it
+// initialized the controller, and the firmware files it opened: the only
+// place the fitted chip shows, since the package ships several. Both are
+// empty when the log has rolled past that init.
+func (r *Recon) BluetoothChip() (chip string, files []string) {
+	seen := map[string]bool{}
+	for _, line := range transport.NonEmptyLines(r.Sections["bt-log"]) {
+		if m := btChipLine.FindStringSubmatch(line); m != nil {
+			chip = m[1]
+		}
+		for _, f := range btFileName.FindAllString(line, -1) {
+			if !seen[f] {
+				seen[f] = true
+				files = append(files, f)
+			}
+		}
+	}
+	return chip, files
+}
 
 // Collect runs the collection and parses it.
 func Collect(c *Client) (*Recon, error) {
