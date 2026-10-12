@@ -14,6 +14,9 @@ type RefNode struct {
 	Bus, Name  string
 	Addr       uint32
 	Compatible []string
+	// Pins are the interrupt, reset and enable pins the node names, by kind
+	// (the first pin of a "<&tlmm N flags>" specifier).
+	Pins map[PinKind]uint32
 }
 
 var (
@@ -54,12 +57,15 @@ func ParseReferenceDTS(src string) []RefNode {
 					}
 				}
 			}
-		case depth == 2 && cur != nil && cur.Compatible == nil:
-			if m := compatLine.FindStringSubmatch(l); m != nil {
-				for _, q := range quoted.FindAllStringSubmatch(m[1], -1) {
-					cur.Compatible = append(cur.Compatible, q[1])
+		case depth == 2 && cur != nil:
+			if cur.Compatible == nil {
+				if m := compatLine.FindStringSubmatch(l); m != nil {
+					for _, q := range quoted.FindAllStringSubmatch(m[1], -1) {
+						cur.Compatible = append(cur.Compatible, q[1])
+					}
 				}
 			}
+			recordPin(cur, l)
 		}
 		depth += strings.Count(l, "{") - strings.Count(l, "}")
 		if depth == 1 && cur != nil {
@@ -71,6 +77,84 @@ func ParseReferenceDTS(src string) []RefNode {
 		}
 	}
 	return out
+}
+
+var (
+	propLine = regexp.MustCompile(`^([A-Za-z0-9_,#+\-]+)\s*=\s*(.*);`)
+	pinSpec  = regexp.MustCompile(`<&[A-Za-z0-9_]+\s+(0x[0-9a-fA-F]+|\d+)`)
+	firstNum = regexp.MustCompile(`<\s*(0x[0-9a-fA-F]+|\d+)`)
+)
+
+// recordPin notes the pin a property line names, when it is an interrupt,
+// reset or enable pin in the shapes ClassifyPins reads on the stock side.
+func recordPin(n *RefNode, line string) {
+	m := propLine.FindStringSubmatch(line)
+	if m == nil {
+		return
+	}
+	prop, val := m[1], m[2]
+	var kind PinKind
+	var pinStr string
+	switch {
+	case prop == "interrupts-extended":
+		kind = PinIRQ
+		if s := pinSpec.FindStringSubmatch(val); s != nil {
+			pinStr = s[1]
+		}
+	case prop == "interrupts":
+		kind = PinIRQ
+		if s := firstNum.FindStringSubmatch(val); s != nil {
+			pinStr = s[1]
+		}
+	case resetProp.MatchString(prop):
+		kind = PinReset
+		if s := pinSpec.FindStringSubmatch(val); s != nil {
+			pinStr = s[1]
+		}
+	case enableProp.MatchString(prop):
+		kind = PinEnable
+		if s := pinSpec.FindStringSubmatch(val); s != nil {
+			pinStr = s[1]
+		}
+	case irqProp.MatchString(prop):
+		kind = PinIRQ
+		if s := pinSpec.FindStringSubmatch(val); s != nil {
+			pinStr = s[1]
+		}
+	}
+	if pinStr == "" {
+		return
+	}
+	v, err := strconv.ParseUint(pinStr, 0, 32)
+	if err != nil {
+		return
+	}
+	if n.Pins == nil {
+		n.Pins = map[PinKind]uint32{}
+	}
+	if _, dup := n.Pins[kind]; !dup {
+		n.Pins[kind] = uint32(v)
+	}
+}
+
+// comparePins says how a placed part's pins line up with a reference node's.
+func comparePins(pt Part, r RefNode) (summary string, agree, differ int) {
+	uses, _ := ClassifyPins(pt)
+	var parts []string
+	for _, u := range uses {
+		rp, ok := r.Pins[u.Kind]
+		if !ok {
+			continue
+		}
+		if rp == u.Pin {
+			agree++
+			parts = append(parts, fmt.Sprintf("%s %d ✓", u.Kind, u.Pin))
+		} else {
+			differ++
+			parts = append(parts, fmt.Sprintf("%s stock %d, reference %d", u.Kind, u.Pin, rp))
+		}
+	}
+	return strings.Join(parts, "; "), agree, differ
 }
 
 // CompareDTS lines the generated peripherals up against a reference device
@@ -91,7 +175,7 @@ func CompareDTS(p Package, reference string) string {
 
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
-	var same, differ, missing int
+	var same, differ, missing, pinsAgree, pinsDiffer int
 	used := map[key]bool{}
 	var rows []string
 	for _, pt := range p.DT.Parts {
@@ -115,13 +199,22 @@ func CompareDTS(p Package, reference string) string {
 			used[k] = true
 			status = "same slot, different part: reference has `" + strings.Join(r.Compatible, "`, `") + "`"
 		}
-		rows = append(rows, fmt.Sprintf("| %s@%x | `%s` | %s |", bus, k.addr, pt.Compatible, status))
+		pins := "—"
+		if found {
+			if s, a, d := comparePins(pt, r); s != "" {
+				pins = s
+				pinsAgree += a
+				pinsDiffer += d
+			}
+		}
+		rows = append(rows, fmt.Sprintf("| %s@%x | `%s` | %s | %s |", bus, k.addr, pt.Compatible, status, pins))
 	}
 	sort.Strings(rows)
 	w("## Generated peripherals against the reference DTS\n")
-	w("Of the stock parts placed on a bus: %d agree with the reference's compatible, %d are the same slot with a different part, %d have no node at that address.\n", same, differ, missing)
-	w("| bus@addr | stock compatible | against the reference |")
-	w("|---|---|---|")
+	w("Of the stock parts placed on a bus: %d agree with the reference's compatible, %d are the same slot with a different part, %d have no node at that address.", same, differ, missing)
+	w("Pins, over the slots the reference also has: %d agree, %d differ.\n", pinsAgree, pinsDiffer)
+	w("| bus@addr | stock compatible | against the reference | pins (interrupt, reset, enable) |")
+	w("|---|---|---|---|")
 	for _, r := range rows {
 		w("%s", r)
 	}

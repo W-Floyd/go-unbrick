@@ -139,40 +139,26 @@ func writeNode(b *strings.Builder, p Package, pt Part) {
 	w("\t\tcompatible = %s;", compatibleLine(p, pt))
 	w("\t\treg = <0x%x>;", addr)
 
-	mapped := map[string]bool{"compatible": true, "reg": true, "phandle": true, "status": true, "pinctrl-names": true}
-	pinUsed := map[string]bool{}
-	ctrl := func(prop string) string {
-		if l := pt.Labels[prop]; l != "" {
-			return l
-		}
-		return "tlmm"
-	}
-	for _, k := range n.Keys {
-		if mapped[k] {
-			continue
-		}
-		pin, flags, ok := gpioSpec(n, k)
-		switch {
-		case k == "interrupts-extended" && ok:
-			w("\t\tinterrupts-extended = <&%s %d %s>;", ctrl(k), pin, irqName(flags))
-			mapped[k], pinUsed["irq"] = true, true
-		case irqProp.MatchString(k) && ok && !strings.HasSuffix(k, "_num") && !pinUsed["irq"]:
-			w("\t\tinterrupts-extended = <&%s %d IRQ_TYPE_NONE>; /* TODO: trigger type; stock %s gave flags 0x%x */", ctrl(k), pin, k, flags)
-			mapped[k], pinUsed["irq"] = true, true
-		case resetProp.MatchString(k) && ok && !pinUsed["reset"]:
-			w("\t\treset-gpios = <&%s %d %s>; /* stock %s */", ctrl(k), pin, activeFlag(flags), k)
-			mapped[k], pinUsed["reset"] = true, true
-		case enableProp.MatchString(k) && ok && !pinUsed["enable"]:
-			w("\t\tenable-gpios = <&%s %d %s>; /* stock %s */", ctrl(k), pin, activeFlag(flags), k)
-			mapped[k], pinUsed["enable"] = true, true
+	uses, mapped := ClassifyPins(pt)
+	for _, u := range uses {
+		switch u.Kind {
+		case PinIRQ:
+			if u.TypeKnown {
+				w("\t\tinterrupts-extended = <&%s %d %s>;", u.Ctrl, u.Pin, irqName(u.Flags))
+			} else {
+				w("\t\tinterrupts-extended = <&%s %d IRQ_TYPE_NONE>; /* TODO: trigger type; stock %s gave flags 0x%x */", u.Ctrl, u.Pin, u.Prop, u.Flags)
+			}
+		case PinReset:
+			w("\t\treset-gpios = <&%s %d %s>; /* stock %s */", u.Ctrl, u.Pin, activeFlag(u.Flags), u.Prop)
+		case PinEnable:
+			w("\t\tenable-gpios = <&%s %d %s>; /* stock %s */", u.Ctrl, u.Pin, activeFlag(u.Flags), u.Prop)
 		}
 	}
-	// interrupts + interrupt-parent is the same specifier split in two.
-	if !pinUsed["irq"] {
-		if c := n.U32s("interrupts"); len(c) >= 2 {
-			w("\t\tinterrupts-extended = <&%s %d %s>;", labelOr(pt.Labels["interrupt-parent"], "tlmm"), c[0], irqName(c[1]))
-			mapped["interrupts"], mapped["interrupt-parent"], mapped["interrupt-names"] = true, true, true
-		}
+	if pt.Overlays < len(p.DT.Variants) {
+		w("\t\t/* in %d of %d stock board overlays: a part some board variants do not fit */", pt.Overlays, len(p.DT.Variants))
+	}
+	for _, other := range sharedPins(p, pt, uses) {
+		w("\t\t/* shares a pin with %s: likely alternative parts of different board variants; the board fits one */", other)
 	}
 
 	var unmapped, supplies []string
@@ -203,6 +189,89 @@ func writeNode(b *strings.Builder, p Package, pt Part) {
 		w("\t\t/* stock status was %q in the first overlay that has this node */", st)
 	}
 	w("\t};")
+}
+
+// PinKind says what a stock pin property is for.
+type PinKind string
+
+const (
+	PinIRQ    PinKind = "irq"
+	PinReset  PinKind = "reset"
+	PinEnable PinKind = "enable"
+)
+
+// PinUse is one pin a stock node names in a recognisable shape.
+type PinUse struct {
+	Kind  PinKind
+	Prop  string // the stock property
+	Ctrl  string // the controller label ("tlmm")
+	Pin   uint32
+	Flags uint32
+	// TypeKnown is set when the property is a standard interrupt specifier, so
+	// Flags is a trigger type; a vendor gpio property does not say.
+	TypeKnown bool
+}
+
+// ClassifyPins finds the interrupt, reset and enable pins of a stock node, at
+// most one of each, and the set of properties they account for (which a node
+// writer will not list as unmapped). The kind comes from the property name; a
+// pin is a "<&ctrl>, <N flags>" specifier.
+func ClassifyPins(pt Part) (uses []PinUse, mapped map[string]bool) {
+	n := pt.Source
+	mapped = map[string]bool{"compatible": true, "reg": true, "phandle": true, "status": true, "pinctrl-names": true}
+	have := map[PinKind]bool{}
+	ctrl := func(prop string) string { return labelOr(pt.Labels[prop], "tlmm") }
+	add := func(u PinUse) {
+		uses = append(uses, u)
+		have[u.Kind] = true
+		mapped[u.Prop] = true
+	}
+	for _, k := range n.Keys {
+		pin, flags, ok := gpioSpec(n, k)
+		if !ok {
+			continue
+		}
+		switch {
+		case k == "interrupts-extended":
+			add(PinUse{Kind: PinIRQ, Prop: k, Ctrl: ctrl(k), Pin: pin, Flags: flags, TypeKnown: true})
+		case irqProp.MatchString(k) && !strings.HasSuffix(k, "_num") && !have[PinIRQ]:
+			add(PinUse{Kind: PinIRQ, Prop: k, Ctrl: ctrl(k), Pin: pin, Flags: flags})
+		case resetProp.MatchString(k) && !have[PinReset]:
+			add(PinUse{Kind: PinReset, Prop: k, Ctrl: ctrl(k), Pin: pin, Flags: flags})
+		case enableProp.MatchString(k) && !have[PinEnable]:
+			add(PinUse{Kind: PinEnable, Prop: k, Ctrl: ctrl(k), Pin: pin, Flags: flags})
+		}
+	}
+	// interrupts + interrupt-parent is the same specifier split in two.
+	if !have[PinIRQ] {
+		if c := n.U32s("interrupts"); len(c) >= 2 {
+			uses = append(uses, PinUse{Kind: PinIRQ, Prop: "interrupts", Ctrl: labelOr(pt.Labels["interrupt-parent"], "tlmm"), Pin: c[0], Flags: c[1], TypeKnown: true})
+			mapped["interrupts"], mapped["interrupt-parent"], mapped["interrupt-names"] = true, true, true
+		}
+	}
+	return uses, mapped
+}
+
+// sharedPins names the other parts on the same bus that use one of the same
+// pins. Two parts cannot both drive a pin on a board, so this is evidence that
+// they are alternatives fitted on different variants.
+func sharedPins(p Package, pt Part, uses []PinUse) []string {
+	var out []string
+	for _, other := range p.DT.Parts {
+		if other.Source == nil || other.Bus != pt.Bus || other.Compatible == pt.Compatible {
+			continue
+		}
+		ou, _ := ClassifyPins(other)
+		for _, a := range uses {
+			for _, b := range ou {
+				if a.Kind == b.Kind && a.Pin == b.Pin && a.Ctrl == b.Ctrl {
+					out = append(out, fmt.Sprintf("%s@%x (%s pin %d)", strings.ToLower(strings.ReplaceAll(strings.SplitN(other.Node, "@", 2)[0], "_", "-")), addrOf(other), a.Kind, a.Pin))
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // compatibleLine chooses the compatible to write. The stock string stands when
