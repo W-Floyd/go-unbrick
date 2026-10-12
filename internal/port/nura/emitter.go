@@ -48,7 +48,11 @@ func loaderSection(l *LoaderCheck) string {
 	w("| needed by | file | status | where |")
 	w("|---|---|---|---|")
 	for _, c := range l.Coverage {
-		w("| %s | %s | %s | %s |", c.Need, strings.ReplaceAll(c.File, "|", " or "), c.Status, c.Where)
+		status := string(c.Status)
+		if c.Proxy {
+			status += " (stock driver only)"
+		}
+		w("| %s | %s | %s | %s |", c.Need, strings.ReplaceAll(c.File, "|", " or "), status, c.Where)
 	}
 	w("\n`loader`: exposed by the loader's flat link tree. `outside`: in the package, but not in an `image/` or `firmware/` directory of a partition the loader walks, so a firmware package must ship it. `absent`: not in the package at all.")
 	w("\nThis is about file *names*. The loader links them flat (plus `venus`, `qca/` and `fsg/`, and a prefix directory for each `firmware-name` in the running device tree), so a driver that asks for `qcom/<name>` or a path the port's DTS chooses still needs that path to resolve; the table cannot see the port's requests.")

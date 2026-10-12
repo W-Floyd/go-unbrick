@@ -69,6 +69,19 @@ func Report(p Package, unknown []string, extra ...string) string {
 	if p.Mainline != nil {
 		b.WriteString(mainlineSection(p))
 	}
+	if g := UnclaimedFirmware(p); len(g) > 0 {
+		w("\n## Shipped firmware nothing names\n")
+		w("Files in the firmware directories that no device-tree property, driver or SoC-vendor image names. A driver may still consume one by content rather than by name (a Wi-Fi board-data file, calibration), so these are candidates, not needs.\n")
+		w("| family | files | first at |")
+		w("|---|---|---|")
+		for _, f := range g {
+			files := listOrDash(f.Files)
+			if len(f.ForThisDevice) > 0 {
+				files = fmt.Sprintf("**this device: %s**; all: %s", strings.Join(f.ForThisDevice, ", "), files)
+			}
+			w("| %s | %d: %s | %s |", f.Prefix, len(f.Files), files, f.Where)
+		}
+	}
 
 	if len(p.Fstab) > 0 {
 		w("\n## Stock mounts\n")

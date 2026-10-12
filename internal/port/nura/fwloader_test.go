@@ -98,6 +98,40 @@ func TestOutsideFileInAWalkedDirIsExplainedWhenShadowed(t *testing.T) {
 	}
 }
 
+func TestStockDriverOnlyNamesAreNotThingsToShip(t *testing.T) {
+	p := port.Package{
+		PartFiles: []PartFiles{{Name: "vendor", Files: []string{"etc/wifi/cfg.ini", "firmware/touch.bin"}}},
+		FileIndex: map[string][]string{"cfg.ini": {"vendor_a:etc/wifi/cfg.ini"}, "touch.bin": {"vendor_a:firmware/touch.bin"}},
+		Modules:   []port.Module{{Name: "qca_wlan", Firmware: []string{"cfg.ini"}}},
+		DT:        port.DT{FirmwareNames: []port.FirmwareName{{Prop: "firmware-name", Value: "touch.bin"}}},
+	}
+	lc := CheckLoader(p)
+	if got := lc.ToShip(); len(got) != 0 {
+		t.Errorf("a name only the stock Wi-Fi driver asks for must not be shipped: %v", got)
+	}
+	var proxy, authoritative int
+	for _, c := range lc.Coverage {
+		if c.Proxy {
+			proxy++
+		} else {
+			authoritative++
+		}
+	}
+	if proxy != 1 || authoritative != 1 {
+		t.Errorf("proxy %d authoritative %d, want 1 and 1: %+v", proxy, authoritative, lc.Coverage)
+	}
+	for _, want := range []string{"cover 1 of 1", "Stock Android drivers name 1 more, 1 of them not exposed"} {
+		if !strings.Contains(lc.Verdict, want) {
+			t.Errorf("verdict %q lacks %q", lc.Verdict, want)
+		}
+	}
+	// A name the device tree also asks for is authoritative, whoever else does.
+	p.DT.FirmwareNames = append(p.DT.FirmwareNames, port.FirmwareName{Prop: "firmware-name", Value: "cfg.ini"})
+	if got := CheckLoader(p).ToShip(); len(got) != 1 {
+		t.Errorf("once the device tree names it, it is a need: %v", got)
+	}
+}
+
 func TestVerdictWithNothingToMount(t *testing.T) {
 	pl := PlanLoader("", []PartFiles{{Name: "boot", Files: nil}})
 	if got := Verdict(pl, nil); !strings.Contains(got, "nothing to mount") {

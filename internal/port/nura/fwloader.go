@@ -170,6 +170,10 @@ func contains(ss []string, s string) bool {
 type Need struct {
 	Name  string
 	Files []string // each "a|b": either name satisfies it
+	// Proxy is set when only a stock Android driver asks for it. A mainline
+	// port runs different drivers, so such a name is a hint, not a need: the
+	// downstream Wi-Fi driver's config file means nothing to ath10k.
+	Proxy bool
 }
 
 // Status says where a needed file stands against the loader.
@@ -187,6 +191,7 @@ type Coverage struct {
 	File   string
 	Status Status
 	Where  string // the exposed path or where the package holds it
+	Proxy  bool   // only a stock Android driver asks for it (see Need)
 }
 
 // Needs lists the firmware the package's board names, as port.FirmwareRefs
@@ -195,7 +200,11 @@ type Coverage struct {
 func Needs(p port.Package) []Need {
 	var out []Need
 	for _, r := range port.FirmwareRefs(p) {
-		out = append(out, Need{Name: strings.Join(r.By, "; "), Files: []string{strings.Join(r.Names, "|")}})
+		proxy := true
+		for _, by := range r.By {
+			proxy = proxy && strings.HasPrefix(by, "driver ")
+		}
+		out = append(out, Need{Name: strings.Join(r.By, "; "), Files: []string{strings.Join(r.Names, "|")}, Proxy: proxy})
 	}
 	return out
 }
@@ -206,7 +215,7 @@ func Check(pl LoaderPlan, needs []Need, index map[string][]string) []Coverage {
 	var out []Coverage
 	for _, n := range needs {
 		for _, alts := range n.Files {
-			c := Coverage{Need: n.Name, File: alts, Status: Absent}
+			c := Coverage{Need: n.Name, File: alts, Status: Absent, Proxy: n.Proxy}
 			names := strings.Split(alts, "|")
 			for _, name := range names {
 				if src, ok := pl.Target[name]; ok {
@@ -294,7 +303,7 @@ func CheckLoader(p port.Package) *LoaderCheck {
 func (c *LoaderCheck) ToShip() []string {
 	var out []string
 	for _, cv := range c.Coverage {
-		if cv.Status == OutsideLoader {
+		if cv.Status == OutsideLoader && !cv.Proxy {
 			out = append(out, cv.Where)
 		}
 	}
@@ -306,8 +315,16 @@ func Verdict(pl LoaderPlan, cov []Coverage) string {
 	if len(pl.Mounted) == 0 {
 		return "msm-firmware-loader has nothing to mount: the package carries none of its partitions"
 	}
-	var by, outside, absent int
+	var by, outside, absent, total, proxyOpen, proxyTotal int
 	for _, c := range cov {
+		if c.Proxy {
+			proxyTotal++
+			if c.Status != ByLoader {
+				proxyOpen++
+			}
+			continue
+		}
+		total++
 		switch c.Status {
 		case ByLoader:
 			by++
@@ -317,9 +334,12 @@ func Verdict(pl LoaderPlan, cov []Coverage) string {
 			absent++
 		}
 	}
-	s := fmt.Sprintf("msm-firmware-loader would mount %d of its %d partitions, expose %d top-level entries, and cover %d of %d needed files", len(pl.Mounted), len(pl.Mounted)+len(pl.Missing), pl.TopLevel(), by, len(cov))
+	s := fmt.Sprintf("msm-firmware-loader would mount %d of its %d partitions, expose %d top-level entries, and cover %d of %d files the device tree, the SoC vendor or the target kernel name", len(pl.Mounted), len(pl.Mounted)+len(pl.Missing), pl.TopLevel(), by, total)
 	if outside+absent > 0 {
 		s += fmt.Sprintf("; %d to ship in a firmware package, %d the package does not carry", outside, absent)
+	}
+	if proxyTotal > 0 {
+		s += fmt.Sprintf(". Stock Android drivers name %d more, %d of them not exposed; those matter only if the port runs the same drivers", proxyTotal, proxyOpen)
 	}
 	return s
 }

@@ -102,3 +102,53 @@ func TestNamedButAbsentFirmwareIsStillAReference(t *testing.T) {
 		t.Errorf("refs %+v", refs)
 	}
 }
+
+func TestUnclaimedFirmwareFlagsTheDevicesOwnFiles(t *testing.T) {
+	p := Package{
+		Props:     map[string]string{"ro.product.vendor.device": "fogona"},
+		PartFiles: []PartFiles{{Name: "modem", Files: []string{"image/bdwlan_devon_ipa.bin", "image/bdwlan_fogona_epa.bin", "image/bdwlan_fogona_ipa.bin"}}},
+	}
+	g := UnclaimedFirmware(p)
+	if len(g) != 1 || len(g[0].Files) != 3 || strings.Join(g[0].ForThisDevice, " ") != "bdwlan_fogona_epa.bin bdwlan_fogona_ipa.bin" {
+		t.Errorf("got %+v", g)
+	}
+}
+
+func TestUnclaimedFirmwareGroupsWhatNothingNames(t *testing.T) {
+	p := Package{
+		Slot: "_a",
+		PartFiles: []PartFiles{
+			{Name: "modem", Files: []string{"image/adsp.mdt", "image/adsp.b00", "image/bdwlan_fogona_epa.bin", "image/bdwlan_fogona_ipa.bin", "image/Data.msc", "other/x.bin"}},
+			{Name: "vendor", Files: []string{"firmware/touch.bin", "firmware/aw_rtp_Hello.bin", "firmware/aw_rtp_Keys.bin"}},
+		},
+		FileIndex: map[string][]string{"adsp.mdt": {"modem_a:image/adsp.mdt"}, "touch.bin": {"vendor_a:firmware/touch.bin"}},
+		DT:        DT{FirmwareNames: []FirmwareName{{Prop: "firmware-name", Value: "touch.bin"}}},
+	}
+	got := map[string]FirmwareGroup{}
+	for _, g := range UnclaimedFirmware(p) {
+		got[g.Prefix] = g
+	}
+	if g := got["bdwlan"]; len(g.Files) != 2 || g.Where != "modem_a:image/bdwlan_fogona_epa.bin" {
+		t.Errorf("bdwlan family: %+v", g)
+	}
+	if g := got["aw"]; len(g.Files) != 2 {
+		t.Errorf("aw family: %+v", g)
+	}
+	if len(got) > 0 {
+		for _, g := range UnclaimedFirmware(Package{PartFiles: []PartFiles{{Name: "bluetooth", Files: []string{"image/cmbtfw10.tlv", "image/cmbtfw11.tlv", "image/cmnv13s.bin", "image/cmnv13.bin", "image/a662_zap.mbn", "image/a630_sqe.fw"}}}}) {
+			switch g.Prefix {
+			case "cmbtfw", "cmnv", "a662", "a630":
+			default:
+				t.Errorf("unexpected family %q", g.Prefix)
+			}
+		}
+	}
+	for _, claimed := range []string{"adsp", "touch"} {
+		if _, ok := got[claimed]; ok {
+			t.Errorf("%s is claimed (a .mdt stem and its segments; a device-tree name) and must not be listed", claimed)
+		}
+	}
+	if _, ok := got["x"]; ok {
+		t.Error("only image/ and firmware/ are searched")
+	}
+}
