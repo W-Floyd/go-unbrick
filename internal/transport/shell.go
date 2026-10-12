@@ -87,6 +87,12 @@ for p in /sys/bus/platform/devices/*.ufshc/string_descriptors/serial_number \
 	v=$(cat "$p" 2>/dev/null </dev/null | tr -d '\r\n\0 \t')
 	[ -n "$v" ] && printf 'ufs\t%s\n' "$v" && break
 done
+u bus-devices
+for d in /sys/bus/i2c/devices/* /sys/bus/spi/devices/*; do
+	[ -e "$d" ] || continue
+	case "${d##*/}" in i2c-*) continue;; esac
+	printf '%s\t%s\t%s\t%s\t%s\n' "${d%/*}" "${d##*/}" "$(cat "$d/modalias" 2>/dev/null </dev/null)" "$(readlink "$d/driver" 2>/dev/null)" "$(readlink "$d/of_node" 2>/dev/null)"
+done
 u battery
 for p in /sys/class/power_supply/*; do
 	[ -d "$p" ] || continue

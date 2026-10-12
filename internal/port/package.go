@@ -45,6 +45,9 @@ type Package struct {
 	// SoCRegions are the reserved-memory regions the best SoC dtsi defines; nil
 	// when there was no tree to read it from.
 	SoCRegions []Region
+	// Live is what a running unit of the board said, when one was asked (see
+	// ReadLive); it settles which of the stock package's variants are fitted.
+	Live *Live
 }
 
 // busLabel is the mainline label for a stock bus label: read from the SoC

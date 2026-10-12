@@ -61,8 +61,13 @@ func PeripheralDTS(p Package) (text string, notes []string) {
 
 	byBus := map[string][]Part{}
 	var unplaced []string
+	var absent []string
 	for _, pt := range p.DT.Parts {
 		if pt.Source == nil {
+			continue
+		}
+		if p.Fit(pt).State == NotFitted {
+			absent = append(absent, pt.Compatible+": "+p.Fit(pt).Why)
 			continue
 		}
 		bus, _, ok := p.busLabel(pt.Bus)
@@ -101,6 +106,14 @@ func PeripheralDTS(p Package) (text string, notes []string) {
 		w("/* Parts not on an I2C or SPI controller this tool can map to a mainline label:")
 		for _, u := range unplaced {
 			w(" *   %s", u)
+		}
+		w(" */")
+	}
+	if len(absent) > 0 {
+		w("")
+		w("/* Stock variants not fitted on the unit asked, left out:")
+		for _, a := range absent {
+			w(" *   %s", a)
 		}
 		w(" */")
 	}

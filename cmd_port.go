@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/W-Floyd/go-unbrick/internal/adb"
 	"github.com/W-Floyd/go-unbrick/internal/arsc"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/fdt"
@@ -22,7 +23,8 @@ import (
 )
 
 func newPortCmd() *cobra.Command {
-	var out, sizeMM, distro, kernelTree string
+	var out, sizeMM, distro, kernelTree, serial string
+	var live bool
 	var referenceDTS, referencePanel []string
 	c := &cobra.Command{
 		Use:   "port <stock package>",
@@ -50,6 +52,14 @@ for a package that ships it as sparse chunks takes about half a minute.
 			pkg, unknown, blob, err := readPackage(args[0], prog.say)
 			if err != nil {
 				return err
+			}
+			if live {
+				prog.say("asking the device over adb")
+				dev, err := adb.Open(adb.Options{Serial: serial, Elevate: "auto"})
+				if err != nil {
+					return fmt.Errorf("--live: %w", err)
+				}
+				pkg.Live = port.NewLive(dev.R.Sections, dev.R.CmdlineRaw)
 			}
 			prog.say("writing the bundle")
 			if sizeMM != "" {
@@ -105,6 +115,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 				refPanel.Write(b)
 				refPanel.WriteString("\n")
 			}
+			bundle.Report = append(bundle.Report, port.LiveSection(pkg))
 			bundle.Report = append(bundle.Report, port.PanelSection(drivers, refPanel.String()))
 			if len(referenceDTS) > 0 {
 				var ref strings.Builder
@@ -157,6 +168,8 @@ for a package that ships it as sparse chunks takes about half a minute.
 	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
 	c.Flags().StringSliceVar(&referencePanel, "reference-panel", nil, "an existing hand-written panel driver: compare the drafted panels' command bytes and modes against it")
 	c.Flags().StringSliceVar(&referenceDTS, "reference-dts", nil, "an existing hand-written board dts (repeat or comma-separate for several): compare the generated peripherals against it, by bus and address")
+	c.Flags().BoolVar(&live, "live", false, "ask an attached device over adb which of the board's variant parts are fitted, and draft only those")
+	c.Flags().StringVar(&serial, "serial", "", "adb serial for --live when more than one device is attached")
 	c.Flags().StringVar(&kernelTree, "kernel-tree", "", "target kernel source tree: report which parts it supports and the firmware its drivers name")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
 	return c
@@ -165,7 +178,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 var kernelBanner = regexp.MustCompile(`Linux version (\d+\.\d+\.\d+)`)
 
 // portStages is how many steps reading and writing a bundle has, for the bar.
-const portStages = 6
+const portStages = 7
 
 // portProgress tells the person running the command what a slow stage is doing:
 // reading a stock package takes tens of seconds, and a silent terminal looks

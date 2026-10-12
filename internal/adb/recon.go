@@ -60,6 +60,13 @@ for i in $d/qcom_socinfo/*/; do
 	printf "%s\t%s\t%s\t%s\n" "$(basename "$i")" "$(cat "$i/name")" "$(cat "$i/variant")" "$(cat "$i/oem")"
 done
 [ -n "$m" ] && umount $d' 2>/dev/null
+u chosen
+asroot 'for f in /sys/firmware/devicetree/base/chosen/*; do
+	[ -f "$f" ] || continue
+	v=$(cat "$f" 2>/dev/null </dev/null | tr -d "\0")
+	case "$v" in ""|*[![:print:]]*) continue;; esac
+	printf "%s\t%s\n" "${f##*/}" "$v"
+done' 2>/dev/null
 `
 
 // btCycleScript restarts Bluetooth so its HAL logs chip init again; the sleeps
