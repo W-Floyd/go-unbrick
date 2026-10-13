@@ -2,11 +2,13 @@ package port
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // SoCGap is what porting the SoC's own blocks involves: the stock base device
@@ -30,6 +32,11 @@ type MissingBlock struct {
 	// Generic says a compatible of the node's was too common to count, so a
 	// block with no Sibling is not simply absent from the tree.
 	Generic bool
+	// InCode says a driver or binding in the tree names a compatible of the
+	// node's (and no dtsi does): upstream can bind the block, it just has no node
+	// for it. False with no Sibling and no Generic means nothing in the tree
+	// names it under any form.
+	InCode bool
 }
 
 var (
@@ -63,6 +70,7 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 		rank[filepath.Base(m.File)] = i
 	}
 	where := compatibleIndex(dir)
+	code := treeCompatibles(tree)
 
 	for _, n := range p.DT.SoCNodes {
 		if have[n.Addr] {
@@ -101,6 +109,12 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 		})
 		if len(mb.Sibling) > 0 {
 			g.Siblings++
+		} else {
+			for _, c := range n.Compatible {
+				if len(where[c]) < genericCompatFiles && code[c] {
+					mb.InCode = true
+				}
+			}
 		}
 		g.Missing = append(g.Missing, mb)
 	}
@@ -142,16 +156,20 @@ func SoCGapSection(g *SoCGap) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("\n## SoC porting work\n")
-	generic := 0
+	var generic, inCode int
 	for _, m := range g.Missing {
-		if len(m.Sibling) == 0 && m.Generic {
+		switch {
+		case len(m.Sibling) > 0:
+		case m.InCode:
+			inCode++
+		case m.Generic:
 			generic++
 		}
 	}
-	none := len(g.Missing) - g.Siblings - generic
-	w("The stock base device tree has %d register-addressed peripherals. `%s` (with %s) defines %d of them; %d are missing. Of those, %d have their compatible named in another dtsi in the tree (a node to copy and adapt, nearest first), %d carry only a generic compatible, and %d have a compatible no dtsi names.\n",
-		g.Stock, g.Include, quotedList(g.Files), g.Present, len(g.Missing), g.Siblings, generic, none)
-	w("This matches compatible strings, so it overstates the work: a vendor kernel's compatible often differs from the one mainline uses for the same IP (the stock `qcom,gdsc` blocks are power domains that mainline's clock drivers provide). Read \"none\" as \"no mainline node under this name\", and check for an equivalent before writing a driver.\n")
+	nowhere := len(g.Missing) - g.Siblings - inCode - generic
+	w("The stock base device tree has %d register-addressed peripherals. `%s` (with %s) defines %d of them; %d are missing. Of those: %d have their compatible named in another dtsi in the tree (a node to copy and adapt, nearest first); %d are named by a driver or binding but no dtsi (upstream can bind them, there is no node); %d carry only a generic compatible; and %d are named nowhere in the tree's dtsi files, drivers or bindings.\n",
+		g.Stock, g.Include, quotedList(g.Files), g.Present, len(g.Missing), g.Siblings, inCode, generic, nowhere)
+	w("This matches compatible strings exactly. \"Nowhere\" is mostly downstream-only blocks (camera, coresight, bandwidth monitors, debug) with no upstream support under any name; a few are done upstream by another node (the stock `qcom,gdsc` power domains come from the clock controllers, remoteproc `*-pas` nodes have SoC-specific names), so check for an equivalent before writing a driver.\n")
 	if len(g.Missing) == 0 {
 		return b.String()
 	}
@@ -166,8 +184,12 @@ func SoCGapSection(g *SoCGap) string {
 		if len(m.Node.Compatible) > 0 {
 			compat = "`" + m.Node.Compatible[0] + "`"
 		}
-		where := "none"
-		if len(m.Sibling) == 0 && m.Generic {
+		where := "nowhere"
+		switch {
+		case len(m.Sibling) > 0:
+		case m.InCode:
+			where = "a driver or binding only"
+		case m.Generic:
 			where = "generic compatible only"
 		}
 		if len(m.Sibling) > 0 {
@@ -348,3 +370,68 @@ func directBody(text string, open int) string {
 var commentRe = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
 
 func stripComments(s string) string { return commentRe.ReplaceAllString(s, "") }
+
+var (
+	quotedCompatRe   = regexp.MustCompile(`"([a-z0-9]+,[A-Za-z0-9_.+-]+)"`)
+	unquotedCompatRe = regexp.MustCompile(`[^A-Za-z0-9_.+-]([a-z0-9]+,[A-Za-z0-9_.+-]+)`)
+)
+
+// treeCompatibles is every compatible string the kernel tree's drivers and
+// device-tree bindings name: C sources (quoted, in their match tables), and
+// binding schemas and text bindings (where YAML writes them unquoted). It says
+// whether anything upstream could bind a compatible, whatever dtsi uses it.
+func treeCompatibles(tree string) map[string]bool {
+	var files []string
+	for _, sub := range []string{"drivers", "sound", filepath.Join("Documentation", "devicetree", "bindings")} {
+		filepath.WalkDir(filepath.Join(tree, sub), func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			switch filepath.Ext(p) {
+			case ".c", ".h", ".yaml", ".txt":
+				files = append(files, p)
+			}
+			return nil
+		})
+	}
+	out := map[string]bool{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	work := make(chan string)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				b, err := os.ReadFile(p)
+				if err != nil {
+					continue
+				}
+				re := quotedCompatRe
+				if ext := filepath.Ext(p); ext == ".yaml" || ext == ".txt" {
+					re = unquotedCompatRe
+				}
+				var found []string
+				for _, m := range re.FindAllSubmatch(b, -1) {
+					found = append(found, string(m[1]))
+				}
+				if filepath.Ext(p) == ".yaml" || filepath.Ext(p) == ".txt" { // quoted ones too
+					for _, m := range quotedCompatRe.FindAllSubmatch(b, -1) {
+						found = append(found, string(m[1]))
+					}
+				}
+				mu.Lock()
+				for _, c := range found {
+					out[c] = true
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, f := range files {
+		work <- f
+	}
+	close(work)
+	wg.Wait()
+	return out
+}

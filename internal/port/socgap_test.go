@@ -28,6 +28,20 @@ func TestComputeSoCGap(t *testing.T) {
 	for i := 0; i < genericCompatFiles; i++ {
 		writeDTSI(t, dir, "gen"+string(rune('a'+i))+".dtsi", "/ { x { compatible = \"syscon\"; }; };\n")
 	}
+	// Two blocks no dtsi names: one a driver's match table does, one a binding
+	// schema lists (unquoted, as YAML does).
+	for path, text := range map[string]string{
+		"drivers/misc/foo.c":                              "static const struct of_device_id m[] = { { .compatible = \"qcom,foo-driver\" }, {} };\n",
+		"Documentation/devicetree/bindings/misc/bar.yaml": "properties:\n  compatible:\n    enum:\n      - qcom,bar-binding\n",
+	} {
+		full := filepath.Join(tree, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	p := Package{
 		SoC: []SoCMatch{{File: "arch/arm64/boot/dts/qcom/sm6225.dtsi"}, {File: "arch/arm64/boot/dts/qcom/agatti.dtsi"}},
@@ -37,10 +51,12 @@ func TestComputeSoCGap(t *testing.T) {
 			{Name: "crypto@1b3a000", Addr: "1b3a000", Compatible: []string{"qcom,crypto-v5"}},
 			{Name: "qseecom@61800000", Addr: "61800000", Compatible: []string{"qcom,qseecom"}},
 			{Name: "syscon@5991008", Addr: "5991008", Compatible: []string{"syscon"}},
+			{Name: "foo@7000000", Addr: "7000000", Compatible: []string{"qcom,foo-driver"}},
+			{Name: "bar@8000000", Addr: "8000000", Compatible: []string{"qcom,bar-binding"}},
 		}},
 	}
 	g := ComputeSoCGap(tree, p)
-	if g == nil || g.Present != 2 || len(g.Missing) != 3 || g.Siblings != 1 {
+	if g == nil || g.Present != 2 || len(g.Missing) != 5 || g.Siblings != 1 {
 		t.Fatalf("got %+v", g)
 	}
 	byAddr := map[string]MissingBlock{}
@@ -50,14 +66,19 @@ func TestComputeSoCGap(t *testing.T) {
 	if s := byAddr["1b3a000"].Sibling; len(s) != 1 || s[0] != "agatti.dtsi" {
 		t.Errorf("crypto sibling: %v", s)
 	}
-	if m := byAddr["61800000"]; len(m.Sibling) != 0 || m.Generic {
-		t.Errorf("qseecom: %+v", m)
+	if m := byAddr["61800000"]; len(m.Sibling) != 0 || m.Generic || m.InCode {
+		t.Errorf("qseecom is named nowhere: %+v", m)
+	}
+	for _, a := range []string{"7000000", "8000000"} {
+		if m := byAddr[a]; len(m.Sibling) != 0 || !m.InCode {
+			t.Errorf("%s is named by a driver or binding: %+v", a, m)
+		}
 	}
 	if m := byAddr["5991008"]; len(m.Sibling) != 0 || !m.Generic {
 		t.Errorf("syscon is generic: %+v", m)
 	}
 	sec := SoCGapSection(g)
-	for _, want := range []string{"defines 2 of them; 3 are missing", "1 carry only a generic compatible", "generic compatible only", "agatti.dtsi"} {
+	for _, want := range []string{"defines 2 of them; 5 are missing", "2 are named by a driver or binding but no dtsi", "1 carry only a generic compatible", "1 are named nowhere", "a driver or binding only", "generic compatible only", "agatti.dtsi"} {
 		if !strings.Contains(sec, want) {
 			t.Errorf("section lacks %q:\n%s", want, sec)
 		}
