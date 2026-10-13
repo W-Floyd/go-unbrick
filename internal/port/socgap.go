@@ -51,12 +51,11 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 	if len(p.SoC) == 0 || len(p.DT.SoCNodes) == 0 {
 		return nil
 	}
-	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(p.SoC[0].File))) // the matched dtsi's vendor directory
 	g := &SoCGap{Include: p.SoC[0].File, Stock: len(p.DT.SoCNodes)}
 
 	// The include's closure: the dtsi and the .dtsi files it pulls in.
 	have := map[string]bool{}
-	walkDTSIClosure(dir, filepath.Base(g.Include), func(name string, b []byte) {
+	walkDTSIClosure(SoCFile(tree, g.Include), socDirs(tree, g.Include), func(name string, b []byte) {
 		g.Files = append(g.Files, name)
 		for _, m := range treeAddr.FindAllSubmatch(b, -1) {
 			have[strings.TrimLeft(strings.ToLower(string(m[1])), "0")] = true
@@ -69,7 +68,7 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 	for i, m := range p.SoC {
 		rank[filepath.Base(m.File)] = i
 	}
-	where := compatibleIndex(dir)
+	where := compatibleIndex(socDirs(tree, g.Include))
 	code := treeCompatibles(tree)
 
 	for _, n := range p.DT.SoCNodes {
@@ -122,25 +121,27 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 	return g
 }
 
-// compatibleIndex maps each compatible string a dtsi in dir names to the
+// compatibleIndex maps each compatible string a dtsi in dirs names to the
 // files naming it.
-func compatibleIndex(dir string) map[string][]string {
+func compatibleIndex(dirs []string) map[string][]string {
 	out := map[string][]string{}
-	ents, _ := os.ReadDir(dir)
-	for _, e := range ents {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".dtsi") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		seen := map[string]bool{}
-		for _, m := range compatRe.FindAllSubmatch(b, -1) {
-			for _, q := range quotedRe.FindAllSubmatch(m[1], -1) {
-				if c := string(q[1]); c != "" && !seen[c] {
-					seen[c] = true
-					out[c] = append(out[c], e.Name())
+	for _, dir := range dirs {
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".dtsi") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			seen := map[string]bool{}
+			for _, m := range compatRe.FindAllSubmatch(b, -1) {
+				for _, q := range quotedRe.FindAllSubmatch(m[1], -1) {
+					if c := string(q[1]); c != "" && !seen[c] {
+						seen[c] = true
+						out[c] = append(out[c], e.Name())
+					}
 				}
 			}
 		}
@@ -252,26 +253,66 @@ func (g *SoCGap) kindCounts() []string {
 	return out
 }
 
-// walkDTSIClosure calls visit on a dtsi in dir and on each .dtsi it includes,
-// recursively, once each.
-func walkDTSIClosure(dir, name string, visit func(name string, text []byte)) {
+// SoCFile is the path of a matched dtsi: an out-of-tree one (--soc-dtsi) is
+// already absolute, a tree one is relative to the tree.
+func SoCFile(tree, file string) string {
+	if filepath.IsAbs(file) {
+		return file
+	}
+	return filepath.Join(tree, filepath.FromSlash(file))
+}
+
+// treeDTSDirs are the vendor directories of the tree's arm64 device trees, where
+// a dtsi from outside the tree finds the files it includes.
+func treeDTSDirs(tree string) []string {
+	base := filepath.Join(tree, "arch", "arm64", "boot", "dts")
+	ents, _ := os.ReadDir(base)
+	var out []string
+	for _, e := range ents {
+		if e.IsDir() {
+			out = append(out, filepath.Join(base, e.Name()))
+		}
+	}
+	return out
+}
+
+// socDirs are the directories to look for a dtsi's includes (and for siblings
+// of it) in: its own, and for one outside the tree, the tree's vendor
+// directories too.
+func socDirs(tree, file string) []string {
+	dirs := []string{filepath.Dir(SoCFile(tree, file))}
+	if filepath.IsAbs(file) {
+		dirs = append(dirs, treeDTSDirs(tree)...)
+	}
+	return dirs
+}
+
+// walkDTSIClosure calls visit on the dtsi at start and on each .dtsi it
+// includes, recursively, once each; an include is looked for in dirs in order.
+func walkDTSIClosure(start string, dirs []string, visit func(name string, text []byte)) {
 	seen := map[string]bool{}
-	var read func(name string)
-	read = func(name string) {
-		if seen[name] {
+	var read func(path string)
+	read = func(path string) {
+		if seen[path] {
 			return
 		}
-		seen[name] = true
-		b, err := os.ReadFile(filepath.Join(dir, name))
+		seen[path] = true
+		b, err := os.ReadFile(path)
 		if err != nil {
 			return
 		}
-		visit(name, b)
+		visit(filepath.Base(path), b)
 		for _, m := range includeRe.FindAllSubmatch(b, -1) {
-			read(filepath.Base(string(m[1])))
+			name := filepath.Base(string(m[1]))
+			for _, d := range dirs {
+				if _, err := os.Stat(filepath.Join(d, name)); err == nil {
+					read(filepath.Join(d, name))
+					break
+				}
+			}
 		}
 	}
-	read(name)
+	read(start)
 }
 
 var labelRe = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*):\s`)
@@ -282,9 +323,8 @@ func SoCLabels(tree, include string) map[string]bool {
 	if include == "" {
 		return nil
 	}
-	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(include)))
 	out := map[string]bool{}
-	walkDTSIClosure(dir, filepath.Base(include), func(_ string, b []byte) {
+	walkDTSIClosure(SoCFile(tree, include), socDirs(tree, include), func(_ string, b []byte) {
 		for _, m := range labelRe.FindAllSubmatch(b, -1) {
 			out[string(m[1])] = true
 		}
@@ -316,9 +356,8 @@ func ReadSoCDTSI(tree, include string) SoCDTSIFacts {
 	if include == "" {
 		return f
 	}
-	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(include)))
 	defined, used := map[string]bool{}, map[string]bool{}
-	walkDTSIClosure(dir, filepath.Base(include), func(_ string, b []byte) {
+	walkDTSIClosure(SoCFile(tree, include), socDirs(tree, include), func(_ string, b []byte) {
 		text := stripComments(string(b))
 		for _, m := range labelRe.FindAllStringSubmatch(text, -1) {
 			defined[m[1]] = true
@@ -470,7 +509,7 @@ func SiblingClockDefs(tree string, ms []SoCMatch, labels []string) map[string]Cl
 		return out
 	}
 	for _, m := range ms {
-		b, err := os.ReadFile(filepath.Join(tree, filepath.FromSlash(m.File)))
+		b, err := os.ReadFile(SoCFile(tree, m.File))
 		if err != nil {
 			continue
 		}
@@ -503,9 +542,8 @@ func SoCLabelsByAddr(tree, include string) map[string]string {
 	if include == "" {
 		return nil
 	}
-	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(include)))
 	out := map[string]string{}
-	walkDTSIClosure(dir, filepath.Base(include), func(_ string, b []byte) {
+	walkDTSIClosure(SoCFile(tree, include), socDirs(tree, include), func(_ string, b []byte) {
 		for _, m := range addrLabelRe.FindAllStringSubmatch(stripComments(string(b)), -1) {
 			a := strings.TrimLeft(strings.ToLower(m[2]), "0")
 			if _, dup := out[a]; !dup && a != "" { // address 0 (a CPU, a pool) is no register address

@@ -25,7 +25,7 @@ import (
 func newPortCmd() *cobra.Command {
 	var out, sizeMM, distro, kernelTree, serial string
 	var live, checkDTS bool
-	var referenceDTS, referencePanel []string
+	var referenceDTS, referencePanel, socDTSI []string
 	c := &cobra.Command{
 		Use:   "port <stock package>",
 		Short: "draft a Linux port (device packaging and hardware report) from a stock package",
@@ -70,6 +70,9 @@ for a package that ships it as sparse chunks takes about half a minute.
 					return fmt.Errorf("--size-mm wants WIDTHxHEIGHT in millimetres, e.g. 68x151")
 				}
 			}
+			if len(socDTSI) > 0 && kernelTree == "" {
+				return fmt.Errorf("--soc-dtsi adds to what --kernel-tree matches: name the kernel tree it applies to")
+			}
 			if kernelTree != "" {
 				var compats []string
 				for _, pt := range pkg.DT.Parts {
@@ -90,10 +93,16 @@ for a package that ships it as sparse chunks takes about half a minute.
 						pkg.ChoiceDrivers = port.FindDriversByName(kernelTree, items)
 					}
 				}
-				if ms, err := port.FindSoCDTSI(kernelTree, pkg.DT.UnitAddrs); err == nil {
+				ms, err := port.FindSoCDTSI(kernelTree, pkg.DT.UnitAddrs)
+				extra, xerr := port.FindExtraSoCDTSI(kernelTree, socDTSI, pkg.DT.UnitAddrs)
+				if xerr != nil {
+					return fmt.Errorf("--soc-dtsi: %w", xerr)
+				}
+				if err == nil {
+					ms = port.MergeSoCMatches(ms, extra)
 					pkg.SoC = ms
 					if len(ms) > 0 {
-						if dtsi, err := os.ReadFile(filepath.Join(kernelTree, ms[0].File)); err == nil {
+						if dtsi, err := os.ReadFile(port.SoCFile(kernelTree, ms[0].File)); err == nil {
 							pkg.BusLabels = port.BusLabels(pkg.DT, string(dtsi))
 							pkg.SoCRegions = port.ParseDTSRegions(string(dtsi))
 						}
@@ -124,7 +133,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 			files["dts/"+port.BoardName(pkg)+".dts"] = []byte(port.BoardDTS(pkg))
 			bundle.Notes = append(bundle.Notes, dtsNotes...)
 			if pkg.KernelTree != "" {
-				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC), port.SoCGapSection(pkg.SoCGap))
+				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC, pkg.DT.SoC), port.SoCGapSection(pkg.SoCGap))
 			}
 			bundle.Report = append(bundle.Report, port.MemorySection(pkg))
 			drivers := port.PanelDrivers(pkg)
@@ -218,6 +227,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
 	c.Flags().StringSliceVar(&referencePanel, "reference-panel", nil, "an existing hand-written panel driver: compare the drafted panels' command bytes and modes against it")
 	c.Flags().StringSliceVar(&referenceDTS, "reference-dts", nil, "an existing hand-written board dts (repeat or comma-separate for several): compare the generated peripherals against it, by bus and address")
+	c.Flags().StringSliceVar(&socDTSI, "soc-dtsi", nil, "SoC dtsi support from outside --kernel-tree (a patch series or fork checkout: a file, or a directory searched for .dtsi); matched against the stock device tree and ranked with the tree's, and used wherever the tree's dtsi is")
 	c.Flags().BoolVar(&checkDTS, "check-dts", false, "after writing with -o, compile the board dts against --kernel-tree with the C preprocessor and dtc, and report what the board adds over the bare SoC dtsi (needs clang or gcc, and dtc)")
 	c.Flags().BoolVar(&live, "live", false, "ask an attached device over adb which of the board's variant parts are fitted, and draft only those")
 	c.Flags().StringVar(&serial, "serial", "", "adb serial for --live when more than one device is attached")

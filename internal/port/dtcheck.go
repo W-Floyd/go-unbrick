@@ -42,12 +42,20 @@ func CheckDTS(tree, dtsPath, socFile string) (CheckResult, error) {
 		return CheckResult{}, fmt.Errorf("dtc is not on PATH")
 	}
 	soc := filepath.ToSlash(socFile)
-	vendorDir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(soc)))
+	// Where includes are looked for: the dtsi's own directory first (the tree's
+	// vendor directory, or the out-of-tree one), then the tree's.
+	incs := []string{filepath.Join(tree, "include"), filepath.Join(tree, "arch", "arm64", "boot", "dts")}
+	for _, d := range socDirs(tree, soc) {
+		incs = append(incs, d)
+	}
+	incs = append(incs, filepath.Dir(dtsPath))
 
 	build := func(file string) (string, error) {
-		args := append(pp[1:], "-nostdinc", "-undef", "-x", "assembler-with-cpp", "-P", "-D__DTS__",
-			"-I", filepath.Join(tree, "include"), "-I", filepath.Join(tree, "arch", "arm64", "boot", "dts"),
-			"-I", vendorDir, "-I", filepath.Dir(dtsPath), file)
+		args := append(pp[1:], "-nostdinc", "-undef", "-x", "assembler-with-cpp", "-P", "-D__DTS__")
+		for _, d := range incs {
+			args = append(args, "-I", d)
+		}
+		args = append(args, file)
 		var src, errs bytes.Buffer
 		cmd := exec.Command(pp[0], args...)
 		cmd.Stdout, cmd.Stderr = &src, &errs

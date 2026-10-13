@@ -149,27 +149,95 @@ func matchDir(dir, rel string, stock map[string]bool) []SoCMatch {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".dtsi") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
+		// A tree file is scored on its own text: one that includes another is a
+		// board's file (mt8183-kukui-*.dtsi) and would tie with the SoC's it
+		// includes. Only a file from outside the tree is scored with its
+		// includes, since that is how a series adds a SoC to a mainline one.
+		if m, ok := scoreDTSI(filepath.Join(dir, e.Name()), rel+"/"+e.Name(), stock, nil); ok {
+			out = append(out, m)
 		}
-		tree := map[string]bool{}
+	}
+	return out
+}
+
+// scoreDTSI is how much of the stock register map a dtsi shares, under the name
+// file; ok is false when it shares none.
+func scoreDTSI(path, file string, stock map[string]bool, dirs []string) (SoCMatch, bool) {
+	// The SoC is the file and what it includes: a file that adds a SoC to a
+	// mainline one is scored on both.
+	tree := map[string]bool{}
+	walkDTSIClosure(path, dirs, func(_ string, b []byte) {
 		for _, m := range treeAddr.FindAllSubmatch(b, -1) {
 			tree[strings.TrimLeft(strings.ToLower(string(m[1])), "0")] = true
 		}
-		shared := 0
-		for a := range stock {
-			if tree[a] {
-				shared++
-			}
+	})
+	if len(tree) == 0 {
+		return SoCMatch{}, false
+	}
+	shared := 0
+	for a := range stock {
+		if tree[a] {
+			shared++
 		}
-		if shared == 0 {
+	}
+	if shared == 0 {
+		return SoCMatch{}, false
+	}
+	return SoCMatch{File: file, Shared: shared, Stock: len(stock), Tree: len(tree),
+		Score: float64(shared) / float64(len(stock)+len(tree)-shared)}, true
+}
+
+// FindExtraSoCDTSI scores dtsi files from outside the kernel tree the same way:
+// each path is a file, or a directory searched for .dtsi files (a checkout of a
+// patch series, a vendor or distribution kernel fork). Their File is the
+// absolute path, which the rest of the port reads as "not in the tree".
+func FindExtraSoCDTSI(tree string, paths []string, stock map[string]bool) ([]SoCMatch, error) {
+	var out []SoCMatch
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, err
+		}
+		fi, err := os.Stat(abs)
+		if err != nil {
+			return nil, err
+		}
+		if !fi.IsDir() {
+			if m, ok := scoreDTSI(abs, abs, stock, socDirs(tree, abs)); ok {
+				out = append(out, m)
+			}
 			continue
 		}
-		out = append(out, SoCMatch{File: rel + "/" + e.Name(),
-			Shared: shared, Stock: len(stock), Tree: len(tree),
-			Score: float64(shared) / float64(len(stock)+len(tree)-shared)})
+		filepath.WalkDir(abs, func(f string, e fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if e.IsDir() && (e.Name() == ".git" || e.Name() == "Documentation") {
+				return filepath.SkipDir
+			}
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".dtsi") {
+				if m, ok := scoreDTSI(f, f, stock, socDirs(tree, f)); ok {
+					out = append(out, m)
+				}
+			}
+			return nil
+		})
 	}
+	return out, nil
+}
+
+// MergeSoCMatches puts matches from several sources in one ranking, best first.
+func MergeSoCMatches(lists ...[]SoCMatch) []SoCMatch {
+	var out []SoCMatch
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].File < out[j].File
+	})
 	return out
 }
 
@@ -202,12 +270,12 @@ func BusLabels(dt DT, dtsi string) map[string]string {
 }
 
 // SoCReport is the report section for the ranked dtsi matches.
-func SoCReport(tree string, ms []SoCMatch) string {
+func SoCReport(tree string, ms []SoCMatch, soc string) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("\n## SoC device tree (%s)\n", tree)
 	if len(ms) == 0 {
-		w("No SoC dtsi in the tree shares a register address with the stock base device tree.")
+		w("No SoC dtsi in the tree shares a register address with the stock base device tree. If the SoC has support outside the tree (a patch series, a vendor or distribution kernel fork), pass its dtsi with `--soc-dtsi`.")
 		return b.String()
 	}
 	w("Ranked by the share of the stock base device tree's register addresses (the SoC's fingerprint). The best is the include; a close runner-up is often the SoC family a board also lists as a fallback compatible.\n")
@@ -217,9 +285,37 @@ func SoCReport(tree string, ms []SoCMatch) string {
 		if i == 4 {
 			break
 		}
-		w("| %s | %d | %d | %d | %.2f |", m.File, m.Shared, m.Stock, m.Tree, m.Score)
+		name := m.File
+		if filepath.IsAbs(m.File) {
+			name = "(out of tree) " + m.File
+		}
+		w("| %s | %d | %d | %d | %.2f |", name, m.Shared, m.Stock, m.Tree, m.Score)
+	}
+	if model := socModel(soc); model != "" && !dtsiMentions(tree, ms[0].File, model) {
+		w("\n`%s` is the closest register map available, but nothing in it names `%s`: it may be a related SoC and not this one. A recent SoC often has support in a patch series or a vendor or distribution kernel fork that is not in this tree; if you have its dtsi, pass it with `--soc-dtsi` and it is ranked with the tree's.", filepath.Base(ms[0].File), soc)
 	}
 	return b.String()
+}
+
+// socModel is the part of the base tree's SoC compatible after the vendor
+// ("mt6768" from "mediatek,MT6768"), lower case.
+func socModel(compatible string) string {
+	_, m, ok := strings.Cut(compatible, ",")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(m)
+}
+
+// dtsiMentions says whether the dtsi, or a file it includes, contains the word.
+func dtsiMentions(tree, file, word string) bool {
+	found := false
+	walkDTSIClosure(SoCFile(tree, file), socDirs(tree, file), func(_ string, b []byte) {
+		if strings.Contains(strings.ToLower(string(b)), word) {
+			found = true
+		}
+	})
+	return found
 }
 
 // appendSoCNode adds n unless a node at its address is already there.
