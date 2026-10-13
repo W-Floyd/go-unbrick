@@ -69,8 +69,11 @@ func fragmentTargets(o *fdt.Node) map[string]string {
 
 // overlayParts finds the board's parts in an overlay: compatible-bearing nodes
 // on an external bus, or whose compatible names a third-party vendor. SoC
-// blocks and the OEM's own glue drivers are not parts.
-func overlayParts(o *fdt.Node) []rawPart {
+// blocks and the OEM's own glue drivers are not parts: that is the compatibles
+// of the SoC's own vendor (socVendor, the prefix of the base tree's compatible:
+// "qcom", "mediatek"), the glue vendors, and generic bindings with no vendor
+// prefix at all ("fixed-factor-clock"), unless they sit on an I2C or SPI bus.
+func overlayParts(o *fdt.Node, socVendor string) []rawPart {
 	targets := fragmentTargets(o)
 	fix := fixupLabels(o)
 	var out []rawPart
@@ -82,7 +85,10 @@ func overlayParts(o *fdt.Node) []rawPart {
 		bus := targets[frag.Name]
 		ov.Walk(func(p string, n *fdt.Node) {
 			for _, c := range n.Strs("compatible") {
-				if externalBus(bus) || (strings.Contains(c, ",") || strings.Contains(c, "-")) && !glueVendor.MatchString(c) {
+				vendor, _, hasVendor := strings.Cut(c, ",")
+				ownVendor := socVendor != "" && strings.EqualFold(vendor, socVendor)
+				if externalBus(bus) && !strings.Contains(strings.ToLower(bus), "reserved") ||
+					hasVendor && !ownVendor && !glueVendor.MatchString(c) && !strings.Contains(strings.ToLower(bus), "reserved") {
 					labels := map[string]string{}
 					for _, k := range n.Keys {
 						if l, ok := fix[frag.Name+"/"+p+":"+k]; ok {

@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/fdt"
@@ -199,7 +200,8 @@ func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt
 				panels[p.Name] = &p
 			}
 		}
-		for _, rp := range overlayParts(o) {
+		socVendor, _, _ := strings.Cut(dt.SoC, ",")
+		for _, rp := range overlayParts(o, socVendor) {
 			if seen[rp.Compatible] {
 				continue
 			}

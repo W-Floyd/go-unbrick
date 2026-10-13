@@ -44,7 +44,7 @@ func TestFragmentTargets(t *testing.T) {
 
 func TestOverlayPartsKeepsBusDevicesAndThirdParties(t *testing.T) {
 	var got []string
-	for _, p := range overlayParts(overlay()) {
+	for _, p := range overlayParts(overlay(), "qcom") {
 		got = append(got, p.Compatible+"@"+p.Bus)
 	}
 	want := map[string]bool{
@@ -81,5 +81,41 @@ func TestFirmwareNamesFromAnyVendorSpelling(t *testing.T) {
 	}
 	if have["not-firmware"] {
 		t.Error("a property that is not a firmware name was taken")
+	}
+}
+
+// A MediaTek-style overlay: the SoC vendor's own platform nodes (LEDs, vibrator,
+// reserved memory), a generic binding, and a third-party chip, plus a camera
+// slot on an I2C bus that carries the SoC vendor's own prefix.
+func TestOverlayPartsDropsTheSoCVendorsOwnNodesAndGenericBindings(t *testing.T) {
+	frag := func(n string, children ...*fdt.Node) *fdt.Node {
+		return node(n, nil, node("__overlay__", nil, children...))
+	}
+	o := node("", nil,
+		frag("fragment@1", node("lcd-backlight", map[string]string{"compatible": "mediatek,lcd-backlight\x00"})),
+		frag("fragment@2", node("scp-share", map[string]string{"compatible": "mediatek,reserve-memory-scp_share\x00"})),
+		frag("fragment@3", node("bi_tcxo", map[string]string{"compatible": "fixed-factor-clock\x00"})),
+		frag("fragment@4", node("sgm41511@6b", map[string]string{"compatible": "sgm,sgm41511\x00"})),
+		frag("fragment@5", node("camera_main@20", map[string]string{"compatible": "mediatek,camera_main\x00"})),
+		node("__fixups__", map[string]string{
+			"odm":             "/fragment@1:target:0\x00",
+			"reserved_memory": "/fragment@2:target:0\x00",
+			"soc":             "/fragment@3:target:0\x00",
+			"i2c0":            "/fragment@4:target:0\x00",
+			"i2c2":            "/fragment@5:target:0\x00",
+		}),
+	)
+	var got []string
+	for _, p := range overlayParts(o, "mediatek") {
+		got = append(got, p.Compatible+"@"+p.Bus)
+	}
+	want := map[string]bool{"sgm,sgm41511@i2c0": true, "mediatek,camera_main@i2c2": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected part %s", g)
+		}
 	}
 }
