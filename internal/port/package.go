@@ -57,6 +57,9 @@ type Package struct {
 	// SoCLabels are the labels that dtsi (with its includes) defines; a board
 	// file can only refer to those. nil when there was no tree to read.
 	SoCLabels map[string]bool
+	// ConfigDiff is the stock kernel config against the tree's Kconfig; nil
+	// without a tree or a stock config.
+	ConfigDiff *ConfigDiff
 	// SoCFacts are what the dtsi says a board must provide and how its
 	// interrupt controllers take cells.
 	SoCFacts SoCDTSIFacts

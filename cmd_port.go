@@ -79,6 +79,10 @@ for a package that ships it as sparse chunks takes about half a minute.
 					return fmt.Errorf("--kernel-tree: %w", err)
 				}
 				pkg.KernelTree = kernelTree
+				if pkg.KernelConfig != nil {
+					d := port.CompareConfig(pkg.KernelConfig, port.KconfigSymbols(kernelTree))
+					pkg.ConfigDiff = &d
+				}
 				if ms, err := port.FindSoCDTSI(kernelTree, pkg.DT.UnitAddrs); err == nil {
 					pkg.SoC = ms
 					if len(ms) > 0 {
@@ -129,6 +133,11 @@ for a package that ships it as sparse chunks takes about half a minute.
 			bundle.Notes = append(bundle.Notes, ucmNotes...)
 			if pkg.KernelConfig != nil {
 				files["kernel/stock.config"] = []byte(port.ConfigText(pkg.KernelConfig))
+			}
+			if d := pkg.ConfigDiff; d != nil {
+				files["kernel/stock.fragment"] = []byte(d.Fragment)
+				files["kernel/stock-missing.txt"] = []byte(strings.Join(d.Missing, "\n") + "\n")
+				bundle.Report = append(bundle.Report, port.ConfigDiffSection(d, pkg.KernelTree))
 			}
 			bundle.Report = append(bundle.Report, port.PanelSection(drivers, refPanel.String()))
 			if len(referenceDTS) > 0 {
