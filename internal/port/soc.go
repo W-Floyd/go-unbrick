@@ -81,15 +81,38 @@ type SoCMatch struct {
 var treeAddr = regexp.MustCompile(`@([0-9a-fA-F]{5,})\s*\{`)
 
 // FindSoCDTSI ranks the SoC device-tree includes in a kernel tree's
-// arch/arm64/boot/dts/qcom by how much of the stock base DTB's register map
-// they share. No table of SoC names is involved: a SoC is its register map,
-// and the closest dtsi is the one to include (the runner-up is usually the
-// family fallback compatible). Matches with nothing in common are dropped.
+// arch/arm64/boot/dts (every vendor directory) by how much of the stock base
+// DTB's register map they share. No table of SoC names or vendors is involved:
+// a SoC is its register map, and the closest dtsi is the one to include (the
+// runner-up is usually the family fallback compatible). Matches with nothing in
+// common are dropped.
 func FindSoCDTSI(root string, stock map[string]bool) ([]SoCMatch, error) {
-	dir := filepath.Join(root, "arch", "arm64", "boot", "dts", "qcom")
+	base := filepath.Join(root, "arch", "arm64", "boot", "dts")
+	vendors, err := os.ReadDir(base)
+	if err != nil {
+		return nil, &fs.PathError{Op: "read", Path: base, Err: err}
+	}
+	var out []SoCMatch
+	for _, v := range vendors {
+		if !v.IsDir() {
+			continue
+		}
+		out = append(out, matchDir(filepath.Join(base, v.Name()), "arch/arm64/boot/dts/"+v.Name(), stock)...)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].File < out[j].File
+	})
+	return out, nil
+}
+
+// matchDir scores each dtsi directly in dir; rel is dir within the tree.
+func matchDir(dir, rel string, stock map[string]bool) []SoCMatch {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, &fs.PathError{Op: "read", Path: dir, Err: err}
+		return nil
 	}
 	var out []SoCMatch
 	for _, e := range ents {
@@ -113,17 +136,11 @@ func FindSoCDTSI(root string, stock map[string]bool) ([]SoCMatch, error) {
 		if shared == 0 {
 			continue
 		}
-		out = append(out, SoCMatch{File: filepath.ToSlash(filepath.Join("arch/arm64/boot/dts/qcom", e.Name())),
+		out = append(out, SoCMatch{File: rel + "/" + e.Name(),
 			Shared: shared, Stock: len(stock), Tree: len(tree),
 			Score: float64(shared) / float64(len(stock)+len(tree)-shared)})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Score != out[j].Score {
-			return out[i].Score > out[j].Score
-		}
-		return out[i].File < out[j].File
-	})
-	return out, nil
+	return out
 }
 
 // BusLabels maps each stock serial-engine bus label to the label a mainline

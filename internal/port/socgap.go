@@ -44,7 +44,7 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 	if len(p.SoC) == 0 || len(p.DT.SoCNodes) == 0 {
 		return nil
 	}
-	dir := filepath.Join(tree, "arch", "arm64", "boot", "dts", "qcom")
+	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(p.SoC[0].File))) // the matched dtsi's vendor directory
 	g := &SoCGap{Include: p.SoC[0].File, Stock: len(p.DT.SoCNodes)}
 
 	// The include's closure: the dtsi and the .dtsi files it pulls in.

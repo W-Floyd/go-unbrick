@@ -92,7 +92,10 @@ for a package that ships it as sparse chunks takes about half a minute.
 			}
 			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog(), Blob: blob})
 			if err != nil {
-				return err
+				// What the package says about the hardware is worth having even
+				// when its packaging cannot be drafted (no name to give it).
+				bundle = &port.Bundle{Files: map[string][]byte{}}
+				bundle.Notes = append(bundle.Notes, fmt.Sprintf("%v; writing the hardware report without %s packaging", err, em.Title()))
 			}
 			files := bundle.Files
 			dts, dtsNotes := port.PeripheralDTS(pkg)
@@ -275,8 +278,20 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 	root = root.withSuper(super)
 
 	var base, overlays []*fdt.Node
-	if dtb, err := bytesOf(bootImg + "/dtb"); err == nil {
-		for _, d := range fdt.Split(dtb) {
+	if n, err := root.Walk(bootImg + "/dtb"); err == nil {
+		// A raw DTB (or several), or an Android dtbo table of them (MediaTek's
+		// boot image holds one, whose entries are the trees).
+		blobs := [][]byte{}
+		if kind, kids, _ := n.Children(); kind == "dtbo" {
+			for _, k := range kids {
+				if b, err := k.Bytes(); err == nil {
+					blobs = append(blobs, b)
+				}
+			}
+		} else if b, err := n.Bytes(); err == nil {
+			blobs = fdt.Split(b)
+		}
+		for _, d := range blobs {
 			if n, err := fdt.Parse(d); err == nil {
 				base = append(base, n)
 			}

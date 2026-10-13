@@ -295,6 +295,9 @@ func sharedPins(p Package, pt Part, uses []PinUse) []string {
 // BoardName is the file stem of the board's device tree: "motorola-fogona".
 func BoardName(p Package) string {
 	brand, code, _ := p.Identity()
+	if brand == "" || code == "" {
+		return "board" // the package gave no name: the files still need one
+	}
 	return strings.ToLower(brand) + "-" + code
 }
 
