@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -109,8 +110,25 @@ func (n *Node) Reader() (io.ReadCloser, error) {
 }
 
 // ReaderAt reads the node at random, buffering one that can only be streamed.
+// One too big for memory is unpacked to a temporary file when the run asked to
+// download inputs whole (infile.FullDownload): a compressed archive member
+// cannot be read by range, and a filesystem inside it needs random access.
 func (n *Node) ReaderAt() (io.ReaderAt, error) {
 	if n.at != nil {
+		return n.at, nil
+	}
+	if n.Size > MaxBuffer && infile.FullDownload {
+		progress("unpacking %s (%d MiB) to a temporary file in %s", n.Name, n.Size>>20, os.TempDir())
+		f, err := spool(n)
+		if err != nil {
+			return nil, err
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		n.at, n.Size = f, fi.Size()
 		return n.at, nil
 	}
 	b, err := n.Bytes()
