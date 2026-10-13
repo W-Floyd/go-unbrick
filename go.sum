@@ -1,7 +1,3 @@
-github.com/W-Floyd/erofs v0.8.1-0.20260927073817-50e85943087e h1:P+tNcNfEAtc69n4qRPZGosbLhLkbodkkJMRWEd/S1aU=
-github.com/W-Floyd/erofs v0.8.1-0.20260927073817-50e85943087e/go.mod h1:MXt561dV9n8r1ZOv9GmrLK3Tgi5sMFn3LGDahOiRqpM=
-github.com/W-Floyd/erofs v0.8.1-0.20261011235821-423f37db1349 h1:dbEkpd9Gf1UyZOQthALL2NhHJyJ33OOl0L9yALxC0nQ=
-github.com/W-Floyd/erofs v0.8.1-0.20261011235821-423f37db1349/go.mod h1:MXt561dV9n8r1ZOv9GmrLK3Tgi5sMFn3LGDahOiRqpM=
 github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76 h1:2sdGiMApn3lM4/9JFxzereqhFmWBfyKAavnzghwJQR8=
 github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76/go.mod h1:MXt561dV9n8r1ZOv9GmrLK3Tgi5sMFn3LGDahOiRqpM=
 github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf h1:NMcNq+Ns11chjyENI7PNrujHpgmrsS5hRrS6bP+ihNA=

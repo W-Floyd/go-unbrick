@@ -28,7 +28,8 @@ import (
 
 // MaxBuffer bounds what is held in memory for a node that can only be
 // streamed but must be read at random, or whose format is parsed from bytes.
-var MaxBuffer int64 = 1 << 30
+// It is half the memory available when the program starts (see membuf.go).
+var MaxBuffer = defaultMaxBuffer()
 
 // headLen is how much of a node expanders match on.
 const headLen = 64 << 10
