@@ -14,7 +14,14 @@ func Report(p Package, unknown []string, extra ...string) string {
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 
 	w("# Hardware from the stock package\n")
-	w("SoC `%s` (msm-id %s); overlay model `%s`, compatible `%s`.", p.DT.SoC, ids(p.DT.MSMIDs), p.DT.Model, strings.Join(p.DT.Compat, "`, `"))
+	soc := "SoC `" + p.DT.SoC + "`"
+	if len(p.DT.MSMIDs) > 0 {
+		soc += " (msm-id " + ids(p.DT.MSMIDs) + ")"
+	}
+	if p.DT.Model != "" || len(p.DT.Compat) > 0 {
+		soc += fmt.Sprintf("; overlay model `%s`, compatible `%s`", p.DT.Model, strings.Join(p.DT.Compat, "`, `"))
+	}
+	w("%s.", soc)
 	if p.Kernel != "" {
 		w("Stock kernel %s, %d vendor modules.", p.Kernel, len(p.Modules))
 	}

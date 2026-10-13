@@ -28,7 +28,11 @@ func Deviceinfo(p port.Package, loader bool) []Line {
 	set("manufacturer", port.TitleWords(brand), "vendor build.prop")
 	set("codename", strings.ToLower(brand)+"-"+code, "vendor build.prop")
 	todo("year", "not recorded in a package")
-	todo("dtb", "upstream name; stock overlays are `"+strings.Join(p.DT.Compat, ", ")+"`, base `"+p.DT.SoC+"`")
+	stock := "base `" + p.DT.SoC + "`"
+	if len(p.DT.Compat) > 0 {
+		stock = "stock overlays are `" + strings.Join(p.DT.Compat, ", ") + "`, " + stock
+	}
+	todo("dtb", "upstream name; "+stock)
 	if abis := port.FirstProp(p.Props, "ro.vendor.product.cpu.abilist64", "ro.product.cpu.abilist64"); strings.HasPrefix(abis, "arm64") {
 		set("arch", "aarch64", "vendor build.prop 64-bit abi")
 	} else {

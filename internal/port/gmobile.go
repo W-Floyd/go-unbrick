@@ -236,6 +236,9 @@ func (p Package) Gmobile() (file string, g Gmobile, notes []string, ok bool) {
 	if p.Display == nil {
 		return "", g, []string{"Android display resources were not read"}, false
 	}
+	if len(p.DT.Panels) == 0 {
+		return "", g, []string{"no gmobile file: the device tree declares no panel (its panel size is not in the package)"}, false
+	}
 	w, h, same := CommonResolution(p.DT.Panels)
 	if !same {
 		return "", g, []string{"no single panel resolution: " + PanelSizes(p.DT.Panels)}, false
