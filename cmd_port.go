@@ -190,7 +190,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	c.Flags().BoolVar(&checkDTS, "check-dts", false, "after writing with -o, compile the board dts against --kernel-tree with the C preprocessor and dtc, and report what the board adds over the bare SoC dtsi (needs clang or gcc, and dtc)")
 	c.Flags().BoolVar(&live, "live", false, "ask an attached device over adb which of the board's variant parts are fitted, and draft only those")
 	c.Flags().StringVar(&serial, "serial", "", "adb serial for --live when more than one device is attached")
-	c.Flags().StringSliceVar(&kernelTrees, "kernel-tree", nil, "a kernel source tree: a directory, or a git URL (\"https://…/linux#branch\", fetched shallowly into the cache). Repeat for several: the one whose SoC dtsi best matches the stock device tree is the port's target, and the others are searched for drivers it lacks")
+	c.Flags().StringSliceVar(&kernelTrees, "kernel-tree", nil, "a kernel source tree: a directory, or a git URL (\"https://…/linux#branch\", fetched shallowly into one shared cache repository). Repeat for several: the one whose SoC dtsi best matches the stock device tree is the port's target, and the others are searched for drivers it lacks")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
 	return addFullDownload(c)
 }

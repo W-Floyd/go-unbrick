@@ -147,12 +147,99 @@ func TestEnsureReportsAnUnreachableSource(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "fetching") {
 		t.Errorf("err = %v", err)
 	}
-	if ents, _ := os.ReadDir(cache); len(ents) > 0 {
-		for _, e := range ents {
-			if sub, _ := os.ReadDir(filepath.Join(cache, e.Name())); len(sub) > 0 {
-				t.Errorf("a failed fetch left %s in the cache", e.Name())
-			}
+	// The shared repository stays (empty); no tree directory is left behind.
+	ents, _ := os.ReadDir(cache)
+	for _, e := range ents {
+		if e.Name() != "kernels.git" {
+			t.Errorf("a failed fetch left %s in the cache", e.Name())
 		}
+	}
+}
+
+// commitFiles makes a git repository with the git binary (a second one can start
+// as a copy of the first), so a test controls what two sources share.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.org", "-c", "commit.gpgsign=false"}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func objectCount(t *testing.T, repo string) int {
+	t.Helper()
+	out, err := exec.Command("git", "--git-dir", repo, "rev-list", "--objects", "--all").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(strings.Split(strings.TrimSpace(string(out)), "\n"))
+}
+
+// A fork that is mostly its upstream costs a few objects, not a second
+// snapshot, when both are fetched into the one shared repository by git.
+func TestSourcesShareObjectsInOneRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	upstream := t.TempDir()
+	gitIn(t, upstream, "init", "-q", "-b", "main")
+	for i := 0; i < 60; i++ {
+		p := filepath.Join(upstream, "arch/arm64/boot/dts/x", string(rune('a'+i%26))+string(rune('a'+i/26))+".dtsi")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(strings.Repeat("node@"+string(rune('a'+i%26))+" {};\n", 20)+string(rune('0'+i%10))), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitIn(t, upstream, "add", "-A")
+	gitIn(t, upstream, "commit", "-q", "-m", "base")
+	fork := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", upstream, fork).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(fork, "arch/arm64/boot/dts/x/new.dtsi"), []byte("/ { added {}; };\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, fork, "add", "-A")
+	gitIn(t, fork, "commit", "-q", "-m", "fork")
+
+	cache := t.TempDir()
+	if _, err := Ensure(Source{URL: "file://" + upstream}, cache, DTS, nil); err != nil {
+		t.Fatal(err)
+	}
+	alone := objectCount(t, repoDir(cache))
+	tree, err := Ensure(Source{URL: "file://" + fork}, cache, DTS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := objectCount(t, repoDir(cache))
+	if both-alone > 8 {
+		t.Errorf("the fork added %d objects to the %d already there: it should cost its own commit, tree and new file", both-alone, alone)
+	}
+	if _, err := os.Stat(filepath.Join(tree, "arch/arm64/boot/dts/x/new.dtsi")); err != nil {
+		t.Errorf("the fork's own file is missing: %v", err)
+	}
+}
+
+// With the git binary off the fetch falls back to go-git: the same trees, no
+// sharing.
+func TestFetchFallsBackToGoGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is needed for go-git's file transport")
+	}
+	src := makeRepo(t, map[string]string{
+		"arch/arm64/boot/dts/mediatek/mt6768.dtsi": "/ { soc { i2c@11007000 {}; }; };\n",
+	})
+	old := useCLI
+	useCLI = false
+	t.Cleanup(func() { useCLI = old })
+	tree, err := Ensure(Source{URL: "file://" + src}, t.TempDir(), DTS, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(tree, "arch/arm64/boot/dts/mediatek/mt6768.dtsi")); err != nil {
+		t.Errorf("go-git fetch: %v", err)
 	}
 }
 
