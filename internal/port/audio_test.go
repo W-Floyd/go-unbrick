@@ -84,11 +84,57 @@ func TestReadAudioPairsMixerAndPlatformFiles(t *testing.T) {
 	if plain.Interfaces["SND_DEVICE_OUT_SPEAKER"] != "WSA_CDC_DMA_RX_0" {
 		t.Errorf("platform file for the plain mixer: %v", plain.Interfaces)
 	}
-	sec := AudioSection(a)
+	sec := AudioSection(Package{Audio: a})
 	if !strings.Contains(sec, "| speaker | WSA_CDC_DMA_RX_0 | `aw_dev_0_switch=Enable`") {
 		t.Errorf("section:\n%s", sec)
 	}
 	if ReadAudio([]string{"etc/other.xml"}, read) != nil {
 		t.Error("no mixer file should give nil")
+	}
+}
+
+func TestChosenAudioFollowsTheLiveDevice(t *testing.T) {
+	mk := func(names ...string) *Audio {
+		var a Audio
+		for _, n := range names {
+			a.Files = append(a.Files, AudioFile{Name: n})
+		}
+		return &a
+	}
+	a := mk("etc/mixer_paths.xml", "etc/mixer_paths_qrd.xml", "etc/mixer_paths_scubaidp.xml")
+
+	if f, why := (Package{Audio: a}).ChosenAudio(); f.Name != "etc/mixer_paths.xml" || why != "" {
+		t.Errorf("no live data: %s %q", f.Name, why)
+	}
+	// One file installed on the device settles it.
+	p := Package{Audio: a, Live: &Live{MixerFiles: []string{"mixer_paths_qrd.xml"}}}
+	if f, why := p.ChosenAudio(); f.Name != "etc/mixer_paths_qrd.xml" || why == "" {
+		t.Errorf("installed: %s %q", f.Name, why)
+	}
+	// All installed: the sound card's id picks one.
+	p.Live = &Live{
+		MixerFiles: []string{"mixer_paths.xml", "mixer_paths_qrd.xml", "mixer_paths_scubaidp.xml"},
+		SoundCards: []SoundCard{{Name: "card0", ID: "bengal-scubaidp-snd-card"}},
+	}
+	if f, why := p.ChosenAudio(); f.Name != "etc/mixer_paths_scubaidp.xml" || !strings.Contains(why, "bengal-scubaidp-snd-card") {
+		t.Errorf("card id: %s %q", f.Name, why)
+	}
+	// A card id that matches two files equally decides nothing.
+	p.Live.SoundCards = []SoundCard{{ID: "qrd-scubaidp"}}
+	if f, why := p.ChosenAudio(); f.Name != "etc/mixer_paths.xml" || why != "" {
+		t.Errorf("tie: %s %q", f.Name, why)
+	}
+}
+
+func TestNewLiveReadsSoundCardsAndMixerFiles(t *testing.T) {
+	l := NewLive(map[string]string{
+		"sound":       "card0\tbengal-snd-card\t../../devices/platform/soc/soc:spf_core_platform/sound/card0\n",
+		"mixer-files": "/vendor/etc/mixer_paths_bengal_idp.xml\n",
+	}, "")
+	if len(l.SoundCards) != 1 || l.SoundCards[0].ID != "bengal-snd-card" || l.SoundCards[0].Device != "card0" {
+		t.Errorf("cards: %+v", l.SoundCards)
+	}
+	if len(l.MixerFiles) != 1 || l.MixerFiles[0] != "mixer_paths_bengal_idp.xml" {
+		t.Errorf("mixer files: %v", l.MixerFiles)
 	}
 }

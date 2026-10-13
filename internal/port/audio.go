@@ -194,22 +194,94 @@ func ReadAudio(files []string, read func(name string) ([]byte, error)) *Audio {
 	return &a
 }
 
+// ChosenAudio is the mixer file this board uses, and what says so: of the
+// package's files, those installed on the live device, then the one whose name
+// shares the most words with the sound card's id (a card "bengal-scubaidp-snd-
+// card" takes mixer_paths_scubaidp.xml). With no live device, or no evidence,
+// it is the shared mixer_paths.xml, or the first file, and why is empty.
+func (p Package) ChosenAudio() (f AudioFile, why string) {
+	a := p.Audio
+	cands := a.Files
+	if p.Live != nil && len(p.Live.MixerFiles) > 0 {
+		var installed []AudioFile
+		for _, af := range cands {
+			for _, name := range p.Live.MixerFiles {
+				if strings.HasSuffix(af.Name, "/"+name) {
+					installed = append(installed, af)
+				}
+			}
+		}
+		switch len(installed) {
+		case 0:
+		case 1:
+			return installed[0], "the only mixer file installed on the device"
+		default:
+			cands = installed
+		}
+	}
+	if p.Live != nil {
+		for _, c := range p.Live.SoundCards {
+			if best, ok := bestByWords(cands, c.ID); ok && c.ID != "" {
+				return best, fmt.Sprintf("its name matches the device's sound card %q", c.ID)
+			}
+		}
+	}
+	for _, af := range cands {
+		if af.Name == "etc/mixer_paths.xml" {
+			return af, ""
+		}
+	}
+	return cands[0], ""
+}
+
+// bestByWords is the file whose name shares the most words with id, if one
+// does uniquely.
+func bestByWords(files []AudioFile, id string) (AudioFile, bool) {
+	words := func(s string) map[string]bool {
+		m := map[string]bool{}
+		for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return r == '-' || r == '_' || r == '.' || r == '/' }) {
+			if w != "snd" && w != "card" && w != "mixer" && w != "paths" && w != "xml" && w != "etc" {
+				m[w] = true
+			}
+		}
+		return m
+	}
+	have := words(id)
+	var best AudioFile
+	bestN, tie := 0, false
+	for _, f := range files {
+		n := 0
+		for w := range words(f.Name) {
+			if have[w] {
+				n++
+			}
+		}
+		switch {
+		case n > bestN:
+			best, bestN, tie = f, n, false
+		case n == bestN && n > 0:
+			tie = true
+		}
+	}
+	return best, bestN > 0 && !tie
+}
+
 // AudioSection is the report's account of the audio routing.
-func AudioSection(a *Audio) string {
+func AudioSection(p Package) string {
+	a := p.Audio
 	if a == nil {
 		return ""
 	}
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("\n## Audio routing\n")
-	w("What the stock audio HAL does to bring up each use: the DAI from `audio_platform_info`, and the controls its `mixer_paths` path sets. The package carries %d mixer file(s); which one a unit uses follows its sound card's name, which a running device reports (`/proc/asound/cards`) and the package does not.\n", len(a.Files))
-	first := a.Files[0]
-	for _, f := range a.Files {
-		if f.Name == "etc/mixer_paths.xml" {
-			first = f
-		}
+	w("What the stock audio HAL does to bring up each use: the DAI from `audio_platform_info`, and the controls its `mixer_paths` path sets. The package carries %d mixer file(s); which one a unit uses follows its sound card's name, which only a running device reports (`--live`).\n", len(a.Files))
+	first, why := p.ChosenAudio()
+	if why != "" {
+		w("From `%s` (%s):\n", first.Name, why)
+	} else {
+		w("From `%s`:\n", first.Name)
 	}
-	w("From `%s`:\n", first.Name)
 	w("| use | DAI | controls |")
 	w("|---|---|---|")
 	for _, d := range audioDevices {

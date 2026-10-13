@@ -60,6 +60,15 @@ for i in $d/qcom_socinfo/*/; do
 	printf "%s\t%s\t%s\t%s\n" "$(basename "$i")" "$(cat "$i/name")" "$(cat "$i/variant")" "$(cat "$i/oem")"
 done
 [ -n "$m" ] && umount $d' 2>/dev/null
+u sound
+for c in /sys/class/sound/card*; do
+	[ -e "$c" ] || continue
+	id=$(cat "$c/id" 2>/dev/null </dev/null)
+	[ -z "$id" ] && id=$(asroot "cat $c/id" 2>/dev/null)
+	printf '%s\t%s\t%s\n' "${c##*/}" "$id" "$(readlink "$c" 2>/dev/null)"
+done
+u mixer-files
+ls /vendor/etc/mixer_paths*.xml 2>/dev/null </dev/null
 u chosen
 asroot 'for f in /sys/firmware/devicetree/base/chosen/*; do
 	[ -f "$f" ] || continue

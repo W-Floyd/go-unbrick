@@ -115,7 +115,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 				refPanel.Write(b)
 				refPanel.WriteString("\n")
 			}
-			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras), port.AudioSection(pkg.Audio))
+			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras), port.AudioSection(pkg))
 			if pkg.KernelConfig != nil {
 				files["kernel/stock.config"] = []byte(port.ConfigText(pkg.KernelConfig))
 			}

@@ -31,8 +31,16 @@ type Live struct {
 	Chosen     map[string]string // printable properties of /chosen in the live tree
 	Cmdline    string
 	HaveChosen bool
+	// SoundCards are the ALSA cards: name, the card's id when readable (root),
+	// and the platform device it hangs off. MixerFiles are the mixer_paths files
+	// installed on the device, by base name.
+	SoundCards []SoundCard
+	MixerFiles []string
 	Notes      []string // what could not be asked, and why
 }
+
+// SoundCard is one /sys/class/sound/card*.
+type SoundCard struct{ Name, ID, Device string }
 
 // NewLive reads a recon collection's sections. A section that came back empty
 // is a note, not an error: an unrooted shell still lists devices but cannot
@@ -49,6 +57,14 @@ func NewLive(sections map[string]string, cmdline string) *Live {
 	}
 	if l.HaveChosen = len(l.Chosen) > 0; !l.HaveChosen {
 		l.Notes = append(l.Notes, "/chosen was not read (it needs root): the panel and the parts a vendor selects by it are not resolved")
+	}
+	for _, line := range strings.Split(sections["sound"], "\n") {
+		if f := strings.Split(strings.TrimRight(line, "\r"), "\t"); len(f) == 3 && f[0] != "" {
+			l.SoundCards = append(l.SoundCards, SoundCard{Name: f[0], ID: f[1], Device: path.Base(f[2])})
+		}
+	}
+	for _, line := range strings.Fields(sections["mixer-files"]) {
+		l.MixerFiles = append(l.MixerFiles, path.Base(line))
 	}
 	return l
 }
