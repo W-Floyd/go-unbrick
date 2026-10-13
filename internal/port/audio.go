@@ -18,6 +18,9 @@ import (
 // paths it pulls in by name.
 type MixerPaths struct {
 	Paths map[string]MixerPath
+	// Initial are the settings outside any path: the state the HAL puts the
+	// mixer in when it opens the card, so what a path's controls go back to.
+	Initial []MixerCtl
 }
 
 // MixerPath is one <path>.
@@ -64,10 +67,13 @@ func ParseMixerPaths(b []byte) (*MixerPaths, error) {
 				}
 				stack = append(stack, name)
 			case "ctl":
+				c := MixerCtl{attr(t, "name"), attr(t, "id"), attr(t, "value")}
 				if n := len(stack); n > 0 {
 					p := mp.Paths[stack[n-1]]
-					p.Ctls = append(p.Ctls, MixerCtl{attr(t, "name"), attr(t, "id"), attr(t, "value")})
+					p.Ctls = append(p.Ctls, c)
 					mp.Paths[stack[n-1]] = p
+				} else {
+					mp.Initial = append(mp.Initial, c)
 				}
 			}
 		case xml.EndElement:
