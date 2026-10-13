@@ -16,6 +16,7 @@ import (
 type CheckResult struct {
 	Errors         []string // dtc errors in the board build
 	BaselineErrors int      // errors the bare SoC dtsi has by itself (labels it leaves to the board)
+	Unresolved     []string // of those, the ones the board still has: it does not compile yet
 	Added          []string // warnings the board adds over the bare SoC dtsi
 }
 
@@ -100,6 +101,9 @@ func CheckDTS(tree, dtsPath, socFile string) (CheckResult, error) {
 	for l := range norm(full) {
 		switch {
 		case baseSet[l]:
+			if isErr(l) {
+				r.Unresolved = append(r.Unresolved, l)
+			}
 		case isErr(l):
 			r.Errors = append(r.Errors, l)
 		default:
@@ -107,6 +111,7 @@ func CheckDTS(tree, dtsPath, socFile string) (CheckResult, error) {
 		}
 	}
 	sort.Strings(r.Errors)
+	sort.Strings(r.Unresolved)
 	sort.Strings(r.Added)
 	return r, nil
 }
@@ -131,8 +136,14 @@ func (r CheckResult) Summary() []string {
 	default:
 		out = append(out, fmt.Sprintf("dts check: the board adds no errors over the SoC dtsi, and %d warnings", len(r.Added)))
 	}
-	if r.BaselineErrors > 0 {
-		out = append(out, fmt.Sprintf("dts check: the SoC dtsi alone has %d errors (labels it leaves to the board): only what the board adds could be compared", r.BaselineErrors))
+	switch {
+	case len(r.Unresolved) > 0:
+		out = append(out, fmt.Sprintf("dts check: the board does not compile yet: %d of the SoC dtsi's %d errors (labels it leaves to the board) remain", len(r.Unresolved), r.BaselineErrors))
+		for _, e := range firstN(r.Unresolved, 4) {
+			out = append(out, "  "+e)
+		}
+	case r.BaselineErrors > 0:
+		out = append(out, fmt.Sprintf("dts check: the board resolves all %d errors the SoC dtsi has alone (labels it leaves to the board)", r.BaselineErrors))
 	}
 	for _, w := range firstN(r.Added, 4) {
 		out = append(out, "  "+w)
