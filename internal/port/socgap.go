@@ -509,7 +509,7 @@ func SiblingClockDefs(tree string, ms []SoCMatch, labels []string) map[string]Cl
 		return out
 	}
 	for _, m := range ms {
-		b, err := os.ReadFile(SoCFile(tree, m.File))
+		b, err := os.ReadFile(m.Path(tree))
 		if err != nil {
 			continue
 		}

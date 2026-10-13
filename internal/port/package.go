@@ -43,7 +43,11 @@ type Package struct {
 	// KernelTree and Mainline are set when a target kernel source tree was
 	// scanned: what it supports of the board's parts, by compatible.
 	KernelTree string
-	Mainline   map[string]*MainlineDriver
+	// KernelTrees are all the trees given (KernelTree is the one chosen as the
+	// target), and TreeChoices how each fit.
+	KernelTrees []string
+	TreeChoices []TreeChoice
+	Mainline    map[string]*MainlineDriver
 	// SoC are the tree's SoC dtsi files ranked against the stock register map,
 	// best first, and BusLabels maps stock bus labels to the best one's labels
 	// (see FindSoCDTSI and BusLabels).

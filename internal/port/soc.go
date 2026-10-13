@@ -101,11 +101,29 @@ func busKind(label string) string {
 
 // SoCMatch is how well a SoC dtsi in a kernel tree fits the stock peripherals.
 type SoCMatch struct {
-	File   string  // relative to the tree
+	File   string  // relative to Root, or absolute for a file passed in by hand
+	Root   string  // the kernel tree it was found in or is read against
 	Shared int     // addresses both name
 	Stock  int     // addresses the stock base DTB has
 	Tree   int     // addresses the dtsi has
 	Score  float64 // Shared / (Stock + Tree - Shared)
+}
+
+// Path is where the match's file is, given the tree to read it against when it
+// carries none of its own.
+func (m SoCMatch) Path(tree string) string {
+	if m.Root != "" {
+		tree = m.Root
+	}
+	return SoCFile(tree, m.File)
+}
+
+// rootOr is the tree the match belongs to, or the given one.
+func (m SoCMatch) rootOr(tree string) string {
+	if m.Root != "" {
+		return m.Root
+	}
+	return tree
 }
 
 var treeAddr = regexp.MustCompile(`@([0-9a-fA-F]{5,})\s*\{`)
@@ -128,6 +146,9 @@ func FindSoCDTSI(root string, stock map[string]bool) ([]SoCMatch, error) {
 			continue
 		}
 		out = append(out, matchDir(filepath.Join(base, v.Name()), "arch/arm64/boot/dts/"+v.Name(), stock)...)
+	}
+	for i := range out {
+		out[i].Root = root
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
@@ -223,6 +244,9 @@ func FindExtraSoCDTSI(tree string, paths []string, stock map[string]bool) ([]SoC
 			return nil
 		})
 	}
+	for i := range out {
+		out[i].Root = tree // the tree whose directories its includes are read from
+	}
 	return out, nil
 }
 
@@ -281,6 +305,10 @@ func SoCReport(tree string, ms []SoCMatch, soc string) string {
 	w("Ranked by the share of the stock base device tree's register addresses (the SoC's fingerprint). The best is the include; a close runner-up is often the SoC family a board also lists as a fallback compatible.\n")
 	w("| dtsi | shared addresses | stock has | dtsi has | score |")
 	w("|---|---|---|---|---|")
+	roots := map[string]bool{}
+	for _, m := range ms {
+		roots[m.Root] = true
+	}
 	for i, m := range ms {
 		// The best few, and every file the person passed in by hand: those are
 		// shown wherever they rank.
@@ -288,6 +316,9 @@ func SoCReport(tree string, ms []SoCMatch, soc string) string {
 			continue
 		}
 		name := m.File
+		if len(roots) > 1 && m.Root != "" && !filepath.IsAbs(m.File) {
+			name = treeLabel(m.Root) + ": " + m.File // several trees: say which
+		}
 		if filepath.IsAbs(m.File) {
 			name = "(out of tree) " + m.File
 		}
@@ -391,7 +422,7 @@ func PreferNamed(tree string, ms []SoCMatch, soc string) []SoCMatch {
 	}
 	var named, rest []SoCMatch
 	for _, m := range ms {
-		if m.Shared >= minNamedShared && dtsiMentions(tree, m.File, model) {
+		if m.Shared >= minNamedShared && dtsiMentions(m.rootOr(tree), m.File, model) {
 			named = append(named, m)
 		} else {
 			rest = append(rest, m)
