@@ -448,6 +448,11 @@ func (p Package) neededLabels() string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	var clocks, left []string
+	type pool struct {
+		label string
+		r     Region
+	}
+	var pools []pool
 	for _, l := range p.SoCFacts.Needs {
 		switch _, stock := p.DT.FixedClocks[l]; {
 		case stock:
@@ -455,8 +460,29 @@ func (p Package) neededLabels() string {
 		case p.ClockDefs[l].Text != "":
 			clocks = append(clocks, l)
 		default:
-			left = append(left, l)
+			if r, ok := p.reservedFor(l); ok {
+				pools = append(pools, pool{l, r})
+			} else {
+				left = append(left, l)
+			}
 		}
+	}
+	if len(pools) > 0 {
+		w("")
+		w("\treserved-memory {")
+		for _, pl := range pools {
+			w("\t\t/* TODO: the SoC dtsi expects this label; written from the stock region %s (%s). Check its address, alignment and what the dtsi needs it for. */", pl.r.Name, pl.r.From)
+			w("\t\t%s: %s {", pl.label, strings.ReplaceAll(strings.ReplaceAll(pl.r.Name, "_", "-"), ",", "-"))
+			w("\t\t\tcompatible = \"shared-dma-pool\";")
+			if pl.r.Fixed {
+				w("\t\t\treg = <0x%x 0x%x 0x%x 0x%x>;", pl.r.Addr>>32, pl.r.Addr&0xffffffff, pl.r.Size>>32, pl.r.Size&0xffffffff)
+			} else {
+				w("\t\t\tsize = <0x%x 0x%x>;", pl.r.Size>>32, pl.r.Size&0xffffffff)
+			}
+			w("\t\t\tno-map;")
+			w("\t\t};")
+		}
+		w("\t};")
 	}
 	if len(clocks) > 0 {
 		w("")
@@ -507,4 +533,41 @@ func (p Package) neededLabels() string {
 			filepath.Base(p.SoC[0].File), strings.Join(left, ", "))
 	}
 	return b.String()
+}
+
+// genericRegionWords are the words a reserved-memory label or node name has
+// whatever it is for.
+var genericRegionWords = map[string]bool{"mem": true, "memory": true, "reserved": true, "reserve": true, "region": true, "share": true, "shared": true, "pool": true, "rsvd": true}
+
+func words(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return r == '_' || r == '-' || r == ',' || r == ' ' || r == '.' })
+}
+
+// reservedFor finds the stock reserved region a label the SoC dtsi expects
+// stands for: the region whose name has every distinctive word of the label
+// ("scp_mem_reserved" -> a region with "scp" in its name).
+func (p Package) reservedFor(label string) (Region, bool) {
+	var want []string
+	for _, w := range words(label) {
+		if !genericRegionWords[w] {
+			want = append(want, w)
+		}
+	}
+	if len(want) == 0 {
+		return Region{}, false
+	}
+	for _, r := range p.DT.Reserved {
+		have := map[string]bool{}
+		for _, w := range words(r.Name) {
+			have[w] = true
+		}
+		all := true
+		for _, w := range want {
+			all = all && have[w]
+		}
+		if all {
+			return r, true
+		}
+	}
+	return Region{}, false
 }

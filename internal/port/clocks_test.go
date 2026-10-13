@@ -101,3 +101,31 @@ func TestZeroSizeRegionIsNotAReservation(t *testing.T) {
 		t.Errorf("%+v ok=%v: a reg of <0 0 0 0> is a bootloader placeholder, not a fixed region", r, ok)
 	}
 }
+
+func TestReservedForMatchesALabelToAStockRegionByName(t *testing.T) {
+	p := Package{DT: DT{Reserved: []Region{
+		{Name: "reserve-memory-other", Size: 0x100000},
+		{Name: "reserve-memory-scp_share", Size: 0x300000, From: "base"},
+	}}}
+	r, ok := p.reservedFor("scp_mem_reserved")
+	if !ok || r.Size != 0x300000 {
+		t.Errorf("got %+v ok=%v", r, ok)
+	}
+	if _, ok := p.reservedFor("mem_reserved"); ok {
+		t.Error("a label with no distinctive word matches nothing")
+	}
+	if _, ok := p.reservedFor("adsp_mem"); ok {
+		t.Error("no region has the word adsp")
+	}
+	p.SoCFacts = SoCDTSIFacts{Needs: []string{"scp_mem_reserved"}}
+	p.SoC = []SoCMatch{{File: "arch/arm64/boot/dts/mediatek/mt8183.dtsi"}}
+	got := p.neededLabels()
+	for _, want := range []string{"reserved-memory {", "scp_mem_reserved: reserve-memory-scp-share {", "size = <0x0 0x300000>;", "no-map;"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "refers to labels it does not define") {
+		t.Errorf("the label is defined; nothing left to list:\n%s", got)
+	}
+}
