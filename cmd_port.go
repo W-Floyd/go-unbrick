@@ -460,9 +460,13 @@ func packageRoot(top *carve.Node) pkgRoot {
 
 // superImage names the dynamic-partition image in the package's root: super.img,
 // or super_1.img, the first piece of one a flasher split into several files.
+// One shipped as a sparse image holds the super below an "unsparsed" child.
 func superImage(root pkgRoot) string {
 	for _, name := range []string{"super.img", "super_1.img"} {
 		if _, err := root.Walk(name); err == nil {
+			if _, err := root.Walk(name + "/unsparsed"); err == nil {
+				return name + "/unsparsed"
+			}
 			return name
 		}
 	}

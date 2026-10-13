@@ -237,6 +237,20 @@ func expandPayload(n *Node) ([]*Node, error) {
 // blob rather than materialized — so a multi-GiB ext4/erofs inside a sparse image
 // is walked lazily by the filesystem expanders, not buffered whole.
 func expandSparse(n *Node) ([]*Node, error) {
+	if n.Size > MaxBuffer {
+		// Too big to hold: read it where it is (a stored member in place, or the
+		// temporary file --full-download unpacks it to), through the overlay a
+		// split image's chunks use, which takes one sparse file as readily.
+		ra, err := n.ReaderAt()
+		if err != nil {
+			return nil, err
+		}
+		o, err := sparse.NewOverlay([]io.ReaderAt{ra})
+		if err != nil {
+			return nil, err
+		}
+		return []*Node{FromReaderAt("unsparsed", o, o.Size())}, nil
+	}
 	b, err := n.Bytes()
 	if err != nil {
 		return nil, err
