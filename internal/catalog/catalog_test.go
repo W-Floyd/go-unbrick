@@ -585,3 +585,76 @@ func TestBTChipName(t *testing.T) {
 		t.Errorf("unknown prefix = %q", got)
 	}
 }
+
+func TestSoCTreesAreFoundBySoCAcrossReposAndBranches(t *testing.T) {
+	dir := writeCatalog(t, map[string]string{
+		// pmaports-generated: one repo carrying three SoCs on its default branch.
+		"soc_trees.yaml": `soc_trees:
+  - url: https://github.com/msm8916-mainline/linux
+    kind: fork
+    branches:
+      - socs: ["qcom,msm8909", "qcom,msm8916", "qcom,msm8939"]
+        notes: "the default branch"
+        pinned: v6.12.1-msm8916
+        source: "pmaports testing/linux-postmarketos-qcom-msm8916"
+      - ref: msm8939/next
+        socs: ["qcom,msm8939"]
+        notes: "a branch for one of them"
+`,
+		// hand-written, in another file: merged with it.
+		"soc_trees_extra.yaml": `soc_trees:
+  - url: https://example.org/someone/linux
+    branches:
+      - ref: msm8939-wip
+        socs: ["QCOM,MSM8939"]
+`,
+	})
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := c.SoCTreesFor("Qcom,MSM8939") // case-insensitive, as a stock tree spells it
+	if len(got) != 3 {
+		t.Fatalf("msm8939 is on three (repo, branch) pairs: %+v", got)
+	}
+	byRef := map[string]KnownTree{}
+	for _, k := range got {
+		byRef[k.URL+"#"+k.Ref] = k
+	}
+	def := byRef["https://github.com/msm8916-mainline/linux#"]
+	if def.Kind != "fork" || def.Pinned != "v6.12.1-msm8916" || !strings.Contains(def.Source, "pmaports") {
+		t.Errorf("default branch: %+v", def)
+	}
+	if _, ok := byRef["https://github.com/msm8916-mainline/linux#msm8939/next"]; !ok {
+		t.Errorf("per-repo branch missing: %v", byRef)
+	}
+	if _, ok := byRef["https://example.org/someone/linux#msm8939-wip"]; !ok {
+		t.Errorf("an entry from another file is merged: %v", byRef)
+	}
+	if n := len(c.SoCTreesFor("qcom,msm8909")); n != 1 {
+		t.Errorf("a SoC on one branch of a multi-SoC repo: %d", n)
+	}
+	if c.SoCTreesFor("qcom,nothing") != nil {
+		t.Error("an unknown SoC has no trees")
+	}
+	var nilCat *Catalog
+	if nilCat.SoCTreesFor("qcom,msm8909") != nil {
+		t.Error("a nil catalog has none")
+	}
+}
+
+func TestSoCNamingPartsMustBeRegularExpressions(t *testing.T) {
+	good := writeCatalog(t, map[string]string{"n.yaml": "soc_naming:\n  mediatek:\n    prefix: mediatek\n    package_words: [mediatek]\n    parts:\n      - mt[0-9]{4}\n"})
+	c, err := Load(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := c.SoCNamings()["mediatek"].PartRegexp()
+	if got := re.FindAllString("MT6768 and mt6785, not xmt6768 or mt67685", -1); strings.Join(got, "|") != "MT6768|mt6785" {
+		t.Errorf("matches %v: whole words, any case", got)
+	}
+	bad := writeCatalog(t, map[string]string{"n.yaml": "soc_naming:\n  mediatek:\n    prefix: mediatek\n    parts:\n      - 'mt[0-9{4}'\n"})
+	if _, err := Load(bad); err == nil || !strings.Contains(err.Error(), "not a regular expression") {
+		t.Errorf("a bad regexp must fail the load: %v", err)
+	}
+}

@@ -1,0 +1,46 @@
+# How each vendor names its SoCs, for reading SoCs out of text: the compatible
+# prefix a device tree uses, the vendor words a kernel package carries in its name
+# (linux-postmarketos-<word>-<soc>), and regular expressions for the part numbers.
+#
+# `parts` are Go regular expressions, matched case-insensitively and as whole
+# words (the matcher adds the \b on both sides), against a package's name and
+# description; the match, lower-cased with spaces removed, is the part in the
+# compatible ("MSM8916" gives qcom,msm8916). Write digits as [0-9], which needs no
+# escaping in YAML, and one expression per line (inside a one-line list the
+# brackets and braces would be YAML's). The catalog checks they compile when it
+# loads.
+#
+# Used by `unbrick catalog soc-trees`, which turns pmaports kernel packages into
+# the soc_trees entries. A vendor with no entry here has its packages skipped.
+soc_naming:
+  qcom:
+    prefix: qcom
+    package_words: [qcom]
+    parts:
+      - msm[0-9]{4}
+      - apq[0-9]{4}
+      - sdm[0-9]{3,4}
+      - sm[0-9]{4}
+      - sc[0-9]{4}
+      - qm[0-9]{3}
+      - qcm[0-9]{4}
+  mediatek:
+    prefix: mediatek
+    package_words: [mediatek]
+    parts:
+      - mt[0-9]{4}
+  rockchip:
+    prefix: rockchip
+    package_words: [rockchip]
+    parts:
+      - rk[0-9]{4}
+  samsung:
+    prefix: samsung
+    package_words: [exynos]
+    parts:
+      - exynos ?[0-9]{3,4}
+  unisoc:
+    prefix: sprd
+    package_words: [unisoc]
+    parts:
+      - ums[0-9]{4}

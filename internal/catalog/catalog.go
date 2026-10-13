@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,6 +85,8 @@ type catalogFile struct {
 	EFIGUIDs   map[string]string        `yaml:"efi_guids,omitempty"`
 	BTChips    map[string]string        `yaml:"bt_chips,omitempty"`
 	DTParts    map[string]DTPart        `yaml:"dt_parts,omitempty"`
+	SoCTrees   []*SoCRepo               `yaml:"soc_trees,omitempty"`
+	SoCNaming  map[string]*SoCNaming    `yaml:"soc_naming,omitempty"`
 	Partitions map[string]PartitionRule `yaml:"partitions,omitempty"`
 	// Distros is how an ssh recon reads a Linux-on-phone distribution: where its
 	// own device definition lives and how it is spelled. Reference data like
@@ -128,6 +131,8 @@ type Catalog struct {
 	efiGUIDs   map[string]string
 	btChips    map[string]string
 	dtParts    map[string]DTPart
+	socTrees   map[string][]KnownTree // by lower-case SoC compatible
+	socNaming  map[string]SoCNaming   // by vendor key
 	partitions map[string]PartitionRule
 	distros    []*distro.Distro          // Linux-on-phone distribution profiles
 	bloat      []bloat.Rule              // removable-preload rules
@@ -204,6 +209,8 @@ func Load(dir string) (*Catalog, error) {
 		efiGUIDs:   map[string]string{},
 		btChips:    map[string]string{},
 		dtParts:    map[string]DTPart{},
+		socTrees:   map[string][]KnownTree{},
+		socNaming:  map[string]SoCNaming{},
 		partitions: map[string]PartitionRule{},
 		vendorRef:  map[string]*vendorRefData{},
 	}
@@ -270,6 +277,31 @@ func Load(dir string) (*Catalog, error) {
 		for k, v := range cf.DTParts {
 			if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
 				c.dtParts[k] = v
+			}
+		}
+		for k, n := range cf.SoCNaming {
+			if k = strings.ToLower(strings.TrimSpace(k)); k != "" && n != nil && strings.TrimSpace(n.Prefix) != "" {
+				for _, p := range n.Parts {
+					if _, err := regexp.Compile(p); err != nil {
+						return nil, fmt.Errorf("%s: soc_naming %s: part %q is not a regular expression: %w", f, k, p, err)
+					}
+				}
+				c.socNaming[k] = *n
+			}
+		}
+		for _, r := range cf.SoCTrees {
+			if r == nil || strings.TrimSpace(r.URL) == "" {
+				continue
+			}
+			for _, b := range r.Branches {
+				for _, comp := range b.SoCs {
+					if comp = strings.ToLower(strings.TrimSpace(comp)); comp != "" {
+						c.socTrees[comp] = append(c.socTrees[comp], KnownTree{
+							URL: strings.TrimSpace(r.URL), Ref: strings.TrimSpace(b.Ref), Kind: r.Kind,
+							Notes: b.Notes, Pinned: b.Pinned, Source: b.Source, Checked: b.Checked,
+						})
+					}
+				}
 			}
 		}
 		for k, v := range cf.Partitions {
@@ -719,6 +751,70 @@ func (c *Catalog) DTPartFor(compatible string) (DTPart, bool) {
 	}
 	p, ok := c.dtParts[strings.ToLower(strings.TrimSpace(compatible))]
 	return p, ok
+}
+
+// SoCNaming is how one vendor names its SoCs, for reading them out of text (a
+// kernel package's name and description): the compatible prefix its device
+// trees use, the vendor words kernel packages carry in their names, and regular
+// expressions for its part numbers. Each of Parts is a Go regexp, matched as a
+// whole word and without regard to case: `msm[0-9]{4}` finds MSM8916, `exynos ?[0-9]{3,4}`
+// finds Exynos850 and Exynos 850.
+type SoCNaming struct {
+	Prefix       string   `yaml:"prefix"`        // "qcom": the compatible is prefix,part
+	PackageWords []string `yaml:"package_words"` // "qcom", "exynos": the vendor word in linux-postmarketos-<word>-<soc>
+	Parts        []string `yaml:"parts"`
+}
+
+// PartRegexp is the one matcher for a vendor's Parts: case-insensitive, each
+// expression a whole word. nil when there are none.
+func (n SoCNaming) PartRegexp() *regexp.Regexp {
+	if len(n.Parts) == 0 {
+		return nil
+	}
+	return regexp.MustCompile(`(?i)\b(?:` + strings.Join(n.Parts, "|") + `)\b`)
+}
+
+// SoCNamings are the vendors' naming rules, by vendor key.
+func (c *Catalog) SoCNamings() map[string]SoCNaming {
+	if c == nil {
+		return nil
+	}
+	return c.socNaming
+}
+
+// SoCRepo is a kernel repository known to carry mainline-based work for SoCs
+// mainline lacks or only partly has: a community fork that tracks mainline, a
+// patch series, a distribution's kernel. One repository may carry several SoCs,
+// and different branches may carry different ones, so the SoCs hang off the
+// branch. Reference data to point a port at, not a claim the SoC works.
+type SoCRepo struct {
+	URL      string      `yaml:"url"`
+	Kind     string      `yaml:"kind,omitempty"` // "fork" (tracks mainline), "series", "distro"
+	Branches []SoCBranch `yaml:"branches"`
+}
+
+// SoCBranch is a branch (or tag) of a SoCRepo and the SoCs it carries.
+type SoCBranch struct {
+	Ref     string   `yaml:"ref,omitempty"` // branch or tag; empty is the remote's default branch
+	SoCs    []string `yaml:"socs"`          // SoC compatibles as a stock base device tree spells them, compared case-insensitively
+	Notes   string   `yaml:"notes,omitempty"`
+	Pinned  string   `yaml:"pinned,omitempty"`  // a tag or commit a distribution pins it at: a known-good point
+	Source  string   `yaml:"source,omitempty"`  // where the entry came from ("pmaports linux-postmarketos-mediatek-mt6768")
+	Checked string   `yaml:"checked,omitempty"` // yyyy-mm-dd the entry was last confirmed
+}
+
+// KnownTree is one (repository, branch) that carries a SoC.
+type KnownTree struct {
+	URL, Ref, Kind, Notes, Pinned, Source, Checked string
+}
+
+// SoCTreesFor are the known trees for a SoC, by the compatible its stock base
+// device tree gives ("mediatek,MT6768"); nil when none is recorded.
+func (c *Catalog) SoCTreesFor(compatible string) []KnownTree {
+	if c == nil {
+		return nil
+	}
+	return c.socTrees[strings.ToLower(strings.TrimSpace(compatible))]
 }
 
 // BTChipName names a BTFM firmware file prefix ("cgo") by its chip codename

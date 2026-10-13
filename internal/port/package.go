@@ -3,6 +3,8 @@ package port
 import (
 	"fmt"
 	"strings"
+
+	"github.com/W-Floyd/go-unbrick/internal/catalog"
 )
 
 // Package is everything read out of a stock package that a port draws on. It
@@ -47,7 +49,10 @@ type Package struct {
 	// target), and TreeChoices how each fit.
 	KernelTrees []string
 	TreeChoices []TreeChoice
-	Mainline    map[string]*MainlineDriver
+	// KnownTrees are the catalog's kernel trees for this SoC (see
+	// KnownTreeKeys), whether or not any was given.
+	KnownTrees []catalog.KnownTree
+	Mainline   map[string]*MainlineDriver
 	// SoC are the tree's SoC dtsi files ranked against the stock register map,
 	// best first, and BusLabels maps stock bus labels to the best one's labels
 	// (see FindSoCDTSI and BusLabels).

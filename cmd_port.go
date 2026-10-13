@@ -75,10 +75,11 @@ for a package that ships it as sparse chunks takes about half a minute.
 				return fmt.Errorf("--soc-dtsi adds to what --kernel-tree matches: name a kernel tree it applies to")
 			}
 			if len(kernelTrees) > 0 {
-				if err := applyKernelTrees(&pkg, kernelTrees, socDTSI, prog.say); err != nil {
+				if err := applyKernelTrees(&pkg, kernelTrees, socDTSI, activeCatalog(), prog.say); err != nil {
 					return err
 				}
 			}
+			setKnownTrees(&pkg, activeCatalog())
 			bundle, err := em.Emit(pkg, port.Options{Catalog: activeCatalog(), Blob: blob})
 			if err != nil {
 				// What the package says about the hardware is worth having even
@@ -94,6 +95,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 			if pkg.KernelTree != "" {
 				bundle.Report = append(bundle.Report, port.TreesSection(pkg.TreeChoices, pkg.DT.SoC), port.SoCReport(pkg.KernelTree, pkg.SoC, pkg.DT.SoC), port.SoCGapSection(pkg.SoCGap))
 			}
+			bundle.Report = append(bundle.Report, port.KnownTreesSection(pkg.KnownTrees, pkg.DT.SoC, pkg.TreeChoices))
 			bundle.Report = append(bundle.Report, port.MemorySection(pkg))
 			drivers := port.PanelDrivers(pkg)
 			for _, d := range drivers {
@@ -190,7 +192,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	c.Flags().BoolVar(&checkDTS, "check-dts", false, "after writing with -o, compile the board dts against --kernel-tree with the C preprocessor and dtc, and report what the board adds over the bare SoC dtsi (needs clang or gcc, and dtc)")
 	c.Flags().BoolVar(&live, "live", false, "ask an attached device over adb which of the board's variant parts are fitted, and draft only those")
 	c.Flags().StringVar(&serial, "serial", "", "adb serial for --live when more than one device is attached")
-	c.Flags().StringSliceVar(&kernelTrees, "kernel-tree", nil, "a kernel source tree: a directory, or a git URL (\"https://…/linux#branch\", fetched shallowly into one shared cache repository). Repeat for several: the one whose SoC dtsi best matches the stock device tree is the port's target, and the others are searched for drivers it lacks")
+	c.Flags().StringSliceVar(&kernelTrees, "kernel-tree", nil, "a kernel source tree: a directory, or a git URL (\"https://…/linux#branch\", fetched shallowly into one shared cache repository), or \"known\" for every tree the catalog lists for the SoC. Repeat for several: the one whose SoC dtsi best matches the stock device tree is the port's target, and the others are searched for drivers it lacks")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
 	return addFullDownload(c)
 }
