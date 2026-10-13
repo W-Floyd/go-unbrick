@@ -60,6 +60,9 @@ type Package struct {
 	// ConfigDiff is the stock kernel config against the tree's Kconfig; nil
 	// without a tree or a stock config.
 	ConfigDiff *ConfigDiff
+	// SoCAddrLabels maps a unit address to the SoC dtsi's label for the node
+	// there (see SoCLabelsByAddr).
+	SoCAddrLabels map[string]string
 	// ClockDefs are clock nodes the board must define that a sibling dtsi has,
 	// by label (see SiblingClockDefs).
 	ClockDefs map[string]ClockDef

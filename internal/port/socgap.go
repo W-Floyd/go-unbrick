@@ -493,3 +493,25 @@ func SiblingClockDefs(tree string, ms []SoCMatch, labels []string) map[string]Cl
 	}
 	return out
 }
+
+var addrLabelRe = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*):\s*[A-Za-z0-9_,.+\-]*@([0-9a-fA-F]+)\s*\{`)
+
+// SoCLabelsByAddr maps a node's unit address (lower case, no leading zeros) to
+// the label the SoC dtsi (with its includes) gives it: the way to name a block
+// the stock tree knows by address and a mainline file knows by label.
+func SoCLabelsByAddr(tree, include string) map[string]string {
+	if include == "" {
+		return nil
+	}
+	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(include)))
+	out := map[string]string{}
+	walkDTSIClosure(dir, filepath.Base(include), func(_ string, b []byte) {
+		for _, m := range addrLabelRe.FindAllStringSubmatch(stripComments(string(b)), -1) {
+			a := strings.TrimLeft(strings.ToLower(m[2]), "0")
+			if _, dup := out[a]; !dup && a != "" { // address 0 (a CPU, a pool) is no register address
+				out[a] = m[1]
+			}
+		}
+	})
+	return out
+}

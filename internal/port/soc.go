@@ -34,6 +34,9 @@ func collectAddrs(b *fdt.Node, dt *DT) {
 		}
 	}
 	b.Walk(func(path string, n *fdt.Node) {
+		if dn, ok := displayNode(path, n); ok {
+			dt.DisplayNodes = appendSoCNode(dt.DisplayNodes, dn)
+		}
 		if a, ok := unitAddr(n.Name); ok {
 			if !dt.UnitAddrs[a] && !strings.Contains(path, "reserved-memory") && !strings.Contains(path, "__") {
 				dt.SoCNodes = append(dt.SoCNodes, SoCNode{Path: path, Name: n.Name, Addr: a, Compatible: n.Strs("compatible")})
@@ -217,4 +220,50 @@ func SoCReport(tree string, ms []SoCMatch) string {
 		w("| %s | %d | %d | %d | %.2f |", m.File, m.Shared, m.Stock, m.Tree, m.Score)
 	}
 	return b.String()
+}
+
+// appendSoCNode adds n unless a node at its address is already there.
+func appendSoCNode(list []SoCNode, n SoCNode) []SoCNode {
+	for _, e := range list {
+		if e.Addr == n.Addr {
+			return list
+		}
+	}
+	return append(list, n)
+}
+
+// regAddr is the register address a node's "reg" gives, as hex without leading
+// zeros, for nodes whose names carry no unit address. A reg of four or more
+// cells under #address-cells = <2> leads with a zero high word.
+func regAddr(n *fdt.Node) string {
+	reg := n.U32s("reg")
+	if len(reg) < 2 {
+		return ""
+	}
+	a := uint64(reg[0])
+	if reg[0] == 0 && len(reg) >= 4 {
+		a = uint64(reg[1])
+	}
+	if a == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%x", a)
+}
+
+// displayNode is a DSI controller or PHY node, found by its compatible and
+// placed by its name's unit address or else its reg.
+func displayNode(path string, n *fdt.Node) (SoCNode, bool) {
+	for _, c := range n.Strs("compatible") {
+		if strings.Contains(c, "dsi-ctrl") || strings.Contains(c, "dsi-phy") {
+			addr, ok := unitAddr(n.Name)
+			if !ok {
+				addr = regAddr(n)
+			}
+			if addr == "" {
+				return SoCNode{}, false
+			}
+			return SoCNode{Path: path, Name: n.Name, Addr: addr, Compatible: n.Strs("compatible")}, true
+		}
+	}
+	return SoCNode{}, false
 }

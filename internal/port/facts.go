@@ -88,6 +88,19 @@ type Panel struct {
 	Referenced, Default bool
 	// Source is the stock panel node, from the first overlay that has it.
 	Source *fdt.Node
+	// Reset is the stock reset line, and BLType how the stock node says the
+	// backlight is controlled ("bl_ctrl_dcs", "bl_ctrl_pwm", ...).
+	Reset  PanelGPIO
+	BLType string
+}
+
+// PanelGPIO is a GPIO a stock panel node names: the controller's label (as the
+// overlay's fixups give it), the line and its stock flags.
+type PanelGPIO struct {
+	Ctrl  string
+	Pin   uint32
+	Flags uint32
+	Set   bool
 }
 
 // Part is one board component a device tree names: a node on an external bus
@@ -141,6 +154,8 @@ type DT struct {
 	// SoCNodes are the base tree's register-addressed peripherals, one per
 	// address (see SoCGap).
 	SoCNodes []SoCNode
+	// DisplayNodes are the DSI controllers and PHYs the board overlays enable.
+	DisplayNodes []SoCNode
 	// FixedClocks are the base tree's fixed-clock nodes by label ("xo_board").
 	FixedClocks   map[string]FixedClock
 	FirmwareNames []FirmwareName
@@ -179,6 +194,13 @@ func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt
 	panels := map[string]*Panel{}
 	unk := map[string]bool{}
 	for _, o := range overlays {
+		// The display blocks a board overlay enables (the DSI controller and its
+		// PHY), by register address: a base tree often lacks them.
+		o.Walk(func(path string, n *fdt.Node) {
+			if dn, ok := displayNode(path, n); ok {
+				dt.DisplayNodes = appendSoCNode(dt.DisplayNodes, dn)
+			}
+		})
 		if dt.Model == "" {
 			dt.Model, _ = o.Str("model")
 			dt.Compat = o.Strs("compatible")
@@ -257,12 +279,19 @@ func overlayPanels(o *fdt.Node) []Panel {
 	byPhandle := map[uint32]*Panel{}
 	var out []Panel
 	var phandles []uint32
-	o.Walk(func(_ string, n *fdt.Node) {
+	fix := fixupLabels(o)
+	o.Walk(func(path string, n *fdt.Node) {
 		name, ok := n.Str("qcom,mdss-dsi-panel-name")
 		if !ok {
 			return
 		}
 		p := Panel{Name: name, Source: n}
+		// The reset line: <&controller pin flags>, the controller's label from
+		// the overlay's fixups (the phandle itself is a placeholder).
+		if g := n.U32s("qcom,platform-reset-gpio"); len(g) == 3 {
+			p.Reset = PanelGPIO{Ctrl: fix[strings.TrimPrefix(path, "/")+":qcom,platform-reset-gpio"], Pin: g[1], Flags: g[2], Set: true}
+		}
+		p.BLType, _ = n.Str("qcom,mdss-dsi-bl-pmic-control-type")
 		for _, c := range n.Children {
 			c.Walk(func(_ string, t *fdt.Node) {
 				if w := t.U32s("qcom,mdss-dsi-panel-width"); len(w) > 0 && p.W == 0 {

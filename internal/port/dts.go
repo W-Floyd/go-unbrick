@@ -107,6 +107,7 @@ func PeripheralDTS(p Package) (text string, notes []string) {
 		}
 		w("};")
 	}
+	b.WriteString(p.displayDTS())
 	if len(unplaced) > 0 {
 		w("")
 		w("/* Parts not on an I2C or SPI controller this tool can map to a mainline label:")
