@@ -130,3 +130,88 @@ func (d ConfigDiff) families() []string {
 	}
 	return out
 }
+
+// driverIndex is the base name (lower case, no extension) of every C source and
+// binding schema under the tree's drivers, sound and bindings directories, to
+// its paths: where a driver for a part by that name would be.
+func driverIndex(tree string) map[string][]string {
+	out := map[string][]string{}
+	for _, sub := range []string{"drivers", "sound", filepath.Join("Documentation", "devicetree", "bindings")} {
+		filepath.WalkDir(filepath.Join(tree, sub), func(p string, e fs.DirEntry, err error) error {
+			if err != nil || e.IsDir() {
+				return nil
+			}
+			ext := filepath.Ext(p)
+			if ext != ".c" && ext != ".yaml" {
+				return nil
+			}
+			rel, _ := filepath.Rel(tree, p)
+			name := strings.ToLower(strings.TrimSuffix(e.Name(), ext))
+			out[name] = append(out[name], filepath.ToSlash(rel))
+			return nil
+		})
+	}
+	return out
+}
+
+// partNumbers are the words of a stock item name that look like a part number
+// ("gc08a3_mipi_raw" -> gc08a3; "hx83102p_wxga_vdo_incell_boe" -> hx83102p): at
+// least five characters, with a letter and a digit.
+func partNumbers(item string) []string {
+	var out []string
+	for _, w := range strings.FieldsFunc(strings.ToLower(item), func(r rune) bool { return r == '_' || r == '-' || r == ' ' }) {
+		letters, digits := false, false
+		for _, r := range w {
+			letters = letters || r >= 'a' && r <= 'z'
+			digits = digits || r >= '0' && r <= '9'
+		}
+		if len(w) >= 5 && letters && digits {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// withoutSuffix drops the trailing letters of a part number that follow its last
+// digit ("hx83102p" -> "hx83102", "ov13b10txd" -> "ov13b10"): stock names add a
+// variant or maker suffix the upstream file leaves off. It returns the number
+// unchanged when it already ends in a digit.
+func withoutSuffix(pn string) string {
+	i := len(pn)
+	for i > 0 && pn[i-1] >= 'a' && pn[i-1] <= 'z' {
+		i--
+	}
+	if i == 0 || i == len(pn) || i < 5 {
+		return pn
+	}
+	return pn[:i]
+}
+
+// FindDriversByName looks for a driver or binding named for each item's part
+// number, as written and then without its suffix letters. It matches names only
+// (a file name containing the number); shorter prefixes are not tried, since
+// "nt365" would call the nt36523 driver the nt36532's. A hit says a driver for
+// that part number exists, not that it supports this variant.
+func FindDriversByName(tree string, items []string) map[string][]string {
+	idx := driverIndex(tree)
+	out := map[string][]string{}
+	for _, item := range items {
+	next:
+		for _, pn := range partNumbers(item) {
+			for _, cand := range []string{pn, withoutSuffix(pn)} {
+				var paths []string
+				for name, ps := range idx {
+					if strings.Contains(name, cand) {
+						paths = append(paths, ps...)
+					}
+				}
+				if len(paths) > 0 {
+					sort.Strings(paths)
+					out[item] = firstN(paths, 2)
+					break next
+				}
+			}
+		}
+	}
+	return out
+}

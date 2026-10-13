@@ -244,8 +244,25 @@ func ConfigChoicesSection(p Package) string {
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("\n## Parts the stock kernel is built for\n")
 	w("The stock config lists these in an option of its own, so they are what the board may carry: each unit has one of the alternatives, which a running device settles.\n")
+	if p.ChoiceDrivers == nil { // no tree to look in
+		for _, c := range cs {
+			w("- %s (`%s`): %s", c.What, c.Symbol, "`"+strings.Join(c.Items, "`, `")+"`")
+		}
+		return b.String()
+	}
+	w("Against %s, by part number in a driver or binding file name (a hit says a driver for that part exists, not that it covers this variant):\n", p.KernelTree)
 	for _, c := range cs {
-		w("- %s (`%s`): %s", c.What, c.Symbol, "`"+strings.Join(c.Items, "`, `")+"`")
+		w("**%s** (`%s`)\n", c.What, c.Symbol)
+		w("| item | in the tree |")
+		w("|---|---|")
+		for _, it := range c.Items {
+			where := "no driver found by name"
+			if ps := p.ChoiceDrivers[it]; len(ps) > 0 {
+				where = strings.Join(ps, ", ")
+			}
+			w("| `%s` | %s |", it, where)
+		}
+		w("")
 	}
 	return b.String()
 }

@@ -82,6 +82,13 @@ for a package that ships it as sparse chunks takes about half a minute.
 				if pkg.KernelConfig != nil {
 					d := port.CompareConfig(pkg.KernelConfig, port.KconfigSymbols(kernelTree))
 					pkg.ConfigDiff = &d
+					var items []string
+					for _, c := range pkg.ConfigChoices() {
+						items = append(items, c.Items...)
+					}
+					if len(items) > 0 {
+						pkg.ChoiceDrivers = port.FindDriversByName(kernelTree, items)
+					}
 				}
 				if ms, err := port.FindSoCDTSI(kernelTree, pkg.DT.UnitAddrs); err == nil {
 					pkg.SoC = ms

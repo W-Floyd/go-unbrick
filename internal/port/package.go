@@ -57,6 +57,10 @@ type Package struct {
 	// SoCLabels are the labels that dtsi (with its includes) defines; a board
 	// file can only refer to those. nil when there was no tree to read.
 	SoCLabels map[string]bool
+	// ChoiceDrivers maps each part the stock config names to the tree files
+	// whose names carry its part number; nil without a tree (see
+	// FindDriversByName).
+	ChoiceDrivers map[string][]string
 	// ConfigDiff is the stock kernel config against the tree's Kconfig; nil
 	// without a tree or a stock config.
 	ConfigDiff *ConfigDiff
