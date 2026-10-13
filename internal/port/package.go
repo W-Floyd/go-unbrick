@@ -20,6 +20,8 @@ type Package struct {
 	KernelConfig map[string]string
 	// Cameras are the sensor-module options the vendor partition carries.
 	Cameras []CameraModule
+	// Audio is the HAL's routing files, when the vendor partition has them.
+	Audio   *Audio
 	Modules []Module // the stock kernel modules, read from their .modinfo
 	Fstab   []FstabEntry
 	Display *AndroidDisplay // Android's screen shape resources, if read

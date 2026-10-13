@@ -115,7 +115,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 				refPanel.Write(b)
 				refPanel.WriteString("\n")
 			}
-			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras))
+			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras), port.AudioSection(pkg.Audio))
 			if pkg.KernelConfig != nil {
 				files["kernel/stock.config"] = []byte(port.ConfigText(pkg.KernelConfig))
 			}
@@ -329,6 +329,9 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 			pkg.VendorFiles = append(pkg.VendorFiles, strings.Trim(k.Name, "/"))
 		}
 		pkg.Cameras = port.CameraModules(pkg.VendorFiles)
+		pkg.Audio = port.ReadAudio(append([]string(nil), pkg.VendorFiles...), func(name string) ([]byte, error) {
+			return bytesOf(super + "/vendor_a/" + name)
+		})
 	}
 	slot := pkg.Slot
 	blob = func(location string) ([]byte, error) {
