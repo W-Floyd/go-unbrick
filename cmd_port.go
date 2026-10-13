@@ -87,6 +87,8 @@ for a package that ships it as sparse chunks takes about half a minute.
 							pkg.SoCRegions = port.ParseDTSRegions(string(dtsi))
 						}
 						pkg.SoCGap = port.ComputeSoCGap(kernelTree, pkg)
+						pkg.SoCLabels = port.SoCLabels(kernelTree, ms[0].File)
+						pkg.SoCFacts = port.ReadSoCDTSI(kernelTree, ms[0].File)
 					}
 				}
 			}

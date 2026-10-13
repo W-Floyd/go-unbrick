@@ -71,6 +71,12 @@ func PeripheralDTS(p Package) (text string, notes []string) {
 			continue
 		}
 		bus, _, ok := p.busLabel(pt.Bus)
+		if ok && p.SoCLabels != nil && !p.SoCLabels[bus] {
+			// A label the SoC dtsi does not define cannot be referred to: the
+			// file would not compile.
+			unplaced = append(unplaced, fmt.Sprintf("%s (stock bus %s: no label %q in %s)", pt.Compatible, orNone(pt.Bus), bus, filepath.Base(p.SoC[0].File)))
+			continue
+		}
 		if !ok || pt.Node == "" || !strings.Contains(pt.Node, "@") && len(pt.Source.U32s("reg")) == 0 {
 			unplaced = append(unplaced, pt.Compatible+" (stock bus "+orNone(pt.Bus)+")")
 			continue
@@ -159,6 +165,12 @@ func writeNode(b *strings.Builder, p Package, pt Part) {
 
 	uses, mapped := ClassifyPins(pt)
 	for _, u := range uses {
+		// A phandle to a label the SoC dtsi lacks does not compile, and an
+		// interrupt written as <&ctrl pin flags> needs a two-cell controller.
+		if why := p.pinRefProblem(u); why != "" {
+			w("\t\t/* TODO: %s (stock %s: %s %d flags 0x%x) */", why, u.Prop, u.Ctrl, u.Pin, u.Flags)
+			continue
+		}
 		switch u.Kind {
 		case PinIRQ:
 			if u.TypeKnown {
@@ -342,11 +354,19 @@ func BoardDTS(p Package) string {
 			strings.TrimSuffix(filepath.Base(p.SoC[1].File), ".dtsi"), p.SoC[1].Score, p.SoC[0].Score)
 	}
 	w("\t/* TODO: chassis-type: a package does not say handset or tablet */")
+	if len(p.SoCFacts.Needs) > 0 {
+		w("\t/* TODO: %s refers to labels it does not define, which the board must (clocks, regulators, memory): %s */",
+			filepath.Base(p.SoC[0].File), strings.Join(p.SoCFacts.Needs, ", "))
+	}
 	if p.SoCRegions != nil {
-		if board, _ := BoardRegions(p.DT.Reserved, p.SoCRegions); len(board) > 0 {
+		board, _, conflicts := ClassifyRegions(p.DT.Reserved, p.SoCRegions)
+		if len(board) > 0 {
 			w("")
 			w("\t/* Reserved regions the stock trees have that %s does not: the board's own. */", filepath.Base(p.SoC[0].File))
 			b.WriteString(regionsText(board))
+		}
+		for _, r := range conflicts {
+			w("\t/* TODO: stock region %s (%s) at %#x+%#x overlaps one in %s or above, with another size or name: not written, pick one */", r.Name, r.From, r.Addr, r.Size, filepath.Base(p.SoC[0].File))
 		}
 	}
 	w("};")
@@ -404,4 +424,18 @@ func capList(ss []string, n int) string {
 		return strings.Join(ss, ", ")
 	}
 	return strings.Join(ss[:n], ", ") + fmt.Sprintf(", … (+%d)", len(ss)-n)
+}
+
+// pinRefProblem says why a pin use cannot be written as a phandle reference
+// against the SoC dtsi, or "" when it can (or when there is no dtsi to check).
+func (p Package) pinRefProblem(u PinUse) string {
+	if p.SoCLabels != nil && !p.SoCLabels[u.Ctrl] {
+		return fmt.Sprintf("the SoC dtsi defines no label %q", u.Ctrl)
+	}
+	if u.Kind == PinIRQ {
+		if cells, ok := p.SoCFacts.InterruptCells[u.Ctrl]; ok && cells != 2 {
+			return fmt.Sprintf("%q takes %d interrupt cells, not a pin and flags", u.Ctrl, cells)
+		}
+	}
+	return ""
 }

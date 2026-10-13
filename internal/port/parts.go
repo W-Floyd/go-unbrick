@@ -83,12 +83,17 @@ func overlayParts(o *fdt.Node, socVendor string) []rawPart {
 			continue
 		}
 		bus := targets[frag.Name]
-		ov.Walk(func(p string, n *fdt.Node) {
+		// A node under a chip that is itself a part is one of the chip's own
+		// sub-devices (an MFD's regulator, its charger), addressed through the
+		// chip, not a client on the bus: it is not a part of its own.
+		var rec func(p string, n *fdt.Node, underPart bool)
+		rec = func(p string, n *fdt.Node, underPart bool) {
+			isPart := false
 			for _, c := range n.Strs("compatible") {
 				vendor, _, hasVendor := strings.Cut(c, ",")
 				ownVendor := socVendor != "" && strings.EqualFold(vendor, socVendor)
-				if externalBus(bus) && !strings.Contains(strings.ToLower(bus), "reserved") ||
-					hasVendor && !ownVendor && !glueVendor.MatchString(c) && !strings.Contains(strings.ToLower(bus), "reserved") {
+				if !underPart && (externalBus(bus) && !strings.Contains(strings.ToLower(bus), "reserved") ||
+					hasVendor && !ownVendor && !glueVendor.MatchString(c) && !strings.Contains(strings.ToLower(bus), "reserved")) {
 					labels := map[string]string{}
 					for _, k := range n.Keys {
 						if l, ok := fix[frag.Name+"/"+p+":"+k]; ok {
@@ -96,9 +101,14 @@ func overlayParts(o *fdt.Node, socVendor string) []rawPart {
 						}
 					}
 					out = append(out, rawPart{Compatible: c, Node: n.Name, Bus: bus, N: n, Labels: labels})
+					isPart = true
 				}
 			}
-		})
+			for _, c := range n.Children {
+				rec(p+"/"+c.Name, c, underPart || isPart)
+			}
+		}
+		rec(ov.Name, ov, false)
 	}
 	return out
 }

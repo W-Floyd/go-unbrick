@@ -152,21 +152,48 @@ func ParseDTSRegions(src string) []Region {
 // define: the board-level reservations the board dts must add. Regions the dtsi
 // has at the same address and size are the SoC's own.
 func BoardRegions(stock, soc []Region) (board, inSoC []Region) {
+	board, inSoC, _ = ClassifyRegions(stock, soc)
+	return board, inSoC
+}
+
+// overlaps says two fixed regions share an address range.
+func (r Region) overlaps(o Region) bool {
+	return r.Addr < o.Addr+o.Size && o.Addr < r.Addr+r.Size
+}
+
+// ClassifyRegions sorts the stock's fixed regions three ways: the SoC dtsi's
+// own (same address and size), the board's (overlapping nothing the dtsi or an
+// earlier region has), and conflicts, which overlap one without matching it.
+// A conflict written out would be a second node over the same memory: the stock
+// base and overlays often name one region twice, or size it differently from
+// the mainline dtsi, and which is right is a person's call.
+func ClassifyRegions(stock, soc []Region) (board, inSoC, conflicts []Region) {
 	have := map[string]bool{}
 	for _, r := range soc {
 		have[r.key()] = true
+	}
+	overlapsAny := func(r Region, set []Region) bool {
+		for _, o := range set {
+			if o.Fixed && r.overlaps(o) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, r := range stock {
 		if !r.Fixed {
 			continue
 		}
-		if have[r.key()] {
+		switch {
+		case have[r.key()]:
 			inSoC = append(inSoC, r)
-		} else {
+		case overlapsAny(r, soc) || overlapsAny(r, board):
+			conflicts = append(conflicts, r)
+		default:
 			board = append(board, r)
 		}
 	}
-	return board, inSoC
+	return board, inSoC, conflicts
 }
 
 // regionsText is the board dts's reserved-memory block for regions.

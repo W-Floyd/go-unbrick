@@ -119,3 +119,23 @@ func TestOverlayPartsDropsTheSoCVendorsOwnNodesAndGenericBindings(t *testing.T) 
 		}
 	}
 }
+
+func TestOverlayPartsSkipsASubDeviceOfAChip(t *testing.T) {
+	frag := func(n string, children ...*fdt.Node) *fdt.Node {
+		return node(n, nil, node("__overlay__", nil, children...))
+	}
+	pmic := node("smb1355@c", map[string]string{"compatible": "ti,smb1355\x00"},
+		node("revid@100", map[string]string{"compatible": "ti,revid\x00"}),
+		node("charger@1000", map[string]string{"compatible": "ti,smb1355-charger\x00"}))
+	o := node("", nil,
+		frag("fragment@1", pmic),
+		node("__fixups__", map[string]string{"qupv3_se1_i2c": "/fragment@1:target:0\x00"}),
+	)
+	var got []string
+	for _, p := range overlayParts(o, "qcom") {
+		got = append(got, p.Compatible)
+	}
+	if len(got) != 1 || got[0] != "ti,smb1355" {
+		t.Errorf("got %v: the chip's own sub-nodes are not bus clients", got)
+	}
+}

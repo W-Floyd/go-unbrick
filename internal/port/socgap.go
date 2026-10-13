@@ -49,26 +49,12 @@ func ComputeSoCGap(tree string, p Package) *SoCGap {
 
 	// The include's closure: the dtsi and the .dtsi files it pulls in.
 	have := map[string]bool{}
-	seen := map[string]bool{}
-	var read func(name string)
-	read = func(name string) {
-		if seen[name] {
-			return
-		}
-		seen[name] = true
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return
-		}
+	walkDTSIClosure(dir, filepath.Base(g.Include), func(name string, b []byte) {
 		g.Files = append(g.Files, name)
 		for _, m := range treeAddr.FindAllSubmatch(b, -1) {
 			have[strings.TrimLeft(strings.ToLower(string(m[1])), "0")] = true
 		}
-		for _, m := range includeRe.FindAllSubmatch(b, -1) {
-			read(filepath.Base(string(m[1])))
-		}
-	}
-	read(filepath.Base(g.Include))
+	})
 
 	// Every dtsi's compatibles, ranked by how much of the stock register map
 	// each shares (SoC order), for naming the nearest sibling.
@@ -243,3 +229,122 @@ func (g *SoCGap) kindCounts() []string {
 	}
 	return out
 }
+
+// walkDTSIClosure calls visit on a dtsi in dir and on each .dtsi it includes,
+// recursively, once each.
+func walkDTSIClosure(dir, name string, visit func(name string, text []byte)) {
+	seen := map[string]bool{}
+	var read func(name string)
+	read = func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return
+		}
+		visit(name, b)
+		for _, m := range includeRe.FindAllSubmatch(b, -1) {
+			read(filepath.Base(string(m[1])))
+		}
+	}
+	read(name)
+}
+
+var labelRe = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*):\s`)
+
+// SoCLabels are the node labels the SoC dtsi (and what it includes) defines,
+// which a board file can refer to as &label. nil when there is no dtsi to read.
+func SoCLabels(tree, include string) map[string]bool {
+	if include == "" {
+		return nil
+	}
+	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(include)))
+	out := map[string]bool{}
+	walkDTSIClosure(dir, filepath.Base(include), func(_ string, b []byte) {
+		for _, m := range labelRe.FindAllSubmatch(b, -1) {
+			out[string(m[1])] = true
+		}
+	})
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+var (
+	refRe       = regexp.MustCompile(`&([A-Za-z_][A-Za-z0-9_]*)\b`)
+	intCellsRe  = regexp.MustCompile(`#interrupt-cells\s*=\s*<\s*(\d+)\s*>`)
+	labelNodeRe = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*):\s*[^{;]*\{`)
+)
+
+// SoCDTSIFacts is what a board file can learn from the SoC dtsi without
+// compiling it: the labels the dtsi uses but does not define (the board must
+// provide them), and each labelled node's #interrupt-cells, which decides how
+// an interrupt may be written against it.
+type SoCDTSIFacts struct {
+	Needs          []string
+	InterruptCells map[string]int
+}
+
+// ReadSoCDTSI reads the dtsi (with its includes) for SoCDTSIFacts.
+func ReadSoCDTSI(tree, include string) SoCDTSIFacts {
+	f := SoCDTSIFacts{InterruptCells: map[string]int{}}
+	if include == "" {
+		return f
+	}
+	dir := filepath.Join(tree, filepath.Dir(filepath.FromSlash(include)))
+	defined, used := map[string]bool{}, map[string]bool{}
+	walkDTSIClosure(dir, filepath.Base(include), func(_ string, b []byte) {
+		text := stripComments(string(b))
+		for _, m := range labelRe.FindAllStringSubmatch(text, -1) {
+			defined[m[1]] = true
+		}
+		for _, m := range refRe.FindAllStringSubmatch(text, -1) {
+			used[m[1]] = true
+		}
+		for _, loc := range labelNodeRe.FindAllStringSubmatchIndex(text, -1) {
+			label, open := text[loc[2]:loc[3]], loc[1]-1
+			if cells := intCellsRe.FindStringSubmatch(directBody(text, open)); cells != nil {
+				n := 0
+				fmt.Sscan(cells[1], &n)
+				f.InterruptCells[label] = n
+			}
+		}
+	})
+	for l := range used {
+		if !defined[l] {
+			f.Needs = append(f.Needs, l)
+		}
+	}
+	sort.Strings(f.Needs)
+	return f
+}
+
+// directBody is the text of the node whose "{" is at open, without its child
+// nodes' bodies, so a property is only matched against the node that has it.
+func directBody(text string, open int) string {
+	var b strings.Builder
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return b.String()
+			}
+		default:
+			if depth == 1 {
+				b.WriteByte(text[i])
+			}
+		}
+	}
+	return b.String()
+}
+
+var commentRe = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
+
+func stripComments(s string) string { return commentRe.ReplaceAllString(s, "") }

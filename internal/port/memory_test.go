@@ -85,16 +85,31 @@ func TestBoardRegionsAreTheOnesTheSoCDtsiLacks(t *testing.T) {
 		{Name: "same_start_other_size", Addr: 0x46000000, Size: 0x100000, Fixed: true},
 		{Name: "pool", Size: 0x1000000},
 	}
-	board, inSoC := BoardRegions(stock, ParseDTSRegions(socSrc))
-	var b, s []string
-	for _, r := range board {
-		b = append(b, r.Name)
+	board, inSoC, conflicts := ClassifyRegions(stock, ParseDTSRegions(socSrc))
+	names := func(rs []Region) string {
+		var n []string
+		for _, r := range rs {
+			n = append(n, r.Name)
+		}
+		return strings.Join(n, " ")
 	}
-	for _, r := range inSoC {
-		s = append(s, r.Name)
+	if names(inSoC) != "hyp_region" || names(board) != "ramoops_region" || names(conflicts) != "same_start_other_size" {
+		t.Errorf("in SoC %q, board %q, conflicts %q (a region is the SoC's at the same address and size; one overlapping it otherwise is a conflict, not a second node; a pool has no address to match)",
+			names(inSoC), names(board), names(conflicts))
 	}
-	if strings.Join(s, " ") != "hyp_region" || strings.Join(b, " ") != "ramoops_region same_start_other_size" {
-		t.Errorf("in SoC %v, board %v (a region only counts as the SoC's at the same address and size; a pool has no address to match)", s, b)
+	if b, _ := BoardRegions(stock, ParseDTSRegions(socSrc)); names(b) != "ramoops_region" {
+		t.Errorf("BoardRegions must leave conflicts out: %q", names(b))
+	}
+}
+
+func TestClassifyRegionsRejectsTwoStockRegionsOverOneRange(t *testing.T) {
+	stock := []Region{
+		{Name: "tz_stat_region", Addr: 0x60000000, Size: 0x100000, Fixed: true},
+		{Name: "tz_removed_region", Addr: 0x60000000, Size: 0x80000, Fixed: true},
+	}
+	board, _, conflicts := ClassifyRegions(stock, nil)
+	if len(board) != 1 || board[0].Name != "tz_stat_region" || len(conflicts) != 1 {
+		t.Errorf("board %+v conflicts %+v", board, conflicts)
 	}
 }
 

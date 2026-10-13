@@ -54,6 +54,12 @@ type Package struct {
 	SoCRegions []Region
 	// SoCGap is the SoC porting work against the best dtsi (see ComputeSoCGap).
 	SoCGap *SoCGap
+	// SoCLabels are the labels that dtsi (with its includes) defines; a board
+	// file can only refer to those. nil when there was no tree to read.
+	SoCLabels map[string]bool
+	// SoCFacts are what the dtsi says a board must provide and how its
+	// interrupt controllers take cells.
+	SoCFacts SoCDTSIFacts
 	// Live is what a running unit of the board said, when one was asked (see
 	// ReadLive); it settles which of the stock package's variants are fitted.
 	Live *Live
