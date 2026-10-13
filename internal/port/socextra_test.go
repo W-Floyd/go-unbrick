@@ -87,3 +87,41 @@ func TestSoCReportSaysWhenTheBestMatchDoesNotNameTheSoC(t *testing.T) {
 		t.Errorf("an out-of-tree row is marked:\n%s", got)
 	}
 }
+
+func TestPreferNamedRanksTheFileThatNamesTheSoCFirst(t *testing.T) {
+	tree := t.TempDir()
+	extra := t.TempDir()
+	writeFiles(t, tree, map[string]string{
+		"arch/arm64/boot/dts/mediatek/mt8183.dtsi": "/ { soc { compatible = \"mediatek,mt8183\"; }; };\n",
+	})
+	writeFiles(t, extra, map[string]string{"mt6768.dtsi": "/ { soc { compatible = \"mediatek,mt6768\"; }; };\n"})
+	big := SoCMatch{File: "arch/arm64/boot/dts/mediatek/mt8183.dtsi", Shared: 83, Score: 0.31}
+	small := SoCMatch{File: filepath.Join(extra, "mt6768.dtsi"), Shared: 34, Score: 0.13}
+	other := SoCMatch{File: "arch/arm64/boot/dts/mediatek/mt8183.dtsi", Shared: 5, Score: 0.9}
+
+	got := PreferNamed(tree, []SoCMatch{big, small}, "mediatek,MT6768")
+	if got[0].File != small.File || got[1].File != big.File {
+		t.Errorf("the file naming the SoC leads: %+v", got)
+	}
+	// Nothing names it: the score order stands.
+	if got := PreferNamed(tree, []SoCMatch{big, small}, "qcom,alor"); got[0].File != big.File {
+		t.Errorf("no match names the SoC, so no reordering: %+v", got)
+	}
+	// A name in a file with next to no overlap is not evidence.
+	small.Shared = minNamedShared - 1
+	if got := PreferNamed(tree, []SoCMatch{other, small}, "mediatek,MT6768"); got[0].File != other.File {
+		t.Errorf("a file sharing only %d addresses does not jump the queue: %+v", small.Shared, got)
+	}
+}
+
+func TestSoCReportShowsTheFilesPassedInWhateverTheirRank(t *testing.T) {
+	var ms []SoCMatch
+	for i := 0; i < 6; i++ {
+		ms = append(ms, SoCMatch{File: filepath.ToSlash(filepath.Join("arch/arm64/boot/dts/x", string(rune('a'+i))+".dtsi")), Score: 0.9 - float64(i)/10})
+	}
+	ms = append(ms, SoCMatch{File: "/series/new.dtsi", Score: 0.01})
+	got := SoCReport(t.TempDir(), ms, "")
+	if !strings.Contains(got, "(out of tree) /series/new.dtsi") || strings.Contains(got, "e.dtsi") {
+		t.Errorf("the fifth in-tree row is cut, the out-of-tree one is not:\n%s", got)
+	}
+}

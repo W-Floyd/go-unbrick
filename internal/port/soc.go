@@ -282,14 +282,23 @@ func SoCReport(tree string, ms []SoCMatch, soc string) string {
 	w("| dtsi | shared addresses | stock has | dtsi has | score |")
 	w("|---|---|---|---|---|")
 	for i, m := range ms {
-		if i == 4 {
-			break
+		// The best few, and every file the person passed in by hand: those are
+		// shown wherever they rank.
+		if i >= 4 && !filepath.IsAbs(m.File) {
+			continue
 		}
 		name := m.File
 		if filepath.IsAbs(m.File) {
 			name = "(out of tree) " + m.File
 		}
 		w("| %s | %d | %d | %d | %.2f |", name, m.Shared, m.Stock, m.Tree, m.Score)
+	}
+	best := ms[0].Score
+	for _, m := range ms {
+		best = max(best, m.Score)
+	}
+	if ms[0].Score < best {
+		w("\n`%s` is ranked first although files above score higher: it names `%s`, and a smaller dtsi for the right SoC covers fewer blocks than a larger one for a sibling (related SoCs share much of their address map).", filepath.Base(ms[0].File), soc)
 	}
 	if model := socModel(soc); model != "" && !dtsiMentions(tree, ms[0].File, model) {
 		w("\n`%s` is the closest register map available, but nothing in it names `%s`: it may be a related SoC and not this one. A recent SoC often has support in a patch series or a vendor or distribution kernel fork that is not in this tree; if you have its dtsi, pass it with `--soc-dtsi` and it is ranked with the tree's.", filepath.Base(ms[0].File), soc)
@@ -362,4 +371,31 @@ func displayNode(path string, n *fdt.Node) (SoCNode, bool) {
 		}
 	}
 	return SoCNode{}, false
+}
+
+// minNamedShared is how many stock register addresses a dtsi must share before
+// naming the SoC counts: a name in a file with next to no overlap is a
+// coincidence (a board file, a different SoC that mentions this one).
+const minNamedShared = 10
+
+// PreferNamed moves the matches whose dtsi (with its includes) names the stock
+// SoC to the front, keeping each group's order. A small early dtsi for the right
+// SoC scores below a big one for a sibling, because the address map of related
+// SoCs is largely shared; the name is the better evidence of which is the SoC.
+// Nothing changes when no match names it (the usual case for a SoC the stock
+// tree knows by a codename).
+func PreferNamed(tree string, ms []SoCMatch, soc string) []SoCMatch {
+	model := socModel(soc)
+	if model == "" {
+		return ms
+	}
+	var named, rest []SoCMatch
+	for _, m := range ms {
+		if m.Shared >= minNamedShared && dtsiMentions(tree, m.File, model) {
+			named = append(named, m)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	return append(named, rest...)
 }

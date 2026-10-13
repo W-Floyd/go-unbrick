@@ -99,7 +99,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 					return fmt.Errorf("--soc-dtsi: %w", xerr)
 				}
 				if err == nil {
-					ms = port.MergeSoCMatches(ms, extra)
+					ms = port.PreferNamed(kernelTree, port.MergeSoCMatches(ms, extra), pkg.DT.SoC)
 					pkg.SoC = ms
 					if len(ms) > 0 {
 						if dtsi, err := os.ReadFile(port.SoCFile(kernelTree, ms[0].File)); err == nil {
