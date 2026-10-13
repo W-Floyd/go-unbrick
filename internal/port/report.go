@@ -94,7 +94,7 @@ func Report(p Package, unknown []string, extra ...string) string {
 		}
 	}
 	if p.Boot.Cmdline != "" {
-		w("\n## Stock cmdline (vendor_boot)\n\n`%s`", p.Boot.Cmdline)
+		w("\n## Stock cmdline (%s)\n\n`%s`", p.Boot.Source, p.Boot.Cmdline)
 	}
 	for _, s := range extra {
 		w("\n%s", strings.TrimRight(s, "\n"))

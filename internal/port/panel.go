@@ -212,8 +212,12 @@ func writeSeq(b *strings.Builder, cmds []DSICmd) {
 
 // PanelFileName is the driver draft's file name for a stock panel name.
 func PanelFileName(name string) string {
-	return "panel-" + strings.ToLower(strings.ReplaceAll(name, "_", "-")) + ".c"
+	return "panel-" + strings.Trim(nonName.ReplaceAllString(strings.ToLower(name), "-"), "-") + ".c"
 }
+
+// nonName matches what a driver file name cannot hold: stock panel names are
+// free text ("hx83102p boe 2k video mode dsi panel").
+var nonName = regexp.MustCompile(`[^a-z0-9]+`)
 
 // CSource drafts the panel driver. It carries what the stock node settles (the
 // modes, the reset timing, the init and off sequences, the lanes, the format

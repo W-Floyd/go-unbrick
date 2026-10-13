@@ -56,15 +56,16 @@ func Deviceinfo(p port.Package, loader bool) []Line {
 	}
 	if b := p.Boot; b.PageSize != 0 {
 		set("generate_bootimg", "true", "")
-		set("flash_pagesize", fmt.Sprint(b.PageSize), "vendor_boot header")
-		set("header_version", fmt.Sprint(b.HeaderVersion), "vendor_boot header; the stock layout, not necessarily the one a port wants")
+		src := b.Source + " header"
+		set("flash_pagesize", fmt.Sprint(b.PageSize), src)
+		set("header_version", fmt.Sprint(b.HeaderVersion), src+"; the stock layout, not necessarily the one a port wants")
 		// Load addresses assume base 0, which the header cannot confirm.
 		set("flash_offset_base", "0x00000000", "assumed; the header holds absolute addresses")
-		set("flash_offset_kernel", hex(b.Kernel), "vendor_boot header")
-		set("flash_offset_ramdisk", hex(b.Ramdisk), "vendor_boot header")
+		set("flash_offset_kernel", hex(b.Kernel), src)
+		set("flash_offset_ramdisk", hex(b.Ramdisk), src)
 		set("flash_offset_second", "0x00000000", "")
-		set("flash_offset_tags", hex(b.Tags), "vendor_boot header")
-		set("flash_offset_dtb", hex(b.DTB), "vendor_boot header")
+		set("flash_offset_tags", hex(b.Tags), src)
+		set("flash_offset_dtb", hex(b.DTB), src)
 	}
 	if loader {
 		set("initfs_udev_subsystems", "block", "msm-firmware-loader finds partitions through /dev/disk/by-partlabel, which only udev creates")

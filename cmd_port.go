@@ -236,10 +236,11 @@ func (p *portProgress) done() {
 // blob reads a file out of the package by its "partition:path" location.
 func readPackage(input string, say func(string, ...any)) (pkg port.Package, unknown []string, blob func(string) ([]byte, error), err error) {
 	say("opening the package")
-	root, err := carveRoot(input)
+	top, err := carveRoot(input)
 	if err != nil {
 		return port.Package{}, nil, nil, err
 	}
+	root := packageRoot(top)
 	bytesOf := func(p string) ([]byte, error) {
 		n, err := root.Walk(p)
 		if err != nil {
@@ -247,17 +248,25 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 		}
 		return n.Bytes()
 	}
+	// The base device trees are in vendor_boot on a device that ships one, else
+	// in the boot image (header v2).
 	say("reading the boot images and device trees")
-	vb, err := bytesOf("vendor_boot.img")
+	bootImg := "vendor_boot.img"
+	vb, err := bytesOf(bootImg)
 	if err != nil {
+		bootImg = "boot.img"
+		if vb, err = bytesOf(bootImg); err != nil {
+			return pkg, nil, nil, fmt.Errorf("the package has neither vendor_boot.img nor boot.img (looked in %s)", root.Path())
+		}
+	}
+	if pkg.Boot, err = port.ParseBoot(vb); err != nil {
 		return pkg, nil, nil, err
 	}
-	if pkg.Boot, err = port.ParseVendorBoot(vb); err != nil {
-		return pkg, nil, nil, err
-	}
+	super := superImage(root)
+	root = root.withSuper(super)
 
 	var base, overlays []*fdt.Node
-	if dtb, err := bytesOf("vendor_boot.img/dtb"); err == nil {
+	if dtb, err := bytesOf(bootImg + "/dtb"); err == nil {
 		for _, d := range fdt.Split(dtb) {
 			if n, err := fdt.Parse(d); err == nil {
 				base = append(base, n)
@@ -275,10 +284,14 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 		}
 	}
 	say("reading the kernel modules")
-	pkg.Modules = readModules(root)
+	pkg.Modules = readModules(root, super, bootImg)
 	pkg.DT, unknown = port.ReadDT(base, overlays, pkg.Modules, activeCatalog())
 
-	if g, err := bytesOf("gpt.bin"); err == nil {
+	gptFile := "gpt.bin"
+	if _, err := root.Walk(gptFile); err != nil {
+		gptFile = "gpt_main0.bin" // Qualcomm's per-LUN tables; LUN 0 holds the A/B partitions
+	}
+	if g, err := bytesOf(gptFile); err == nil {
 		if t, err := qfil.ParseGPT(g); err == nil {
 			pkg.SectorSize = t.SectorSize
 			for _, p := range t.Partitions {
@@ -294,18 +307,18 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 	if fs, err := bytesOf("vendor_boot.img/vendor_ramdisk_0/first_stage_ramdisk/fstab.qcom"); err == nil {
 		pkg.Fstab = port.ParseFstab(string(fs))
 	}
-	if b, err := bytesOf("super.img/vendor_a/build.prop"); err == nil {
+	if b, err := bytesOf(super + "/vendor_a/build.prop"); err == nil {
 		pkg.Props = port.ParseProps(string(b))
 	} else {
 		fmt.Fprintf(os.Stderr, "vendor build.prop not read (%v); name and codename will be TODOs\n", err)
 	}
 	say("reading the display resources")
 	density, _ := strconv.Atoi(pkg.Props["ro.sf.lcd_density"])
-	pkg.Display = readAndroidDisplay(root, density)
+	pkg.Display = readAndroidDisplay(root, super, density)
 	say("listing the firmware partitions")
 	var nodes map[string]*carve.Node
-	pkg.Slot, pkg.PartFiles, pkg.FileIndex, nodes = readPartFiles(root, pkg.Partitions)
-	if v, err := root.Walk("super.img/vendor_a"); err == nil {
+	pkg.Slot, pkg.PartFiles, pkg.FileIndex, nodes = readPartFiles(root, super, pkg.Partitions)
+	if v, err := root.Walk(super + "/vendor_a"); err == nil {
 		_, kids, _ := v.Children()
 		for _, k := range kids {
 			pkg.VendorFiles = append(pkg.VendorFiles, strings.Trim(k.Name, "/"))
@@ -330,11 +343,107 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 	return pkg, unknown, blob, nil
 }
 
-// readModules reads every kernel module the package ships: the vendor_boot
+// pkgRoot is the directory a package's images are in. A flashing package wraps
+// them in a folder (and an image/ below it); an archive lists such members by
+// full path with no directory nodes, so the folder is a prefix on every lookup.
+type pkgRoot struct {
+	*carve.Node
+	prefix string
+	// super and logical say where a logical partition's data is when the
+	// flasher stores each as its own file next to a super image that holds only
+	// the table (Lenovo's super_1.img names the partitions; super_2…N are their
+	// filesystems): "<super>/<partition>" is routed to that file.
+	super   string
+	logical map[string]*carve.Node
+}
+
+func (r pkgRoot) Walk(p string) (*carve.Node, error) {
+	if rest, ok := strings.CutPrefix(p, r.super+"/"); ok && r.super != "" {
+		part, sub, _ := strings.Cut(rest, "/")
+		if n, ok := r.logical[part]; ok {
+			if sub == "" {
+				return n, nil
+			}
+			return n.Walk(sub)
+		}
+	}
+	return r.Node.Walk(r.prefix + p)
+}
+
+// withSuper records the super image's name and, for a table-only one, the
+// files its partitions live in, matched by size.
+func (r pkgRoot) withSuper(super string) pkgRoot {
+	r.super = super
+	t, err := r.Walk(super)
+	if err != nil {
+		return r
+	}
+	_, parts, _ := t.Children()
+	names, files := r.files()
+	r.logical = map[string]*carve.Node{}
+	for _, part := range parts {
+		if kind, _, err := part.Children(); err == nil && kind != "" {
+			continue // readable in place
+		}
+		for i, f := range files {
+			if n := strings.TrimSuffix(names[i], "/"); n != super && strings.HasPrefix(n, "super_") && f.Size == part.Size {
+				r.logical[strings.Trim(part.Name, "/")] = f
+				break
+			}
+		}
+	}
+	return r
+}
+
+// files are the entries directly in the folder, by name within it.
+func (r pkgRoot) files() (names []string, nodes []*carve.Node) {
+	_, kids, err := r.Node.Children()
+	if err != nil {
+		return nil, nil
+	}
+	for _, k := range kids {
+		if rel, ok := strings.CutPrefix(k.Name, r.prefix); ok && !strings.Contains(strings.TrimSuffix(rel, "/"), "/") {
+			names, nodes = append(names, rel), append(nodes, k)
+		}
+	}
+	return names, nodes
+}
+
+// packageRoot finds the folder holding the boot images: the archive's root, or
+// the folder of the first boot, vendor_boot or dtbo image it lists.
+func packageRoot(top *carve.Node) pkgRoot {
+	_, kids, _ := top.Children()
+	best := ""
+	found := false
+	for _, k := range kids {
+		name := strings.TrimSuffix(k.Name, "/")
+		dir, file := path.Split(name)
+		switch file {
+		case "dtbo.img", "boot.img", "vendor_boot.img":
+			if !found || len(dir) < len(best) {
+				best, found = dir, true
+			}
+		}
+	}
+	return pkgRoot{Node: top, prefix: best}
+}
+
+// superImage names the dynamic-partition image in the package's root: super.img,
+// or super_1.img, the first piece of one a flasher split into several files.
+func superImage(root pkgRoot) string {
+	for _, name := range []string{"super.img", "super_1.img"} {
+		if _, err := root.Walk(name); err == nil {
+			return name
+		}
+	}
+	return "super.img"
+}
+
+// readModules reads every kernel module the package ships: the boot image's
 // ramdisk's, and those on the dlkm partitions of super.
-func readModules(root *carve.Node) []port.Module {
+func readModules(root pkgRoot, super, bootImg string) []port.Module {
 	var mods []port.Module
-	for _, from := range []string{"vendor_boot.img/vendor_ramdisk_0", "super.img/vendor_dlkm_a", "super.img/system_dlkm_a"} {
+	for _, from := range []string{bootImg + "/vendor_ramdisk_0", super + "/vendor_dlkm_a", super + "/system_dlkm_a"} {
 		n, err := root.Walk(from)
 		if err != nil {
 			continue
@@ -363,7 +472,7 @@ var (
 // container's recipe), by the catalog's file-name aliases, or as a logical
 // partition of super. The A/B slot is the GPT's: "_a" when its partitions
 // carry that suffix.
-func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.PartFiles, index map[string][]string, nodes map[string]*carve.Node) {
+func readPartFiles(root pkgRoot, super string, gpt []string) (slot string, parts []port.PartFiles, index map[string][]string, nodes map[string]*carve.Node) {
 	for _, n := range gpt {
 		if strings.HasSuffix(n, "_a") {
 			slot = "_a"
@@ -401,18 +510,17 @@ func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.Pa
 		}
 	}
 	cat := activeCatalog()
-	if kids, err := rootKids(root); err == nil {
-		for _, k := range kids {
-			if part := cat.CanonicalPartition(strings.Trim(k.Name, "/")); part != "" {
-				add(part, k)
-			}
+	names, kids := root.files()
+	for i, k := range kids {
+		if part := cat.CanonicalPartition(strings.Trim(names[i], "/")); part != "" {
+			add(part, k)
 		}
 	}
 	for _, base := range port.FirmwarePartitions {
 		if _, ok := nodes[base]; ok {
 			continue
 		}
-		if n, err := root.Walk("super.img/" + base + slot); err == nil {
+		if n, err := root.Walk(super + "/" + base + slot); err == nil {
 			nodes[base] = n
 		}
 	}
@@ -431,11 +539,6 @@ func readPartFiles(root *carve.Node, gpt []string) (slot string, parts []port.Pa
 		}
 	}
 	return slot, parts, index, nodes
-}
-
-func rootKids(root *carve.Node) ([]*carve.Node, error) {
-	_, kids, err := root.Children()
-	return kids, err
 }
 
 // nodeFiles lists a partition image's files, looking through the wrappers a
@@ -469,7 +572,7 @@ var overlayDirs = []string{"system_ext_a", "vendor_a", "product_a"}
 // readAndroidDisplay reads the framework's display resources and every
 // overlay's over them. Nil when the framework table cannot be read, since
 // then even the defaults are unknown.
-func readAndroidDisplay(root *carve.Node, density int) *port.AndroidDisplay {
+func readAndroidDisplay(root pkgRoot, super string, density int) *port.AndroidDisplay {
 	tableOf := func(p string) *arsc.Table {
 		n, err := root.Walk(p)
 		if err != nil {
@@ -485,14 +588,14 @@ func readAndroidDisplay(root *carve.Node, density int) *port.AndroidDisplay {
 		}
 		return t
 	}
-	base := tableOf("super.img/system_a/system/framework/framework-res.apk")
+	base := tableOf(super + "/system_a/system/framework/framework-res.apk")
 	if base == nil {
 		return nil
 	}
 	overlays := map[string]*arsc.Table{}
 	var order []string
 	for _, part := range overlayDirs {
-		n, err := root.Walk("super.img/" + part)
+		n, err := root.Walk(super + "/" + part)
 		if err != nil {
 			continue
 		}
@@ -505,7 +608,7 @@ func readAndroidDisplay(root *carve.Node, density int) *port.AndroidDisplay {
 			if dir != "overlay/" || !strings.HasSuffix(file, ".apk") {
 				continue
 			}
-			if t := tableOf("super.img/" + part + "/" + name); t != nil {
+			if t := tableOf(super + "/" + part + "/" + name); t != nil {
 				overlays[file] = t
 				order = append(order, file)
 			}

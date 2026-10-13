@@ -26,6 +26,33 @@ type Boot struct {
 	Tags          uint32
 	DTB           uint32
 	Cmdline       string
+	Source        string // the image the header is from: "vendor_boot" or "boot"
+}
+
+// ParseBoot reads the layout from a vendor_boot or a boot image's header, for a
+// device that carries its base device tree in whichever it has.
+func ParseBoot(b []byte) (Boot, error) {
+	if len(b) >= 8 && string(b[:8]) == "VNDRBOOT" {
+		return ParseVendorBoot(b)
+	}
+	if len(b) < 576 || string(b[:8]) != "ANDROID!" {
+		return Boot{}, fmt.Errorf("not a boot or vendor_boot image")
+	}
+	le := binary.LittleEndian
+	boot := Boot{HeaderVersion: le.Uint32(b[40:]), PageSize: le.Uint32(b[36:]), Source: "boot"}
+	if boot.HeaderVersion >= 3 {
+		return boot, fmt.Errorf("boot image header v%d carries no addresses (its layout is in vendor_boot)", boot.HeaderVersion)
+	}
+	boot.Kernel, boot.Ramdisk, boot.Tags = le.Uint32(b[12:]), le.Uint32(b[20:]), le.Uint32(b[32:])
+	end := 64
+	for end < 64+512 && b[end] != 0 {
+		end++
+	}
+	boot.Cmdline = string(b[64:end])
+	if boot.HeaderVersion >= 2 && len(b) >= 1660 {
+		boot.DTB = uint32(le.Uint64(b[1652:]))
+	}
+	return boot, nil
 }
 
 // ParseVendorBoot reads the layout from a vendor_boot image's header.
@@ -42,7 +69,7 @@ func ParseVendorBoot(b []byte) (Boot, error) {
 		HeaderVersion: le.Uint32(b[8:]), PageSize: le.Uint32(b[12:]),
 		Kernel: le.Uint32(b[16:]), Ramdisk: le.Uint32(b[20:]),
 		Tags: le.Uint32(b[2076:]), DTB: uint32(le.Uint64(b[2104:])),
-		Cmdline: string(b[28:end]),
+		Cmdline: string(b[28:end]), Source: "vendor_boot",
 	}, nil
 }
 
