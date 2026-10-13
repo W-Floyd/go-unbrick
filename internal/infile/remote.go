@@ -119,9 +119,6 @@ type remote struct {
 	// payload partition's operations while a filesystem's metadata), and
 	// tracking only the last miss would read each as random.
 	streams []stream
-
-	full    sync.Once // FullDownload's one fetch of the whole object
-	fullErr error
 }
 
 // stream is one sequential reader: the chunk just past its last fetch, and
@@ -130,25 +127,14 @@ type stream struct{ next, ahead int }
 
 const maxStreams = 8
 
-// FullDownload makes opening a URL fetch the whole object into the cache first,
-// instead of ranges as they are read. It pays when most of the object will be
-// read anyway, or when what is wanted lies inside a compressed member that
-// cannot be read by range.
+// FullDownload says to fetch, in full, whatever a command needs more of than
+// ranges can give: a whole-file read past MaxRemoteRead, and (in carve) a
+// member too big for memory that cannot be read at random, which is unpacked to
+// a temporary file. It never fetches more of the input than that: reading such a
+// member costs its own bytes, not the whole archive's.
 var FullDownload bool
 
 func openRemote(u string) (*remote, error) {
-	r, err := openCached(u)
-	if err != nil || !FullDownload {
-		return r, err
-	}
-	r.full.Do(func() {
-		logf("fetching all %d bytes of %s", r.size, Base(u))
-		r.fullErr = r.ensure(0, r.size)
-	})
-	return r, r.fullErr
-}
-
-func openCached(u string) (*remote, error) {
 	remotesMu.Lock()
 	defer remotesMu.Unlock()
 	if r, ok := remotes[u]; ok {

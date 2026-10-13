@@ -15,7 +15,7 @@ import (
 
 // addFullDownload gives a command that reads http(s) inputs --full-download.
 func addFullDownload(c *cobra.Command) *cobra.Command {
-	c.Flags().BoolVar(&infile.FullDownload, "full-download", false, "fetch an http(s) input whole into the cache first, instead of by range as it is read (for when most of it will be read, or a compressed member cannot be read by range)")
+	c.Flags().BoolVar(&infile.FullDownload, "full-download", false, "fetch in full what an http(s) input needs more of than ranges give: a member too big for memory (a compressed super image) is unpacked to a temporary file. Only that member's bytes are fetched, not the whole archive")
 	return c
 }
 

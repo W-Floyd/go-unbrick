@@ -110,9 +110,10 @@ func (n *Node) Reader() (io.ReadCloser, error) {
 }
 
 // ReaderAt reads the node at random, buffering one that can only be streamed.
-// One too big for memory is unpacked to a temporary file when the run asked to
-// download inputs whole (infile.FullDownload): a compressed archive member
-// cannot be read by range, and a filesystem inside it needs random access.
+// One too big for memory is unpacked to a temporary file when the run asked for
+// it (infile.FullDownload): a compressed archive member cannot be read by range,
+// and a filesystem inside it needs random access. Streaming it fetches that
+// member's bytes only, not the archive's.
 func (n *Node) ReaderAt() (io.ReaderAt, error) {
 	if n.at != nil {
 		return n.at, nil

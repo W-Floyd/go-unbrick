@@ -273,7 +273,7 @@ func TestRemoteRateLimitedUsesCache(t *testing.T) {
 	}
 }
 
-func TestFullDownloadFetchesEverythingOnOpen(t *testing.T) {
+func TestFullDownloadDoesNotFetchTheWholeObjectOnOpen(t *testing.T) {
 	reset(t)
 	body := randBytes(3*chunkSize + 123)
 	s := newServer(t, body, true)
@@ -285,17 +285,26 @@ func TestFullDownloadFetchesEverythingOnOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	sent := s.sent.Load()
-	if sent < int64(len(body)) {
-		t.Fatalf("opened with %d of %d bytes fetched", sent, len(body))
+	if s.sent.Load() >= int64(len(body)) {
+		t.Errorf("opened with %d of %d bytes fetched: --full-download must fetch only what is read", s.sent.Load(), len(body))
 	}
-	// Reads after that cost nothing.
-	buf := make([]byte, 100)
-	if _, err := f.ReadAt(buf, int64(len(body))-100); err != nil && err != io.EOF {
-		t.Fatal(err)
+}
+
+func TestFullDownloadLiftsTheWholeFileReadCap(t *testing.T) {
+	reset(t)
+	body := randBytes(3 * chunkSize)
+	s := newServer(t, body, true)
+	old := MaxRemoteRead
+	MaxRemoteRead = chunkSize
+	t.Cleanup(func() { MaxRemoteRead, FullDownload = old, false })
+
+	if _, err := ReadFile(s.URL + "/big.bin"); err == nil {
+		t.Error("over the cap without --full-download must be refused")
 	}
-	if !bytes.Equal(buf, body[len(body)-100:]) || s.sent.Load() != sent {
-		t.Errorf("read went back to the network: %d -> %d", sent, s.sent.Load())
+	FullDownload = true
+	got, err := ReadFile(s.URL + "/big.bin")
+	if err != nil || !bytes.Equal(got, body) {
+		t.Errorf("with --full-download: err %v, equal %v", err, bytes.Equal(got, body))
 	}
 }
 
