@@ -355,8 +355,7 @@ func BoardDTS(p Package) string {
 	}
 	w("\t/* TODO: chassis-type: a package does not say handset or tablet */")
 	if len(p.SoCFacts.Needs) > 0 {
-		w("\t/* TODO: %s refers to labels it does not define, which the board must (clocks, regulators, memory): %s */",
-			filepath.Base(p.SoC[0].File), strings.Join(p.SoCFacts.Needs, ", "))
+		b.WriteString(p.neededLabels())
 	}
 	if p.SoCRegions != nil {
 		board, _, conflicts := ClassifyRegions(p.DT.Reserved, p.SoCRegions)
@@ -438,4 +437,73 @@ func (p Package) pinRefProblem(u PinUse) string {
 		}
 	}
 	return ""
+}
+
+// neededLabels is the board dts's answer to the labels the SoC dtsi refers to
+// and leaves to the board: a fixed clock the stock tree has by that label is
+// written from its stock frequency; one a sibling dtsi defines is copied and
+// marked; whatever is left is a TODO naming them.
+func (p Package) neededLabels() string {
+	var b strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	var clocks, left []string
+	for _, l := range p.SoCFacts.Needs {
+		switch _, stock := p.DT.FixedClocks[l]; {
+		case stock:
+			clocks = append(clocks, l)
+		case p.ClockDefs[l].Text != "":
+			clocks = append(clocks, l)
+		default:
+			left = append(left, l)
+		}
+	}
+	if len(clocks) > 0 {
+		w("")
+		w("\tclocks {")
+		for _, l := range clocks {
+			if fc, ok := p.DT.FixedClocks[l]; ok {
+				w("\t\t/* stock: %s, a fixed clock of %d Hz */", fc.Name, fc.Freq)
+				w("\t\t%s: %s {", l, strings.ReplaceAll(fc.Name, "_", "-"))
+				w("\t\t\tcompatible = \"fixed-clock\";")
+				w("\t\t\t#clock-cells = <0>;")
+				w("\t\t\tclock-frequency = <%d>;", fc.Freq)
+				w("\t\t};")
+				continue
+			}
+			cd := p.ClockDefs[l]
+			w("\t\t/* TODO: copied from %s (the stock tree has no %s): check the clock it takes as its parent */", cd.File, l)
+			// Re-indented from the braces, with the node's closing ";".
+			var out []string
+			depth := 0
+			for i, ln := range strings.Split(cd.Text, "\n") {
+				ln = strings.TrimSpace(ln)
+				if ln == "" {
+					continue
+				}
+				if strings.HasPrefix(ln, "}") {
+					depth--
+				}
+				if i == 0 {
+					out = append(out, "\t\t"+l+": "+ln)
+				} else {
+					out = append(out, "\t\t"+strings.Repeat("\t", depth)+ln)
+				}
+				if strings.HasSuffix(ln, "{") {
+					depth++
+				}
+			}
+			if n := len(out); n > 0 {
+				out[n-1] += ";"
+			}
+			for _, ln := range out {
+				w("%s", ln)
+			}
+		}
+		w("\t};")
+	}
+	if len(left) > 0 {
+		w("\t/* TODO: %s refers to labels it does not define, which the board must (regulators, memory, anything not a clock the stock tree or a sibling dtsi has): %s */",
+			filepath.Base(p.SoC[0].File), strings.Join(left, ", "))
+	}
+	return b.String()
 }

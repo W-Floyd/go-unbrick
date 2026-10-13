@@ -71,7 +71,10 @@ func regionOf(n *fdt.Node) (Region, bool) {
 		r.Compat = c[0]
 	}
 	if reg := n.U32s("reg"); len(reg) == 4 {
-		r.Addr, r.Size, r.Fixed = uint64(reg[0])<<32|uint64(reg[1]), uint64(reg[2])<<32|uint64(reg[3]), true
+		r.Addr, r.Size = uint64(reg[0])<<32|uint64(reg[1]), uint64(reg[2])<<32|uint64(reg[3])
+		// A zero-size reg is a placeholder the bootloader fills in at boot, not
+		// a reservation to write.
+		r.Fixed = r.Size > 0
 		return r, true
 	}
 	if sz := n.U32s("size"); len(sz) == 2 {

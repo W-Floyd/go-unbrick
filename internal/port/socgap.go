@@ -435,3 +435,61 @@ func treeCompatibles(tree string) map[string]bool {
 	wg.Wait()
 	return out
 }
+
+// ClockDef is a clock node copied from a sibling dtsi.
+type ClockDef struct {
+	Label string
+	File  string // the dtsi it came from
+	Text  string // "name {\n...};" ready to place under /clocks
+}
+
+// blockAt is the text from the "{" at open through its matching "}".
+func blockAt(text string, open int) string {
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[open : i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// SiblingClockDefs finds, for each label a board must define, a fixed-clock or
+// fixed-factor-clock node by that name in the nearest sibling dtsi that has one
+// (in the SoC match order). Only clocks are copied: a node of another kind
+// depends on where it sits and what it refers to.
+func SiblingClockDefs(tree string, ms []SoCMatch, labels []string) map[string]ClockDef {
+	out := map[string]ClockDef{}
+	if len(labels) == 0 {
+		return out
+	}
+	for _, m := range ms {
+		b, err := os.ReadFile(filepath.Join(tree, filepath.FromSlash(m.File)))
+		if err != nil {
+			continue
+		}
+		text := stripComments(string(b))
+		for _, l := range labels {
+			if _, done := out[l]; done {
+				continue
+			}
+			re := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(l) + `:\s*([^{;\s]+)\s*\{`)
+			loc := re.FindStringSubmatchIndex(text)
+			if loc == nil {
+				continue
+			}
+			block := blockAt(text, loc[1]-1)
+			if !strings.Contains(directBody(text, loc[1]-1), "fixed-") {
+				continue
+			}
+			out[l] = ClockDef{Label: l, File: filepath.Base(m.File), Text: text[loc[2]:loc[3]] + " " + block}
+		}
+	}
+	return out
+}

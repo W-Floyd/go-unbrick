@@ -24,7 +24,7 @@ import (
 
 func newPortCmd() *cobra.Command {
 	var out, sizeMM, distro, kernelTree, serial string
-	var live bool
+	var live, checkDTS bool
 	var referenceDTS, referencePanel []string
 	c := &cobra.Command{
 		Use:   "port <stock package>",
@@ -93,6 +93,13 @@ for a package that ships it as sparse chunks takes about half a minute.
 						pkg.SoCGap = port.ComputeSoCGap(kernelTree, pkg)
 						pkg.SoCLabels = port.SoCLabels(kernelTree, ms[0].File)
 						pkg.SoCFacts = port.ReadSoCDTSI(kernelTree, ms[0].File)
+						var unstocked []string
+						for _, l := range pkg.SoCFacts.Needs {
+							if _, ok := pkg.DT.FixedClocks[l]; !ok {
+								unstocked = append(unstocked, l)
+							}
+						}
+						pkg.ClockDefs = port.SiblingClockDefs(kernelTree, ms[1:], unstocked)
 					}
 				}
 			}
@@ -184,6 +191,18 @@ for a package that ships it as sparse chunks takes about half a minute.
 				}
 			}
 			fmt.Printf("wrote %d files (%s) -> %s\n", len(files), em.Title(), out)
+			if checkDTS {
+				if len(pkg.SoC) == 0 {
+					return fmt.Errorf("--check-dts needs --kernel-tree with a SoC dtsi that matches the package")
+				}
+				res, err := port.CheckDTS(pkg.KernelTree, filepath.Join(out, "dts", port.BoardName(pkg)+".dts"), pkg.SoC[0].File)
+				if err != nil {
+					return fmt.Errorf("--check-dts: %w", err)
+				}
+				for _, l := range res.Summary() {
+					fmt.Fprintln(os.Stderr, l)
+				}
+			}
 			return nil
 		},
 	}
@@ -191,6 +210,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	c.Flags().StringVar(&distro, "distro", "nura", "distribution to draft packaging for ("+strings.Join(port.IDs(), ", ")+")")
 	c.Flags().StringSliceVar(&referencePanel, "reference-panel", nil, "an existing hand-written panel driver: compare the drafted panels' command bytes and modes against it")
 	c.Flags().StringSliceVar(&referenceDTS, "reference-dts", nil, "an existing hand-written board dts (repeat or comma-separate for several): compare the generated peripherals against it, by bus and address")
+	c.Flags().BoolVar(&checkDTS, "check-dts", false, "after writing with -o, compile the board dts against --kernel-tree with the C preprocessor and dtc, and report what the board adds over the bare SoC dtsi (needs clang or gcc, and dtc)")
 	c.Flags().BoolVar(&live, "live", false, "ask an attached device over adb which of the board's variant parts are fitted, and draft only those")
 	c.Flags().StringVar(&serial, "serial", "", "adb serial for --live when more than one device is attached")
 	c.Flags().StringVar(&kernelTree, "kernel-tree", "", "target kernel source tree: report which parts it supports and the firmware its drivers name")

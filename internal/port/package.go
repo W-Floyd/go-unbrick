@@ -60,6 +60,9 @@ type Package struct {
 	// ConfigDiff is the stock kernel config against the tree's Kconfig; nil
 	// without a tree or a stock config.
 	ConfigDiff *ConfigDiff
+	// ClockDefs are clock nodes the board must define that a sibling dtsi has,
+	// by label (see SiblingClockDefs).
+	ClockDefs map[string]ClockDef
 	// SoCFacts are what the dtsi says a board must provide and how its
 	// interrupt controllers take cells.
 	SoCFacts SoCDTSIFacts

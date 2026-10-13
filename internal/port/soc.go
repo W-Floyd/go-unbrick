@@ -26,6 +26,13 @@ func collectAddrs(b *fdt.Node, dt *DT) {
 			}
 		}
 	}
+	labelsAt := map[string][]string{} // node path -> its labels, from this tree's own __symbols__
+	if s := childNamed(b, "__symbols__"); s != nil {
+		for _, k := range s.Keys {
+			p := strings.TrimRight(string(s.Props[k]), "\x00")
+			labelsAt[p] = append(labelsAt[p], k)
+		}
+	}
 	b.Walk(func(path string, n *fdt.Node) {
 		if a, ok := unitAddr(n.Name); ok {
 			if !dt.UnitAddrs[a] && !strings.Contains(path, "reserved-memory") && !strings.Contains(path, "__") {
@@ -33,7 +40,27 @@ func collectAddrs(b *fdt.Node, dt *DT) {
 			}
 			dt.UnitAddrs[a] = true
 		}
+		// The board-level fixed clocks (the crystal, the sleep clock) the SoC's
+		// clock controllers take as inputs: a board file must define them.
+		for _, c := range n.Strs("compatible") {
+			if c != "fixed-clock" {
+				continue
+			}
+			if f := n.U32s("clock-frequency"); len(f) == 1 {
+				for _, label := range labelsAt[path] {
+					if _, ok := dt.FixedClocks[label]; !ok {
+						dt.FixedClocks[label] = FixedClock{Label: label, Name: n.Name, Freq: f[0]}
+					}
+				}
+			}
+		}
 	})
+}
+
+// FixedClock is a "fixed-clock" node of the stock base tree.
+type FixedClock struct {
+	Label, Name string
+	Freq        uint32 // Hz
 }
 
 // SoCNode is one peripheral of the stock base device tree, found by its

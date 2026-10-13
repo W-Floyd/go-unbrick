@@ -140,7 +140,9 @@ type DT struct {
 	UnitAddrs map[string]bool
 	// SoCNodes are the base tree's register-addressed peripherals, one per
 	// address (see SoCGap).
-	SoCNodes      []SoCNode
+	SoCNodes []SoCNode
+	// FixedClocks are the base tree's fixed-clock nodes by label ("xo_board").
+	FixedClocks   map[string]FixedClock
 	FirmwareNames []FirmwareName
 	// Reserved are the stock reserved-memory regions, base and overlays.
 	Reserved []Region
@@ -152,6 +154,7 @@ type DT struct {
 // and the catalog does not describe.
 func ReadDT(base, overlays []*fdt.Node, mods []Module, cat *catalog.Catalog) (dt DT, unknown []string) {
 	dt.Symbols, dt.UnitAddrs = map[string]string{}, map[string]bool{}
+	dt.FixedClocks = map[string]FixedClock{}
 	for _, b := range base {
 		if dt.SoC == "" {
 			if c := b.Strs("compatible"); len(c) > 0 {
