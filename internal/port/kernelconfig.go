@@ -191,3 +191,61 @@ func joinMax(s []string, n int) string {
 	}
 	return strings.Join(s, ", ")
 }
+
+// ConfigChoice is a string-valued option of the stock config that lists parts
+// the board is built with: some vendors' kernels name the camera sensors and
+// display panels this way (CONFIG_CUSTOM_KERNEL_IMGSENSOR="a b c").
+type ConfigChoice struct {
+	Symbol string
+	What   string
+	Items  []string
+}
+
+// choiceKinds says what a list symbol is about, by words in its name.
+var choiceKinds = []struct{ Word, What string }{
+	{"IMGSENSOR", "camera sensors"},
+	{"CAMERA_SENSOR", "camera sensors"},
+	{"_LCM", "display panels"},
+	{"PANEL", "display panels"},
+	{"TOUCHPANEL", "touch controllers"},
+}
+
+// ConfigChoices are the stock config's part lists, most informative first.
+func (p Package) ConfigChoices() []ConfigChoice {
+	var out []ConfigChoice
+	for sym, v := range p.KernelConfig {
+		if v == "" || v == "y" || v == "m" || v == "n" || isNumber(v) {
+			continue
+		}
+		what := ""
+		for _, k := range choiceKinds {
+			if strings.Contains(sym, k.Word) {
+				what = k.What
+				break
+			}
+		}
+		items := strings.FieldsFunc(v, func(r rune) bool { return r == ' ' || r == ',' })
+		if what == "" || len(items) == 0 {
+			continue
+		}
+		out = append(out, ConfigChoice{Symbol: sym, What: what, Items: items})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	return out
+}
+
+// ConfigChoicesSection is the report's account of those lists.
+func ConfigChoicesSection(p Package) string {
+	cs := p.ConfigChoices()
+	if len(cs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	w("\n## Parts the stock kernel is built for\n")
+	w("The stock config lists these in an option of its own, so they are what the board may carry: each unit has one of the alternatives, which a running device settles.\n")
+	for _, c := range cs {
+		w("- %s (`%s`): %s", c.What, c.Symbol, "`"+strings.Join(c.Items, "`, `")+"`")
+	}
+	return b.String()
+}

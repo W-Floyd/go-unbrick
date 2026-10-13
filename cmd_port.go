@@ -119,7 +119,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 				refPanel.Write(b)
 				refPanel.WriteString("\n")
 			}
-			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras), port.AudioSection(pkg))
+			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras), port.AudioSection(pkg), port.ConfigChoicesSection(pkg))
 			ucm, ucmNotes := port.UCM(pkg)
 			for name, b := range ucm {
 				files[name] = b

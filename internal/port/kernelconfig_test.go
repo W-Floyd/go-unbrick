@@ -83,3 +83,24 @@ func TestConfigEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigChoicesListsThePartsAKernelNames(t *testing.T) {
+	p := Package{KernelConfig: map[string]string{
+		"CONFIG_CUSTOM_KERNEL_IMGSENSOR":   "gc08a3_mipi_raw ov13b10_mipi_raw",
+		"CONFIG_CUSTOM_KERNEL_LCM":         "nt36532w_wxga hx83102p_wxga",
+		"CONFIG_MTK_LCM_PHYSICAL_ROTATION": "0",
+		"CONFIG_TOUCHSCREEN_MTK_TOUCH":     "",
+		"CONFIG_CMDLINE":                   "cgroup_disable=pressure",
+		"CONFIG_MTK_IMGSENSOR":             "y",
+	}}
+	cs := p.ConfigChoices()
+	if len(cs) != 2 || cs[0].What != "camera sensors" || len(cs[0].Items) != 2 || cs[1].What != "display panels" {
+		t.Fatalf("got %+v", cs)
+	}
+	if sec := ConfigChoicesSection(p); !strings.Contains(sec, "`gc08a3_mipi_raw`, `ov13b10_mipi_raw`") {
+		t.Errorf("section:\n%s", sec)
+	}
+	if ConfigChoicesSection(Package{}) != "" {
+		t.Error("no config, no section")
+	}
+}
