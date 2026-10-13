@@ -77,7 +77,7 @@ func newReconCmd() *cobra.Command {
 	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
 	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach; found automatically when a vendor can name it, \"none\" to skip")
-	return c
+	return addFullDownload(c)
 }
 
 // reconDepth bounds how deep the cascade recurses into nested containers.

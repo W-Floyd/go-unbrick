@@ -105,7 +105,7 @@ func ReadFile(p string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	if f.Size() > MaxRemoteRead {
+	if f.Size() > MaxRemoteRead && !FullDownload {
 		return nil, fmt.Errorf("%s: %d bytes is too large to fetch whole", Base(p), f.Size())
 	}
 	b := make([]byte, f.Size())

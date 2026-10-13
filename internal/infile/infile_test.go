@@ -272,3 +272,43 @@ func TestRemoteRateLimitedUsesCache(t *testing.T) {
 		t.Errorf("no warning: %q", warned)
 	}
 }
+
+func TestFullDownloadFetchesEverythingOnOpen(t *testing.T) {
+	reset(t)
+	body := randBytes(3*chunkSize + 123)
+	s := newServer(t, body, true)
+	FullDownload = true
+	t.Cleanup(func() { FullDownload = false })
+
+	f, err := Open(s.URL + "/big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sent := s.sent.Load()
+	if sent < int64(len(body)) {
+		t.Fatalf("opened with %d of %d bytes fetched", sent, len(body))
+	}
+	// Reads after that cost nothing.
+	buf := make([]byte, 100)
+	if _, err := f.ReadAt(buf, int64(len(body))-100); err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf, body[len(body)-100:]) || s.sent.Load() != sent {
+		t.Errorf("read went back to the network: %d -> %d", sent, s.sent.Load())
+	}
+}
+
+func TestRangeOpenFetchesNothingUntilRead(t *testing.T) {
+	reset(t)
+	body := randBytes(3 * chunkSize)
+	s := newServer(t, body, true)
+	f, err := Open(s.URL + "/big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if s.sent.Load() >= int64(len(body)) {
+		t.Errorf("default open fetched %d of %d bytes", s.sent.Load(), len(body))
+	}
+}

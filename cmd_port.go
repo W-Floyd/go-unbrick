@@ -172,7 +172,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 	c.Flags().StringVar(&serial, "serial", "", "adb serial for --live when more than one device is attached")
 	c.Flags().StringVar(&kernelTree, "kernel-tree", "", "target kernel source tree: report which parts it supports and the firmware its drivers name")
 	c.Flags().StringVar(&sizeMM, "size-mm", "", "visible panel size WIDTHxHEIGHT in mm for the gmobile file; overrides the diagonal in a vendor panel file's name and the device tree's size")
-	return c
+	return addFullDownload(c)
 }
 
 var kernelBanner = regexp.MustCompile(`Linux version (\d+\.\d+\.\d+)`)

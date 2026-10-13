@@ -20,7 +20,7 @@ func newSLCFCmd() *cobra.Command {
 }
 
 func newSLCFParseCmd() *cobra.Command {
-	return &cobra.Command{
+	return addFullDownload(&cobra.Command{
 		Use:   "parse <stock.zip | slcf_*.nvm>",
 		Short: "show the subsidy lock state, control-key length, and locked networks",
 		Args:  cobra.ExactArgs(1),
@@ -63,7 +63,7 @@ func newSLCFParseCmd() *cobra.Command {
 			}
 			return nil
 		},
-	}
+	})
 }
 
 // slcfMembers returns candidate member names for a zip (any slcf_*.nvm), or the

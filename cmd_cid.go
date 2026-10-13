@@ -25,7 +25,7 @@ func newCIDCmd() *cobra.Command {
 // read flashfile.xml's cid_value (see `recon` on a stock zip). This command is
 // still useful to confirm the codename and base signing CID of a lone vbmeta.img.
 func newCIDVBMetaCmd() *cobra.Command {
-	return &cobra.Command{
+	return addFullDownload(&cobra.Command{
 		Use:   "vbmeta <stock.zip | vbmeta.img>",
 		Short: "read the codename and base (signing) CID from a vbmeta image (HAB_META)",
 		Args:  cobra.ExactArgs(1),
@@ -43,5 +43,5 @@ func newCIDVBMetaCmd() *cobra.Command {
 			fmt.Printf("           (carrier CID is flashfile.xml cid_value; see `recon`)\n")
 			return nil
 		},
-	}
+	})
 }

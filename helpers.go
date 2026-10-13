@@ -7,8 +7,17 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
+
+// addFullDownload gives a command that reads http(s) inputs --full-download.
+func addFullDownload(c *cobra.Command) *cobra.Command {
+	c.Flags().BoolVar(&infile.FullDownload, "full-download", false, "fetch an http(s) input whole into the cache first, instead of by range as it is read (for when most of it will be read, or a compressed member cannot be read by range)")
+	return c
+}
 
 // readImage reads path, joining a PIL split image (.mdt with sibling .bNN
 // files) into one ELF. missing lists segments whose .bNN was absent.
