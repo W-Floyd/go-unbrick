@@ -135,8 +135,11 @@ type DT struct {
 	// Symbols maps a base DTB label to its node path ("qupv3_se1_i2c" ->
 	// "/soc/geniqup@4ac0000/i2c@4a84000"); UnitAddrs holds the unit addresses
 	// of its peripherals, lower-case hex, the SoC's register fingerprint.
-	Symbols       map[string]string
-	UnitAddrs     map[string]bool
+	Symbols   map[string]string
+	UnitAddrs map[string]bool
+	// SoCNodes are the base tree's register-addressed peripherals, one per
+	// address (see SoCGap).
+	SoCNodes      []SoCNode
 	FirmwareNames []FirmwareName
 	// Reserved are the stock reserved-memory regions, base and overlays.
 	Reserved []Region

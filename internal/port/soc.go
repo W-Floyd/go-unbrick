@@ -26,11 +26,21 @@ func collectAddrs(b *fdt.Node, dt *DT) {
 			}
 		}
 	}
-	b.Walk(func(_ string, n *fdt.Node) {
+	b.Walk(func(path string, n *fdt.Node) {
 		if a, ok := unitAddr(n.Name); ok {
+			if !dt.UnitAddrs[a] && !strings.Contains(path, "reserved-memory") && !strings.Contains(path, "__") {
+				dt.SoCNodes = append(dt.SoCNodes, SoCNode{Path: path, Name: n.Name, Addr: a, Compatible: n.Strs("compatible")})
+			}
 			dt.UnitAddrs[a] = true
 		}
 	})
+}
+
+// SoCNode is one peripheral of the stock base device tree, found by its
+// register address.
+type SoCNode struct {
+	Path, Name, Addr string
+	Compatible       []string
 }
 
 var hexAddr = regexp.MustCompile(`^[0-9a-f]+$`)

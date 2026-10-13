@@ -86,6 +86,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 							pkg.BusLabels = port.BusLabels(pkg.DT, string(dtsi))
 							pkg.SoCRegions = port.ParseDTSRegions(string(dtsi))
 						}
+						pkg.SoCGap = port.ComputeSoCGap(kernelTree, pkg)
 					}
 				}
 			}
@@ -99,7 +100,7 @@ for a package that ships it as sparse chunks takes about half a minute.
 			files["dts/"+port.BoardName(pkg)+".dts"] = []byte(port.BoardDTS(pkg))
 			bundle.Notes = append(bundle.Notes, dtsNotes...)
 			if pkg.KernelTree != "" {
-				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC))
+				bundle.Report = append(bundle.Report, port.SoCReport(pkg.KernelTree, pkg.SoC), port.SoCGapSection(pkg.SoCGap))
 			}
 			bundle.Report = append(bundle.Report, port.MemorySection(pkg))
 			drivers := port.PanelDrivers(pkg)

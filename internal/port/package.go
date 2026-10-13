@@ -52,6 +52,8 @@ type Package struct {
 	// SoCRegions are the reserved-memory regions the best SoC dtsi defines; nil
 	// when there was no tree to read it from.
 	SoCRegions []Region
+	// SoCGap is the SoC porting work against the best dtsi (see ComputeSoCGap).
+	SoCGap *SoCGap
 	// Live is what a running unit of the board said, when one was asked (see
 	// ReadLive); it settles which of the stock package's variants are fitted.
 	Live *Live
