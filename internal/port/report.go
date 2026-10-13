@@ -60,6 +60,12 @@ func Report(p Package, unknown []string, extra ...string) string {
 		} else if pt.Desc != "" {
 			driver = "(no module: built in, or absent) " + pt.Desc
 		}
+		if pt.Driver == "" && p.KernelConfig != nil {
+			driver = strings.Replace(driver, "(no module: built in, or absent)", configVerdict(p, pt.Compatible), 1)
+			if driver == "—" {
+				driver = configVerdict(p, pt.Compatible)
+			}
+		}
 		w("| %s | %s | `%s` | %s | %d of %d |", pt.Bus, pt.Node, pt.Compatible, driver, pt.Overlays, len(p.DT.Variants))
 	}
 	if len(unknown) > 0 {

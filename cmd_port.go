@@ -115,7 +115,10 @@ for a package that ships it as sparse chunks takes about half a minute.
 				refPanel.Write(b)
 				refPanel.WriteString("\n")
 			}
-			bundle.Report = append(bundle.Report, port.LiveSection(pkg))
+			bundle.Report = append(bundle.Report, port.LiveSection(pkg), port.CameraSection(pkg.Cameras))
+			if pkg.KernelConfig != nil {
+				files["kernel/stock.config"] = []byte(port.ConfigText(pkg.KernelConfig))
+			}
 			bundle.Report = append(bundle.Report, port.PanelSection(drivers, refPanel.String()))
 			if len(referenceDTS) > 0 {
 				var ref strings.Builder
@@ -300,9 +303,11 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 		}
 	}
 	if b, err := bytesOf("boot.img/kernel"); err == nil {
+		b = port.KernelImage(b)
 		if m := kernelBanner.FindSubmatch(b); m != nil {
 			pkg.Kernel = string(m[1])
 		}
+		pkg.KernelConfig = port.KernelConfig(b)
 	}
 	if fs, err := bytesOf("vendor_boot.img/vendor_ramdisk_0/first_stage_ramdisk/fstab.qcom"); err == nil {
 		pkg.Fstab = port.ParseFstab(string(fs))
@@ -323,6 +328,7 @@ func readPackage(input string, say func(string, ...any)) (pkg port.Package, unkn
 		for _, k := range kids {
 			pkg.VendorFiles = append(pkg.VendorFiles, strings.Trim(k.Name, "/"))
 		}
+		pkg.Cameras = port.CameraModules(pkg.VendorFiles)
 	}
 	slot := pkg.Slot
 	blob = func(location string) ([]byte, error) {

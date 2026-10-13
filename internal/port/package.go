@@ -14,10 +14,15 @@ type Package struct {
 	SectorSize uint32            // GPT logical block size
 	Boot       Boot
 	DT         DT
-	Kernel     string   // "5.15.167" from the stock kernel's banner
-	Modules    []Module // the stock kernel modules, read from their .modinfo
-	Fstab      []FstabEntry
-	Display    *AndroidDisplay // Android's screen shape resources, if read
+	Kernel     string // "5.15.167" from the stock kernel's banner
+	// KernelConfig is the stock kernel's embedded configuration (see
+	// KernelConfig); nil when it has none.
+	KernelConfig map[string]string
+	// Cameras are the sensor-module options the vendor partition carries.
+	Cameras []CameraModule
+	Modules []Module // the stock kernel modules, read from their .modinfo
+	Fstab   []FstabEntry
+	Display *AndroidDisplay // Android's screen shape resources, if read
 	// SizeMM is the visible panel size in millimetres, when known. A package
 	// does not carry a trustworthy one, so it is supplied from outside.
 	SizeMM [2]int
