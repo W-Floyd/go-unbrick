@@ -19,6 +19,16 @@ func addFullDownload(c *cobra.Command) *cobra.Command {
 	return c
 }
 
+// carveSecrets is the --secrets directory of a command that opens inputs through
+// carve; empty leaves the sibling ./secrets or ../secrets lookup to carveRoot.
+var carveSecrets string
+
+// addSecrets gives a command that reads encrypted members --secrets.
+func addSecrets(c *cobra.Command) *cobra.Command {
+	c.Flags().StringVar(&carveSecrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members; default: ./secrets or ../secrets beside the input")
+	return c
+}
+
 // readImage reads path, joining a PIL split image (.mdt with sibling .bNN
 // files) into one ELF. missing lists segments whose .bNN was absent.
 func readImage(path string) (data []byte, missing []int, err error) {

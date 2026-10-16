@@ -25,9 +25,15 @@ func carveRoot(input string) (*carve.Node, error) {
 		carve.Register(vendor.CarveExpanders()...)
 		carve.Register(encryptedExpander())
 	})
-	if len(reconSecrets) == 0 && !infile.IsRemote(input) {
-		if dir := findSecrets(filepath.Dir(input)); dir != "" {
-			loadSecrets(dir)
+	if len(reconSecrets) == 0 {
+		dir := carveSecrets
+		if dir == "" && !infile.IsRemote(input) {
+			dir = findSecrets(filepath.Dir(input))
+		}
+		if dir != "" {
+			if err := loadSecrets(dir); err != nil {
+				return nil, fmt.Errorf("--secrets: %w", err)
+			}
 		}
 	}
 	return carve.Open(input)
@@ -73,7 +79,7 @@ segment of path names a child; a container's children follow its name.
 	}
 	c.Flags().BoolVarP(&recursive, "recursive", "r", false, "descend into nested containers")
 	c.Flags().IntVar(&depth, "depth", 4, "with -r, how many container levels to descend")
-	return addFullDownload(c)
+	return addSecrets(addFullDownload(c))
 }
 
 // listNode prints n's children, and theirs down to depth container levels.
@@ -154,7 +160,7 @@ name its format, which over a URL means fetching it.
 	}
 	c.Flags().IntVar(&depth, "depth", 3, "how many container levels to open, the first included")
 	c.Flags().BoolVarP(&types, "types", "t", false, "name each file's format (reads every head)")
-	return addFullDownload(c)
+	return addSecrets(addFullDownload(c))
 }
 
 // treeDir is one directory level of a container's children, rebuilt from the
@@ -314,7 +320,7 @@ under a directory instead, named by their paths; nested containers stay whole.
 	c.Flags().StringVarP(&out, "output", "o", "", `where to write ("-" for stdout; with -r, a directory)`)
 	c.Flags().BoolVarP(&recursive, "recursive", "r", false, "write a container's children under a directory")
 	c.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing files")
-	return addFullDownload(c)
+	return addSecrets(addFullDownload(c))
 }
 
 // within joins a member name under dir, refusing one that would land outside

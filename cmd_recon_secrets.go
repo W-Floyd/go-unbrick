@@ -30,6 +30,41 @@ type aesSecret struct {
 	name string
 	key  []byte
 	iv   []byte
+	mode string // "" CBC under iv, "ecb", or "prefix" (CBC, the first block is the IV)
+}
+
+// decryptHead decrypts the whole blocks of head under s.
+func (s aesSecret) decryptHead(blk cipher.Block, head []byte) []byte {
+	n := len(head) - len(head)%aes.BlockSize
+	switch s.mode {
+	case "ecb":
+		out := make([]byte, n)
+		for i := 0; i < n; i += aes.BlockSize {
+			blk.Decrypt(out[i:], head[i:])
+		}
+		return out
+	case "prefix":
+		if n < 2*aes.BlockSize {
+			return nil
+		}
+		out := make([]byte, n-aes.BlockSize)
+		cipher.NewCBCDecrypter(blk, head[:aes.BlockSize]).CryptBlocks(out, head[aes.BlockSize:n])
+		return out
+	}
+	out := make([]byte, n)
+	cipher.NewCBCDecrypter(blk, s.iv).CryptBlocks(out, head[:n])
+	return out
+}
+
+// proven reports whether plain, decrypted under a candidate secret, is
+// plaintext rather than the uniform noise a wrong key leaves: a known format,
+// a Telechips LK or splash header, or structure (low entropy over enough bytes
+// to tell).
+func proven(plain []byte) bool {
+	return filetype.Detect(plain) != filetype.Unknown ||
+		bytes.HasPrefix(plain, []byte("ANDROID@")) ||
+		bytes.HasPrefix(plain, []byte("splash\x00")) ||
+		len(plain) >= 1024 && !highEntropy(plain)
 }
 
 var (
@@ -78,6 +113,13 @@ func loadSecrets(dir string) error {
 			reconSecrets = append(reconSecrets, aesSecret{name: k.name, key: k.key, iv: iv.iv})
 		}
 	}
+	// Less likely framings of the same keys, tried after every key/IV pair.
+	for _, k := range keys {
+		reconSecrets = append(reconSecrets,
+			aesSecret{name: k.name + " (zero IV)", key: k.key, iv: make([]byte, aes.BlockSize)},
+			aesSecret{name: k.name + " (ecb)", key: k.key, mode: "ecb"},
+			aesSecret{name: k.name + " (prefixed IV)", key: k.key, mode: "prefix"})
+	}
 	return nil
 }
 
@@ -100,14 +142,15 @@ func decryptLabel(head []byte) (string, bool) {
 	}
 	inDecrypt = true
 	defer func() { inDecrypt = false }()
-	n := len(head) - len(head)%aes.BlockSize
 	for _, s := range reconSecrets {
 		blk, err := aes.NewCipher(s.key)
 		if err != nil {
 			continue
 		}
-		plain := make([]byte, n)
-		cipher.NewCBCDecrypter(blk, s.iv).CryptBlocks(plain, head[:n])
+		plain := s.decryptHead(blk, head)
+		if plain == nil {
+			continue
+		}
 		l := typeLabel("", plain)
 		switch {
 		case bytes.HasPrefix(plain, []byte("ANDROID@")):
@@ -134,6 +177,8 @@ type cbcReaderAt struct {
 	blk  cipher.Block
 	iv   []byte
 	size int64
+	ecb  bool  // blocks decrypt independently
+	base int64 // ciphertext offset of plaintext offset 0 (16 when the IV leads)
 }
 
 // padLen is the PKCS#7 pad on the final plaintext block, 0 if the block does
@@ -172,20 +217,28 @@ func (c *cbcReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	}
 	start := off &^ (aes.BlockSize - 1)
 	end := (off + want + aes.BlockSize - 1) &^ (aes.BlockSize - 1)
+	// The block before start is the IV of CBC; the stored IV serves only the
+	// first block of a stream that has none in front of it.
 	lead := int64(aes.BlockSize)
-	if start == 0 {
+	if c.ecb || start == 0 && c.base == 0 {
 		lead = 0
 	}
 	buf := make([]byte, end-start+lead)
-	if _, err := c.ra.ReadAt(buf, start-lead); err != nil && err != io.EOF {
+	if _, err := c.ra.ReadAt(buf, c.base+start-lead); err != nil && err != io.EOF {
 		return 0, err
 	}
-	iv := c.iv
-	if lead > 0 {
-		iv = buf[:aes.BlockSize]
-	}
 	plain := make([]byte, end-start)
-	cipher.NewCBCDecrypter(c.blk, iv).CryptBlocks(plain, buf[lead:])
+	if c.ecb {
+		for i := 0; i < len(plain); i += aes.BlockSize {
+			c.blk.Decrypt(plain[i:], buf[i:])
+		}
+	} else {
+		iv := c.iv
+		if lead > 0 {
+			iv = buf[:aes.BlockSize]
+		}
+		cipher.NewCBCDecrypter(c.blk, iv).CryptBlocks(plain, buf[lead:])
+	}
 	n := copy(p, plain[off-start:off-start+want])
 	if eof {
 		return n, io.EOF
@@ -199,8 +252,7 @@ func (c *cbcReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // The images are PKCS#7-padded (1–16 bytes of the pad length), so the reader's
 // size excludes the pad.
 func decryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (*cbcReaderAt, string, bool) {
-	n := len(head) - len(head)%aes.BlockSize
-	if n < 2*aes.BlockSize {
+	if len(head) < 2*aes.BlockSize {
 		return nil, "", false
 	}
 	for _, s := range reconSecrets {
@@ -208,10 +260,11 @@ func decryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (*cbcReaderAt, s
 		if err != nil {
 			continue
 		}
-		plain := make([]byte, n)
-		cipher.NewCBCDecrypter(blk, s.iv).CryptBlocks(plain, head[:n])
-		if filetype.Detect(plain) != filetype.Unknown {
-			c := &cbcReaderAt{ra, blk, s.iv, size &^ (aes.BlockSize - 1)}
+		if plain := s.decryptHead(blk, head); plain != nil && proven(plain) {
+			c := &cbcReaderAt{ra: ra, blk: blk, iv: s.iv, size: size &^ (aes.BlockSize - 1), ecb: s.mode == "ecb"}
+			if s.mode == "prefix" {
+				c.base, c.size = aes.BlockSize, c.size-aes.BlockSize
+			}
 			c.size -= c.padLen()
 			return c, s.name, true
 		}
