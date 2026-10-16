@@ -1,0 +1,435 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"hash/crc32"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// verEntry is one file a .ver manifest lists: the firmware downloader writes
+// one beside the parts, as pipe-separated rows
+//
+//	<collection>|<file>|<id>|<signed crc32>|<size>|<flag>
+//
+// after a header row "+|<id>|<build>|<brand>|<collection>|<n>|<flag>".
+type verEntry struct {
+	Name string
+	CRC  uint32
+	Size int64
+}
+
+// verManifest is the parsed .ver of a downloaded firmware collection.
+type verManifest struct {
+	Path       string
+	Collection string // target device, e.g. 2022_EV6_USA
+	Build      string
+	Entries    []verEntry
+}
+
+func parseVer(path string) (*verManifest, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	m := &verManifest{Path: path}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Split(strings.TrimSpace(line), "|")
+		if len(f) < 5 {
+			continue
+		}
+		if f[0] == "+" {
+			m.Build = f[2]
+			if len(f) > 4 {
+				m.Collection = f[4]
+			}
+			continue
+		}
+		crc, err1 := strconv.ParseInt(f[3], 10, 64)
+		size, err2 := strconv.ParseInt(f[4], 10, 64)
+		if err1 != nil || err2 != nil || f[1] == "" {
+			continue
+		}
+		if m.Collection == "" {
+			m.Collection = f[0]
+		}
+		m.Entries = append(m.Entries, verEntry{Name: f[1], CRC: uint32(crc), Size: size})
+	}
+	return m, len(m.Entries) > 0
+}
+
+func fileCRC(path string) (uint32, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	h := crc32.NewIEEE()
+	if _, err := io.Copy(h, f); err != nil {
+		return 0, err
+	}
+	return h.Sum32(), nil
+}
+
+// reportCollection checks the directory against its manifests and returns the
+// files worth recon'ing: each listed file that is present, minus byte-identical
+// copies of one already taken (hardlinks, renamed duplicates — the manifest's
+// own size and CRC say so without reading anything). Files the manifest does not
+// list are kept. CRCs are read only under --verify; they cost a full read.
+func reportCollection(dir string, paths []string, verify bool) (keep []string) {
+	var manifests []*verManifest
+	rest := paths[:0:0]
+	for _, p := range paths {
+		if strings.EqualFold(filepath.Ext(p), ".ver") {
+			if m, ok := parseVer(p); ok {
+				manifests = append(manifests, m)
+				continue
+			}
+		}
+		rest = append(rest, p)
+	}
+	if len(manifests) == 0 {
+		return paths
+	}
+
+	byName := map[string]string{}
+	for _, p := range rest {
+		byName[filepath.Base(p)] = p
+	}
+	listed := map[string]bool{}
+	type key struct {
+		crc  uint32
+		size int64
+	}
+	first := map[key]string{}
+	var problems int
+
+	for _, m := range manifests {
+		fmt.Printf("Collection: %s", firstNonEmpty(m.Collection, filepath.Base(dir)))
+		if m.Build != "" {
+			fmt.Printf("  (%s)", m.Build)
+		}
+		fmt.Printf("\n  Manifest: %s, %d files\n", filepath.Base(m.Path), len(m.Entries))
+		for _, e := range m.Entries {
+			p, ok := byName[e.Name]
+			listed[e.Name] = true
+			status, dup := "ok", ""
+			switch {
+			case !ok:
+				status = cBad("missing")
+				problems++
+			default:
+				if fi, err := os.Stat(p); err != nil || fi.Size() != e.Size {
+					status = cBad(fmt.Sprintf("size %d, want %d", fiSize(fi), e.Size))
+					problems++
+				} else if verify {
+					if c, err := fileCRC(p); err != nil || c != e.CRC {
+						status = cBad("crc mismatch")
+						problems++
+					} else {
+						status = "ok (crc verified)"
+					}
+				}
+				k := key{e.CRC, e.Size}
+				if prev, seen := first[k]; seen {
+					dup = prev
+				} else {
+					first[k] = e.Name
+					keep = append(keep, p)
+				}
+			}
+			line := fmt.Sprintf("    %-62s %10s  %s", e.Name, humanBytes(e.Size), status)
+			if dup != "" {
+				line += "  = " + dup + " (skipped)"
+			}
+			fmt.Println(line)
+		}
+	}
+
+	for _, p := range rest {
+		if strings.HasSuffix(filepath.Base(p), "TarList.txt_encrypted") {
+			reportTarList(p, byName, verify)
+		}
+	}
+
+	var extra []string
+	for _, p := range rest {
+		if !listed[filepath.Base(p)] {
+			extra = append(extra, p)
+			keep = append(keep, p)
+		}
+	}
+	if len(extra) > 0 {
+		fmt.Printf("  Not in manifest: %d\n", len(extra))
+		for _, p := range extra {
+			fmt.Printf("    %s\n", filepath.Base(p))
+		}
+	}
+	if problems > 0 {
+		fmt.Printf("  %s %d file(s) missing or damaged; the collection is incomplete\n", cWarn("[!]"), problems)
+	}
+	fmt.Println()
+	return keep
+}
+
+func fiSize(fi os.FileInfo) int64 {
+	if fi == nil {
+		return -1
+	}
+	return fi.Size()
+}
+
+// captureStdout runs fn and returns what it printed.
+func captureStdout(fn func() error) (string, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	ferr := fn()
+	os.Stdout = old
+	w.Close()
+	return <-done, ferr
+}
+
+var memberKind = regexp.MustCompile(`^    \S.*?\s+\[([^\]]+)\]`)
+
+// briefRecon keeps a file recon's identity lines and the member count, and
+// folds the member listing and everything after it into a kind histogram and a
+// warning count. A directory holds dozens of such listings; per-file recon has
+// the detail.
+func briefRecon(out string) string {
+	var b strings.Builder
+	kinds := map[string]int{}
+	warns := 0
+	inList := false
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		switch {
+		case strings.HasPrefix(line, "  Contents ("):
+			inList = true
+			b.WriteString(line + "\n")
+		case inList:
+			if strings.Contains(line, "[encrypted filesystem") || strings.Contains(line, "ro.build.fingerprint") {
+				b.WriteString(line + "\n")
+			}
+			if strings.Contains(line, "[encrypted filesystem") {
+				kinds["encrypted filesystem"]++
+			} else if m := memberKind.FindStringSubmatch(line); m != nil {
+				kinds[m[1]]++
+			}
+			if strings.Contains(line, "[!]") {
+				warns++
+			}
+		default:
+			b.WriteString(line + "\n")
+		}
+	}
+	if h := histogramLine(kinds); h != "" {
+		b.WriteString("    " + h + "\n")
+	}
+	if warns > 0 {
+		fmt.Fprintf(&b, "    %s %d warning(s)\n", cWarn("[!]"), warns)
+	}
+	return b.String()
+}
+
+// histogramLine renders counts by kind, most common first.
+func histogramLine(kinds map[string]int) string {
+	type kc struct {
+		k string
+		n int
+	}
+	var l []kc
+	for k, n := range kinds {
+		l = append(l, kc{k, n})
+	}
+	sort.Slice(l, func(i, j int) bool {
+		if l[i].n != l[j].n {
+			return l[i].n > l[j].n
+		}
+		return l[i].k < l[j].k
+	})
+	var parts []string
+	for _, e := range l {
+		parts = append(parts, fmt.Sprintf("%s %d", e.k, e.n))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// reportTarList decodes a Hyundai/Kia NEW_TarList.txt_encrypted — XOR 0x11, not
+// encryption — printing the versions it states. Its per-file SHA-224s are
+// checked only under --verify, which reads each listed file in full.
+func reportTarList(path string, byName map[string]string, verify bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for i := range data {
+		data[i] ^= 0x11
+	}
+	var bad []string
+	checked := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "@FILE:"):
+			f := strings.Split(strings.TrimPrefix(line, "@FILE:"), ",")
+			p, ok := byName[f[0]]
+			if !verify || len(f) < 3 || !ok {
+				continue
+			}
+			checked++
+			if got, err := fileSHA224(p); err != nil || got != f[2] {
+				bad = append(bad, f[0])
+			}
+		case strings.HasPrefix(line, "@NEW_SWVERSION_K:"), strings.HasPrefix(line, "@NEW_VERSION:"):
+			fmt.Printf("  %s\n", strings.Replace(strings.TrimPrefix(line, "@"), ":", ": ", 1))
+		}
+	}
+	if verify {
+		if len(bad) > 0 {
+			fmt.Printf("  %s TarList SHA-224 mismatch: %s\n", cWarn("[!]"), strings.Join(bad, ", "))
+		} else {
+			fmt.Printf("  TarList SHA-224: %d file(s) verified\n", checked)
+		}
+	}
+}
+
+func fileSHA224(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New224()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+var (
+	partName    = regexp.MustCompile(`^(.+\.tar)(\d+)$`)
+	membersLine = regexp.MustCompile(`^  Contents \((\d+) members\)`)
+)
+
+// partUnits groups numbered split parts (navi_backup.tar1…9) into one unit;
+// every other file is its own. Order follows first appearance.
+func partUnits(paths []string) [][]string {
+	var units [][]string
+	at := map[string]int{}
+	for _, p := range paths {
+		m := partName.FindStringSubmatch(filepath.Base(p))
+		if m == nil {
+			units = append(units, []string{p})
+			continue
+		}
+		k := filepath.Join(filepath.Dir(p), m[1])
+		if i, ok := at[k]; ok {
+			units[i] = append(units[i], p)
+			continue
+		}
+		at[k] = len(units)
+		units = append(units, []string{p})
+	}
+	for _, u := range units {
+		sort.Strings(u)
+	}
+	return units
+}
+
+// reconParts reports a set of split parts as one: total size and members, one
+// merged kind histogram. Parts are independent tars, so each is read alone.
+func reconParts(label string, parts []string) (failed []string) {
+	var size int64
+	members, warns := 0, 0
+	kinds := map[string]int{}
+	for _, p := range parts {
+		if fi, err := os.Stat(p); err == nil {
+			size += fi.Size()
+		}
+		out, err := captureStdout(func() error { return runFileRecon(p) })
+		if err != nil {
+			failed = append(failed, filepath.Base(p))
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if m := membersLine.FindStringSubmatch(line); m != nil {
+				n, _ := strconv.Atoi(m[1])
+				members += n
+			} else if strings.Contains(line, "[!]") {
+				warns++
+			} else if m := memberKind.FindStringSubmatch(line); m != nil && !strings.Contains(line, "[!]") {
+				kinds[m[1]]++
+			}
+		}
+	}
+	fmt.Printf("  %d parts, %s, %d members\n", len(parts), humanBytes(size), members)
+	if h := histogramLine(kinds); h != "" {
+		fmt.Printf("    %s\n", h)
+	}
+	if warns > 0 {
+		fmt.Printf("    %s %d warning(s)\n", cWarn("[!]"), warns)
+	}
+	return failed
+}
+
+// skipGroups name sets of files --skip can leave out of a directory recon.
+// Any other --skip value is a glob on the file's base name.
+var skipGroups = map[string]func(base string) bool{
+	"navi": func(base string) bool { return partName.MatchString(base) && strings.HasPrefix(base, "navi_backup.") },
+}
+
+// applySkips drops the files the --skip values name and reports what it left out.
+func applySkips(paths, skips []string) []string {
+	if len(skips) == 0 {
+		return paths
+	}
+	var keep []string
+	dropped := map[string][]string{}
+	for _, p := range paths {
+		base := filepath.Base(p)
+		hit := ""
+		for _, s := range skips {
+			match := false
+			if f, ok := skipGroups[s]; ok {
+				match = f(base)
+			} else {
+				match, _ = filepath.Match(s, base)
+			}
+			if match {
+				hit = s
+				break
+			}
+		}
+		if hit == "" {
+			keep = append(keep, p)
+		} else {
+			dropped[hit] = append(dropped[hit], p)
+		}
+	}
+	for _, s := range skips {
+		if ps := dropped[s]; len(ps) > 0 {
+			var size int64
+			for _, p := range ps {
+				if fi, err := os.Stat(p); err == nil {
+					size += fi.Size()
+				}
+			}
+			fmt.Printf("Skipped %s: %d file(s), %s\n", s, len(ps), humanBytes(size))
+		}
+	}
+	return keep
+}

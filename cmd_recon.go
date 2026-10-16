@@ -58,7 +58,7 @@ func newReconCmd() *cobra.Command {
 	var carve, why, with, secrets string
 	var verify, learn bool
 	c := &cobra.Command{
-		Use:   "recon <file | http(s) url>",
+		Use:   "recon <file | directory | http(s) url>",
 		Short: "identify any file (stock zip, image, container, config) and report what it is",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -68,16 +68,34 @@ func newReconCmd() *cobra.Command {
 			reconVerify = verify
 			reconLearn = learn
 			reconWith = with
+			isDir := false
+			if !infile.IsRemote(args[0]) {
+				fi, err := os.Stat(args[0])
+				isDir = err == nil && fi.IsDir()
+			}
+			if secrets == "" && isDir {
+				secrets = findSecrets(args[0])
+			}
 			if secrets != "" {
 				if err := loadSecrets(secrets); err != nil {
 					return fmt.Errorf("--secrets: %w", err)
 				}
 				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", len(reconSecrets), secrets)
 			}
+			if !infile.IsRemote(args[0]) {
+				if isDir {
+					if with != "" {
+						fmt.Fprintf(os.Stderr, "note: --with is ignored in directory mode; each file resolves its own companion\n")
+						reconWith = ""
+					}
+					return runDirRecon(args[0])
+				}
+			}
 			return runFileRecon(args[0])
 		},
 	}
-	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members")
+	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members; a directory input finds ./secrets or ../secrets itself")
+	c.Flags().StringSliceVar(&reconSkip, "skip", nil, "directory mode: leave files out of the recon (still checked against the manifest): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated")
 	c.Flags().IntVar(&depth, "depth", 4, "how many container levels to cascade into (zip → radio → NON-HLOS → ext4)")
 	c.Flags().StringVar(&carve, "carve", "", "write every unique embedded cert (PEM+DER) and key (PEM) to this directory")
 	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
@@ -104,6 +122,8 @@ var (
 	reconLearn bool
 	// reconWith is a companion package of the same release (--with).
 	reconWith string
+	// reconSkip names files a directory recon leaves out (--skip).
+	reconSkip []string
 )
 
 // reconGraph is every derivation available to a recon: the neutral device and
@@ -681,6 +701,73 @@ func short(hexstr string) string {
 // maxCascadeRead caps how large a member/record we fully read to recurse into;
 // beyond it we print the type but do not expand (keeps a multi-GB super out).
 const maxCascadeRead = 200 << 20
+
+// runDirRecon walks a local directory and runs file recon on every regular
+// file it finds, in sorted order, continuing past a single file's error
+// instead of aborting the whole batch — a directory of firmware dumps
+// routinely mixes formats recon handles with ones it doesn't yet, and one
+// unrecognized file shouldn't hide the findings from the rest. Hidden files
+// and directories (leading dot — .git, .DS_Store, etc.) are skipped.
+func runDirRecon(dir string) error {
+	var paths []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if name != "." && strings.HasPrefix(name, ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		paths = append(paths, p)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walking %s: %w", dir, err)
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		fmt.Printf("%s: no files found\n", dir)
+		return nil
+	}
+	paths = applySkips(reportCollection(dir, paths, reconVerify), reconSkip)
+
+	var failed []string
+	for i, unit := range partUnits(paths) {
+		if i > 0 {
+			fmt.Println()
+		}
+		p := unit[0]
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			rel = p
+		}
+		if len(unit) > 1 {
+			fmt.Printf("=== %s (split parts: %s … %s) ===\n", partName.FindStringSubmatch(filepath.Base(p))[1], filepath.Base(p), filepath.Base(unit[len(unit)-1]))
+			failed = append(failed, reconParts(rel, unit)...)
+			continue
+		}
+		fmt.Printf("=== %s ===\n", rel)
+		out, rerr := captureStdout(func() error { return runFileRecon(p) })
+		fmt.Print(briefRecon(out))
+		if rerr != nil {
+			fmt.Printf("  %s %v\n", cWarn("[!]"), rerr)
+			failed = append(failed, rel)
+		}
+	}
+
+	fmt.Printf("\n%d file(s) recon'd", len(paths))
+	if len(failed) > 0 {
+		fmt.Printf(", %d failed: %s", len(failed), strings.Join(failed, ", "))
+	}
+	fmt.Println()
+	return nil
+}
 
 func runFileRecon(path string) error {
 	f, err := infile.Open(path)
