@@ -1,11 +1,8 @@
 package vendor
 
-// Content recognition for vendor file formats that have no neutral magic the
-// generic filetype detector handles — Motorola's CID image, MotoLogo container
-// and subsidy-lock .nvm, Samsung's .pit, Qualcomm's FSGADAPT EFS image,
-// MediaTek's partition images, Download Agents and GFH files. Kept
-// behind the vendor seam so the
-// recon command never hardcodes vendor magics; it just asks RecognizeArtifact.
+// Content recognition for Motorola/Lenovo file formats that have no neutral
+// magic the generic filetype detector handles: the LMSA ROM, CID image,
+// MotoLogo container and subsidy-lock .nvm.
 
 import (
 	"fmt"
@@ -14,17 +11,9 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/lenovo"
 )
 
-// ArtifactInfo is a vendor-recognized file: a short type label and optional detail.
-type ArtifactInfo struct {
-	Label  string
-	Detail string
-}
-
-// RecognizeArtifact identifies a vendor-specific file from its name and bytes.
-// cat may be nil (used only to name a CID's carrier channel); name may be ""
-// where no filename is in scope (only the name-blind checks then apply).
-// Returns ok=false if no vendor format matches.
-func RecognizeArtifact(cat *catalog.Catalog, name string, data []byte) (ArtifactInfo, bool) {
+// motorolaArtifact identifies a Motorola-specific file; cat may be nil (used
+// only to name a CID's carrier channel).
+func motorolaArtifact(cat *catalog.Catalog, name string, data []byte) (ArtifactInfo, bool) {
 	// LMSA ROM (.t/.x): ciphertext has no magic, so the extension is all that
 	// marks it — content-readable-as-text rules out the many non-LMSA uses of
 	// the same extensions (see lenovo.IsROM).
@@ -67,15 +56,6 @@ func RecognizeArtifact(cat *catalog.Catalog, name string, data []byte) (Artifact
 			}
 			return ArtifactInfo{Label: "Motorola SLCF", Detail: d}, true
 		}
-	}
-	if info, ok := fsgArtifact(data); ok {
-		return info, true
-	}
-	if info, ok := mediatekArtifact(data); ok {
-		return info, true
-	}
-	if p, err := ParsePIT(data); err == nil {
-		return ArtifactInfo{Label: "Samsung PIT", Detail: fmt.Sprintf("%d partitions", len(p.Entries))}, true
 	}
 	return ArtifactInfo{}, false
 }
