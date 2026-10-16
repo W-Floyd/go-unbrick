@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,8 +25,16 @@ func catalogDir() string { return v.GetString("catalog") }
 func libraryDir() string { return v.GetString("library") }
 
 func activeCatalog() *catalog.Catalog {
-	if c, err := catalog.Load(catalogDir()); err == nil {
-		return c
+	// Load("dir") glob-matches *.yaml under dir and succeeds with zero files
+	// when dir doesn't exist relative to the cwd — the flag's default is the
+	// relative "catalog", so running from anywhere but the repo root would
+	// otherwise return an empty catalog instead of falling through to
+	// Default()'s FindCatalogDir() search.
+	dir := catalogDir()
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.yaml")); len(files) > 0 {
+		if c, err := catalog.Load(dir); err == nil {
+			return c
+		}
 	}
 	c, _ := catalog.Default()
 	return c
