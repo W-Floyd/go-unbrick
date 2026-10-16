@@ -39,6 +39,11 @@ const (
 	WinHelp           Kind = "winhelp"     // .hlp, beside Windows flash tools
 	TypeLib           Kind = "com-typelib" // .tlb, a COM type library
 	SQLite            Kind = "sqlite"
+	UBI               Kind = "ubi" // raw NAND UBI image (erase-block headers)
+	UBIFS Kind = "ubifs"
+	Ogg             Kind = "ogg"
+	QcomMBN           Kind = "qualcomm-mbn"             // non-ELF boot image (sbl1.mbn): 0x844bdcd1 header
+	QcomPartition     Kind = "qualcomm-partition-table" // partition.mbn
 	Unknown           Kind = "unknown"
 )
 
@@ -104,6 +109,16 @@ func Detect(head []byte) Kind {
 		return TypeLib
 	case len(head) >= 16 && bytes.Equal(head[:16], []byte("SQLite format 3\x00")):
 		return SQLite
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte("UBI#")):
+		return UBI
+	case len(head) >= 4 && le.Uint32(head[:4]) == 0x06101831: // UBIFS node magic
+		return UBIFS
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte("OggS")):
+		return Ogg
+	case len(head) >= 4 && le.Uint32(head[:4]) == 0x844bdcd1:
+		return QcomMBN
+	case len(head) >= 4 && le.Uint32(head[:4]) == 0xaa7d1b9a:
+		return QcomPartition
 	default:
 		return Unknown
 	}

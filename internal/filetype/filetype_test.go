@@ -39,7 +39,11 @@ func TestDetect(t *testing.T) {
 		{"android-boot", []byte("ANDROID!xxxxxxxx"), AndroidBoot},
 		{"vendor-boot", []byte("VNDRBOOTxxxxxxxx"), AndroidVendorBoot},
 		{"qdb", []byte("\x7fQDBxxxx"), QDB},
-		{"unknown", []byte("hello world"), Unknown},
+		{"ubi", []byte("UBI#\x01\x00\x00\x00"), UBI},
+		{"ogg", []byte("OggS\x00\x02"), Ogg},
+		{"mbn", []byte{0xd1, 0xdc, 0x4b, 0x84, 0xff}, QcomMBN},
+		{"qcom-partition", []byte{0x9a, 0x1b, 0x7d, 0xaa, 0x00}, QcomPartition},
+		{"unknown",[]byte("hello world"), Unknown},
 	}
 	for _, c := range cases {
 		if got := Detect(c.head); got != c.want {
