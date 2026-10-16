@@ -31,6 +31,8 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/tgzseek"
+	"github.com/W-Floyd/go-unbrick/internal/ubi"
+	"github.com/W-Floyd/go-unbrick/internal/ubifs"
 )
 
 func init() {
@@ -55,7 +57,53 @@ func init() {
 		Expander{Kind: "boot", Match: kind(filetype.AndroidBoot, filetype.AndroidVendorBoot), Expand: expandBoot},
 		Expander{Kind: "single_n_lonely", Match: kind(filetype.SingleNLonely), Expand: expandSingleNLonely},
 		Expander{Kind: "dtbo", Match: kind(filetype.DTBOTable), Expand: expandDTBO},
+		Expander{Kind: "ubi", Match: kind(filetype.UBI), Expand: expandUBI},
+		Expander{Kind: "ubifs", Match: kind(filetype.UBIFS), Expand: expandUBIFS, FS: ubifsFS},
 	)
+}
+
+func ubifsFS(n *Node) (fs.FS, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	return ubifs.Open(ra, n.Size)
+}
+
+func expandUBIFS(n *Node) ([]*Node, error) {
+	img, err := ubifsFS(n)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	err = fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
+		return nil
+	})
+	return out, err
+}
+
+func expandUBI(n *Node) ([]*Node, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	im, err := ubi.Parse(ra, n.Size)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for _, v := range im.Volumes {
+		out = append(out, FromReaderAt(v.Name, v.ReaderAt(), v.Size))
+	}
+	return out, nil
 }
 
 func kind(ks ...filetype.Kind) func(*Node, []byte) bool {
