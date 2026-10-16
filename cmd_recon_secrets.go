@@ -136,6 +136,28 @@ type cbcReaderAt struct {
 	size int64
 }
 
+// padLen is the PKCS#7 pad on the final plaintext block, 0 if the block does
+// not end in a valid pad.
+func (c *cbcReaderAt) padLen() int64 {
+	if c.size < aes.BlockSize {
+		return 0
+	}
+	last := make([]byte, aes.BlockSize)
+	if _, err := c.ReadAt(last, c.size-aes.BlockSize); err != nil && err != io.EOF {
+		return 0
+	}
+	n := int(last[aes.BlockSize-1])
+	if n < 1 || n > aes.BlockSize {
+		return 0
+	}
+	for _, b := range last[aes.BlockSize-n:] {
+		if int(b) != n {
+			return 0
+		}
+	}
+	return int64(n)
+}
+
 func (c *cbcReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("negative offset")
@@ -173,7 +195,10 @@ func (c *cbcReaderAt) ReadAt(p []byte, off int64) (int, error) {
 
 // decryptedReaderAt returns the plaintext view of ciphertext under the first
 // loaded secret whose plaintext head is a filesystem.
-func decryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (io.ReaderAt, string, bool) {
+//
+// The images are PKCS#7-padded (1–16 bytes of the pad length), so the reader's
+// size excludes the pad.
+func decryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (*cbcReaderAt, string, bool) {
 	n := len(head) - len(head)%aes.BlockSize
 	if n < 2*aes.BlockSize {
 		return nil, "", false
@@ -186,7 +211,9 @@ func decryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (io.ReaderAt, st
 		plain := make([]byte, n)
 		cipher.NewCBCDecrypter(blk, s.iv).CryptBlocks(plain, head[:n])
 		if filetype.Detect(plain) != filetype.Unknown {
-			return &cbcReaderAt{ra, blk, s.iv, size &^ (aes.BlockSize - 1)}, s.name, true
+			c := &cbcReaderAt{ra, blk, s.iv, size &^ (aes.BlockSize - 1)}
+			c.size -= c.padLen()
+			return c, s.name, true
 		}
 	}
 	return nil, "", false
@@ -208,7 +235,7 @@ func encryptedExpander() carve.Expander {
 		if !ok {
 			return nil, false
 		}
-		return carve.FromReaderAt(strings.TrimPrefix(path.Base(n.Name), "enc_"), dec, n.Size&^(aes.BlockSize-1)), true
+		return carve.FromReaderAt(strings.TrimPrefix(path.Base(n.Name), "enc_"), dec, dec.size), true
 	}
 	return carve.Expander{
 		Kind: "encrypted",
@@ -260,7 +287,7 @@ func openEncryptedFS(path string, m srcfile.Member) (fs.FS, string, bool) {
 	if !ok {
 		return nil, "", false
 	}
-	fsys, err := carve.FromReaderAt("", dec, int64(m.Size)).FS()
+	fsys, err := carve.FromReaderAt("", dec, dec.size).FS()
 	if err != nil {
 		return nil, "", false
 	}
