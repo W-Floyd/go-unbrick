@@ -168,7 +168,7 @@ func openTar(path string) (*archive, error) {
 			return nil, err
 		}
 		sr := io.NewSectionReader(f, off, hdr.Size)
-		a.entries = append(a.entries, entry{name: hdr.Name, size: uint64(hdr.Size), at: sr,
+		a.entries = append(a.entries, entry{name: filepath.ToSlash(filepath.Clean(hdr.Name)), size: uint64(hdr.Size), at: sr, // "./x" would never match a cleaned lookup path
 			open: func() (io.ReadCloser, error) { return io.NopCloser(io.NewSectionReader(sr, 0, sr.Size())), nil }})
 	}
 }
