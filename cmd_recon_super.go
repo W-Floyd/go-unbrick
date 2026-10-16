@@ -43,20 +43,39 @@ func (p padReaderAt) ReadAt(dst []byte, off int64) (int, error) {
 // a package with no super, or an unreadable one, simply adds nothing.
 func learnSystemProps(path string, bag *facts.Bag) {
 	stop := spin("reading system build.prop…")
-	// Two package shapes carry the system partition: a Motorola-style flashable
+	// Three package shapes carry the system partition: a Motorola-style flashable
 	// zip has it as a liblp volume in super.img sparsechunks; an AOSP OTA has it
-	// inside payload.bin. Both are generic Android containers, so both are read
-	// here; whichever the package is, the props map to the same facts.
+	// inside payload.bin; an HKMC head-unit package has it as an AES-encrypted
+	// enc_system.ext4 tar member, decryptable only once a key is loaded
+	// (--secrets). All three are read here; whichever the package is, the props
+	// map to the same facts.
 	source := "super system/build.prop"
 	props := systemBuildProps(path)
 	if props == nil {
 		props = payloadSystemProps(path)
 		source = "payload system/build.prop"
 	}
+	if props == nil {
+		props = encryptedSystemProps(path)
+		source = "enc_system.ext4 build.prop"
+	}
 	stop()
 	for key, val := range props {
 		if f, ok := stockPropToFact[key]; ok {
 			facts.Set(bag, f, val, facts.Provenance{Source: source, Authority: facts.Attested})
+		}
+	}
+	// BoardPlatform feeds facts.SoC through a planner rule (imgfacts'
+	// socFromPlatform), but the planner already ran before this call — "recon
+	// only renders" from here on, so BoardPlatform set just above would
+	// otherwise never resolve to a name. Looking it up here, once, keeps that
+	// rule the one place the catalog lookup lives.
+	if plat := props["ro.product.board"]; plat != "" {
+		if cat := activeCatalog(); cat != nil {
+			if soc := cat.ResolveVariant(plat, ""); soc != "" {
+				facts.Set(bag, facts.SoC, soc, facts.Provenance{
+					Source: "catalog variant " + plat, Authority: facts.Derived})
+			}
 		}
 	}
 }
@@ -113,6 +132,9 @@ var systemStockPropKeys = map[string]bool{
 	"ro.system.build.fingerprint":     true,
 	"ro.build.version.security_patch": true,
 	"ro.build.date":                   true,
+	"ro.product.device":               true,
+	"ro.product.model":                true,
+	"ro.product.board":                true,
 }
 
 // systemBuildProps reads the stock build.prop of the system logical volume
@@ -223,8 +245,16 @@ func propsFromSystemImageAt(ra io.ReaderAt) map[string]string {
 		}
 		return nil
 	}
+	return propsFromFS(img)
+}
+
+// propsFromFS reads build.prop out of an already-opened partition filesystem —
+// shared by the erofs (super/payload) and ext4 (HKMC enc_system.ext4) vantages,
+// since both are just an fs.FS once opened.
+func propsFromFS(fsys fs.FS) map[string]string {
+	dbg := v.GetBool("debug-stock")
 	for _, f := range []string{"system/build.prop", "build.prop", "system/system/build.prop"} {
-		data, err := fs.ReadFile(img, f)
+		data, err := fs.ReadFile(fsys, f)
 		if dbg {
 			fmt.Printf("[super] read %s: err=%v len=%d\n", f, err, len(data))
 		}
@@ -238,6 +268,33 @@ func propsFromSystemImageAt(ra io.ReaderAt) map[string]string {
 			}
 		}
 		if len(props) > 0 {
+			return props
+		}
+	}
+	return nil
+}
+
+// encryptedSystemProps reads system's build.prop out of an HKMC-style package's
+// enc_system.ext4 member, decrypted by range under a loaded --secrets key (see
+// cmd_recon_secrets.go). Best-effort: no loaded key, no such member, or an
+// unreadable filesystem returns nil.
+func encryptedSystemProps(path string) map[string]string {
+	if len(reconSecrets) == 0 {
+		return nil
+	}
+	members, err := srcfile.Members(path, 8192)
+	if err != nil {
+		return nil
+	}
+	for _, m := range members {
+		if !strings.EqualFold(filepath.Base(m.Name), "enc_system.ext4") {
+			continue
+		}
+		fsys, _, ok := openEncryptedFS(path, m)
+		if !ok {
+			continue
+		}
+		if props := propsFromFS(fsys); props != nil {
 			return props
 		}
 	}

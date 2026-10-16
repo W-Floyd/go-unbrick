@@ -55,7 +55,7 @@ import (
 // resolved through the vendor seam and vendor parsers.
 func newReconCmd() *cobra.Command {
 	var depth int
-	var carve, why, with string
+	var carve, why, with, secrets string
 	var verify, learn bool
 	c := &cobra.Command{
 		Use:   "recon <file | http(s) url>",
@@ -68,9 +68,16 @@ func newReconCmd() *cobra.Command {
 			reconVerify = verify
 			reconLearn = learn
 			reconWith = with
+			if secrets != "" {
+				if err := loadSecrets(secrets); err != nil {
+					return fmt.Errorf("--secrets: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", len(reconSecrets), secrets)
+			}
 			return runFileRecon(args[0])
 		},
 	}
+	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members")
 	c.Flags().IntVar(&depth, "depth", 4, "how many container levels to cascade into (zip → radio → NON-HLOS → ext4)")
 	c.Flags().StringVar(&carve, "carve", "", "write every unique embedded cert (PEM+DER) and key (PEM) to this directory")
 	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
@@ -1071,6 +1078,7 @@ func reconArchive(path string, bag *facts.Bag) error {
 			printPayload(path, base, int64(m.Size), "    ")
 		case kind == filetype.Tar:
 			printNestedTar(path, m.Name, "    ", bar)
+		case strings.HasPrefix(typeLabel(base, m.Head), "encrypted ") && printEncryptedFS(path, m, "    ", bar.Clear):
 		case int64(m.Size) > maxCascadeRead:
 			// Too big to buffer, but a filesystem carve can walk by range (ext4,
 			// erofs — read via ReaderAt, metadata only) is listed rather than
@@ -1091,7 +1099,7 @@ func reconArchive(path string, bag *facts.Bag) error {
 			} else {
 				fmt.Printf("    %-26s [%s]  %s (not expanded)\n", base, typeLabel(base, m.Head), humanBytes(int64(m.Size)))
 			}
-		case !isContainer(kind) && lenovo.OutName(base) == "":
+		case !isContainer(kind) && !lenovo.IsROM(base, m.Head):
 			bar.Clear()
 			fmt.Printf("    %-26s [%s]%s\n", base, typeLabel(base, m.Head), summarize(m.Head, nil))
 		default:
@@ -1479,7 +1487,7 @@ func cascade(name string, data []byte, indent string, depth int) {
 	if depth <= 0 {
 		return
 	}
-	if lenovo.OutName(name) != "" {
+	if lenovo.IsROM(name, data) {
 		if out, pw, err := lenovo.Recover(data, lmsaExtraPasswords()...); err == nil {
 			fmt.Printf("%s  decrypted with password %q\n", indent, pw)
 			cascade(lenovo.OutName(filepath.Base(name)), out, indent+"  ", depth-1)
@@ -1754,12 +1762,10 @@ func typeLabel(name string, head []byte) string {
 	if lp.IsSuper(head) {
 		return "super metadata"
 	}
-	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
+	if info, ok := vendor.RecognizeArtifact(activeCatalog(), name, head); ok {
 		return info.Label
 	}
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".t", ".x":
-		return "LMSA ROM (encrypted)"
 	case ".nvm":
 		return "SLCF subsidy"
 	case ".xml":
@@ -1777,6 +1783,9 @@ func typeLabel(name string, head []byte) string {
 		return "text"
 	}
 	if highEntropy(head) {
+		if l, ok := decryptLabel(head); ok {
+			return l
+		}
 		return "encrypted or compressed"
 	}
 	return "unknown"
@@ -1887,7 +1896,7 @@ func summarize(head, data []byte) string {
 		}
 	}
 	// Vendor-specific formats with no neutral magic (CID, MotoLogo, SLCF).
-	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok && info.Detail != "" {
+	if info, ok := vendor.RecognizeArtifact(activeCatalog(), "", head); ok && info.Detail != "" {
 		return " — " + info.Detail
 	}
 	return ""
@@ -2023,7 +2032,7 @@ func reconContainer(path string) error {
 
 func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 	// Vendor-specific content with no neutral magic (CID image, MotoLogo, SLCF).
-	if info, ok := vendor.RecognizeArtifact(activeCatalog(), head); ok {
+	if info, ok := vendor.RecognizeArtifact(activeCatalog(), filepath.Base(path), head); ok {
 		line := "  " + info.Label
 		if info.Detail != "" {
 			line += " — " + info.Detail

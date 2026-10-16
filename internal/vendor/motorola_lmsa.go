@@ -20,7 +20,7 @@ const LMSAPasswordEnv = "LMSA_ROM_PASSWORD"
 func (motorola) CarveExpanders() []carve.Expander {
 	return []carve.Expander{{
 		Kind:   "lmsa-rom",
-		Match:  func(n *carve.Node, _ []byte) bool { return lenovo.OutName(n.Name) != "" },
+		Match:  func(n *carve.Node, head []byte) bool { return lenovo.IsROM(n.Name, head) },
 		Expand: expandLMSAROM,
 	}}
 }

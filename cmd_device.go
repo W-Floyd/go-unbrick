@@ -303,6 +303,9 @@ var stockPropToFact = map[string]facts.Fact[string]{
 	"ro.system.build.fingerprint":     facts.SystemFingerprint,
 	"ro.build.version.security_patch": facts.SecurityPatch,
 	"ro.build.date":                   facts.BuildDate,
+	"ro.product.device":               facts.Codename,
+	"ro.product.model":                facts.Model,
+	"ro.product.board":                facts.BoardPlatform,
 }
 
 // recoverStockFirmware folds the stock firmware facts read off the internal

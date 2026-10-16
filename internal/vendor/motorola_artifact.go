@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
+	"github.com/W-Floyd/go-unbrick/internal/lenovo"
 )
 
 // ArtifactInfo is a vendor-recognized file: a short type label and optional detail.
@@ -19,10 +20,17 @@ type ArtifactInfo struct {
 	Detail string
 }
 
-// RecognizeArtifact identifies a vendor-specific file from its bytes. cat may be
-// nil (used only to name a CID's carrier channel). Returns ok=false if no vendor
-// format matches.
-func RecognizeArtifact(cat *catalog.Catalog, data []byte) (ArtifactInfo, bool) {
+// RecognizeArtifact identifies a vendor-specific file from its name and bytes.
+// cat may be nil (used only to name a CID's carrier channel); name may be ""
+// where no filename is in scope (only the name-blind checks then apply).
+// Returns ok=false if no vendor format matches.
+func RecognizeArtifact(cat *catalog.Catalog, name string, data []byte) (ArtifactInfo, bool) {
+	// LMSA ROM (.t/.x): ciphertext has no magic, so the extension is all that
+	// marks it — content-readable-as-text rules out the many non-LMSA uses of
+	// the same extensions (see lenovo.IsROM).
+	if lenovo.IsROM(name, data) {
+		return ArtifactInfo{Label: "LMSA ROM (encrypted)"}, true
+	}
 	// Motorola CID image (magic 0x00F0): v0 carrier template or signed v2 record.
 	if v, ok := CIDVersion(data); ok {
 		info := ArtifactInfo{Label: "Motorola CID"}

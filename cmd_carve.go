@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
@@ -20,7 +21,15 @@ import (
 var carveOnce sync.Once
 
 func carveRoot(input string) (*carve.Node, error) {
-	carveOnce.Do(func() { carve.Register(vendor.CarveExpanders()...) })
+	carveOnce.Do(func() {
+		carve.Register(vendor.CarveExpanders()...)
+		carve.Register(encryptedExpander())
+	})
+	if len(reconSecrets) == 0 && !infile.IsRemote(input) {
+		if dir := findSecrets(filepath.Dir(input)); dir != "" {
+			loadSecrets(dir)
+		}
+	}
 	return carve.Open(input)
 }
 

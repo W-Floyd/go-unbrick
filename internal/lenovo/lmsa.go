@@ -32,6 +32,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
 )
 
 // DefaultPassword is Configurations.DefaultKey as the LMSA endpoint returns it —
@@ -206,4 +208,19 @@ func deriveKey(password string, salt []byte) []byte {
 func pkcs7Pad(b []byte, block int) []byte {
 	n := block - len(b)%block
 	return append(b, bytes.Repeat([]byte{byte(n)}, n)...)
+}
+
+// IsROM reports an LMSA ROM: an OutName extension on content that is not
+// readable text. The extension alone is not enough — other vendors use .t/.x
+// for plain files — and ciphertext is never text, nor shorter than its IV and
+// salt.
+func IsROM(name string, head []byte) bool {
+	if OutName(name) == "" || len(head) < 32 {
+		return false
+	}
+	if len(head) > 256 {
+		head = head[:256]
+	}
+	ok, _ := filetype.Text(head)
+	return !ok
 }
