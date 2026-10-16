@@ -56,6 +56,13 @@ variants:
   zuma: Google Tensor G3 (Zuma)
   whitechapel: Google Tensor (GS101)
 
+  # Telechips Platforms (automotive IVI/cockpit; ro.product.board, not a
+  # Qualcomm QC_IMAGE_VERSION_STRING token)
+  tcc807x: Telechips TCC807x (Dolphin5)
+  tcc805x: Telechips TCC805x (Dolphin3)
+  tcc803x: Telechips TCC803x (Dolphin+)
+  tcc750x: Telechips TCC750x (N-Dolphin)
+
   # Discovered Platform Variants (via unbrick catalog mine-variants)
   jaadanaza: Qualcomm MSM8953 Snapdragon 625/632
   sdm670la: Qualcomm SDM710 Snapdragon 710
