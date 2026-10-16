@@ -170,3 +170,22 @@ func TestDetectCodec(t *testing.T) {
 		t.Errorf("unknown blob should detect no codec, got %q", got)
 	}
 }
+
+func TestParseLegacyDTHeader(t *testing.T) {
+	const page = 2048
+	b := make([]byte, 3*page)
+	copy(b, bootMagic)
+	binary.LittleEndian.PutUint32(b[8:], 100)    // kernel_size
+	binary.LittleEndian.PutUint32(b[36:], page)  // page_size
+	binary.LittleEndian.PutUint32(b[40:], 0x800) // dt_size, not a header version
+	copy(b[64:], "console=ttyHSL0")
+	copy(b[page:], "KERNEL")
+	copy(b[2*page:], "DTB")
+	im, err := Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if im.HeaderVersion != 0 || len(im.Sections) != 2 || im.Sections[1].Name != "dt" {
+		t.Fatalf("got %+v", im)
+	}
+}

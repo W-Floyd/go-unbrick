@@ -96,6 +96,12 @@ func parseBoot(b []byte) (*Image, error) {
 		return nil, fmt.Errorf("boot image too short")
 	}
 	ver := le32(b, 40)
+	// Pre-versioned (Qualcomm legacy) headers hold dt_size at this offset; no
+	// real header version exceeds 4.
+	var dtSize uint32
+	if ver > 4 {
+		dtSize, ver = ver, 0
+	}
 	im := &Image{Magic: bootMagic, HeaderVersion: int(ver)}
 
 	if ver >= 3 {
@@ -123,6 +129,9 @@ func parseBoot(b []byte) (*Image, error) {
 	}
 	im.Cmdline = cstr(b, 64, 512)
 	specs := []secSpec{{"kernel", kernelSz}, {"ramdisk", ramdiskSz}, {"second", secondSz}}
+	if dtSize > 0 {
+		specs = append(specs, secSpec{"dt", dtSize})
+	}
 	if ver >= 1 {
 		specs = append(specs, secSpec{"recovery_dtbo", le32(b, 1632)})
 	}
