@@ -57,9 +57,23 @@ func init() {
 		Expander{Kind: "boot", Match: kind(filetype.AndroidBoot, filetype.AndroidVendorBoot), Expand: expandBoot},
 		Expander{Kind: "single_n_lonely", Match: kind(filetype.SingleNLonely), Expand: expandSingleNLonely},
 		Expander{Kind: "dtbo", Match: kind(filetype.DTBOTable), Expand: expandDTBO},
+		Expander{Kind: "zimage", Match: func(_ *Node, h []byte) bool { return bootimg.IsZImage(h) }, Expand: expandZImage},
 		Expander{Kind: "ubi", Match: kind(filetype.UBI), Expand: expandUBI},
 		Expander{Kind: "ubifs", Match: kind(filetype.UBIFS), Expand: expandUBIFS, FS: ubifsFS},
 	)
+}
+
+// expandZImage lists the kernel an ARM zImage decompresses to.
+func expandZImage(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	plain, err := bootimg.ZImagePayload(b)
+	if err != nil {
+		return nil, err
+	}
+	return []*Node{FromBytes("Image", plain)}, nil
 }
 
 func ubifsFS(n *Node) (fs.FS, error) {

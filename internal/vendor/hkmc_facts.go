@@ -2,12 +2,10 @@ package vendor
 
 import (
 	"bytes"
-	"compress/gzip"
-	"encoding/binary"
-	"io"
 	"regexp"
 	"strings"
 
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
 
@@ -56,26 +54,13 @@ func ParseModemVersion(b []byte) string {
 	return modem + " [" + strings.Join(rest, ", ") + "]"
 }
 
-// zImageMagic sits at offset 0x24 of an ARM zImage.
-const zImageMagic = 0x016f2818
-
 // ZImageKernelVersion returns the "Linux version" banner of an ARM zImage's
-// gzip-compressed payload, or "".
+// kernel, or "".
 func ZImageKernelVersion(z []byte) string {
-	if len(z) < 0x28 || binary.LittleEndian.Uint32(z[0x24:]) != zImageMagic {
-		return ""
-	}
-	i := bytes.Index(z, []byte{0x1f, 0x8b, 0x08})
-	if i < 0 {
-		return ""
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(z[i:]))
+	plain, err := bootimg.ZImagePayload(z)
 	if err != nil {
 		return ""
 	}
-	// The banner is in the first few MiB; trailing zImage bytes after the
-	// stream end are not a gzip error worth reporting.
-	plain, _ := io.ReadAll(io.LimitReader(zr, 64<<20))
 	j := bytes.Index(plain, []byte("Linux version "))
 	if j < 0 {
 		return ""

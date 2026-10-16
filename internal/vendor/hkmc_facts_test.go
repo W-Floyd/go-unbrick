@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"testing"
+
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 )
 
 func TestParseUpdateInfo(t *testing.T) {
@@ -32,7 +34,7 @@ func TestZImageKernelVersion(t *testing.T) {
 	w.Write([]byte("junk\x00Linux version 3.18.24-tcc (a@b) #1\nmore"))
 	w.Close()
 	z := make([]byte, 0x40)
-	binary.LittleEndian.PutUint32(z[0x24:], zImageMagic)
+	binary.LittleEndian.PutUint32(z[0x24:], bootimg.ZImageMagic)
 	z = append(z, gz.Bytes()...)
 	z = append(z, 0, 0, 0, 0)
 	if got := ZImageKernelVersion(z); got != "Linux version 3.18.24-tcc (a@b) #1" {
@@ -40,5 +42,26 @@ func TestZImageKernelVersion(t *testing.T) {
 	}
 	if ZImageKernelVersion(gz.Bytes()) != "" {
 		t.Error("matched a non-zImage")
+	}
+}
+
+func TestParseSplash(t *testing.T) {
+	b := make([]byte, 16+2*52)
+	copy(b, splashMagic)
+	binary.LittleEndian.PutUint32(b[8:], 2)
+	for i, name := range []string{"hyundai_1280x720", "kia_1920x720"} {
+		e := b[16+i*52:]
+		copy(e, name)
+		binary.LittleEndian.PutUint32(e[20:], uint32(2048+i*100))
+		binary.LittleEndian.PutUint32(e[24:], 100)
+		binary.LittleEndian.PutUint32(e[28:], 1280)
+		copy(e[40:], "JPEG")
+	}
+	imgs, err := ParseSplash(b)
+	if err != nil || len(imgs) != 2 || imgs[1].Name != "kia_1920x720" || imgs[1].Off != 2148 || imgs[0].Type != "JPEG" {
+		t.Fatalf("got %+v, %v", imgs, err)
+	}
+	if _, err := ParseSplash(b[:20]); err == nil {
+		t.Error("truncated table parsed")
 	}
 }
