@@ -362,8 +362,20 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.ModemVersion); ok {
 		comp = append(comp, "modem "+v)
 	}
+	if v, ok := facts.Get(b, vendor.GPSFirmware); ok {
+		comp = append(comp, "GPS "+v)
+	}
 	if len(comp) > 0 {
 		add("Components: %s", strings.Join(comp, ", "))
+	}
+	if v, ok := facts.Get(b, vendor.KernelVersion); ok {
+		add("Kernel: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.KernelCmdline); ok {
+		add("Kernel cmdline: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.DebugBuild); ok && v {
+		add("Debug build: ro.debuggable=1")
 	}
 	if lock, ok := facts.Get(b, vendor.SubsidyLock); ok {
 		add("Subsidy: %s", b.Show(vendor.SubsidyLock.Name(), lock))
@@ -1086,6 +1098,9 @@ func reconArchive(path string, bag *facts.Bag) error {
 	// source of ro.system.build.fingerprint (the ramdisk's copy is stale) and it
 	// corroborates the patch/date. Read it before rendering so it shows and so a
 	// subsequent --learn contributes the true system identity.
+	// First: opening its members loads the sibling secrets that
+	// learnSystemProps needs for an encrypted system image.
+	learnPackageFacts(path, bag)
 	learnSystemProps(path, bag)
 	if reconWith != "" {
 		learnSystemProps(reconWith, bag)
@@ -1841,6 +1856,16 @@ func typeLabel(name string, head []byte) string {
 		return "COM type library"
 	case filetype.SQLite:
 		return "SQLite"
+	case filetype.UBI:
+		return "UBI image"
+	case filetype.UBIFS:
+		return "UBIFS"
+	case filetype.Ogg:
+		return "Ogg"
+	case filetype.QcomMBN:
+		return "Qualcomm MBN"
+	case filetype.QcomPartition:
+		return "Qualcomm partition table"
 	case filetype.Gzip:
 		return "gzip"
 	case filetype.Zip:

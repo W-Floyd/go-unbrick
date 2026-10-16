@@ -407,6 +407,32 @@ type StockExploder interface {
 	ExplodeStock(path, dir string, opts ExplodeOptions) ([]string, error)
 }
 
+// PackageAccess is what a driver may read of an archive package without knowing
+// how it is opened: its member names, a member's bytes (nil if absent), and
+// whether encrypted members can be read through (a key is loaded). Read may
+// load keys as a side effect, so Decrypts is asked after the first Read.
+type PackageAccess struct {
+	Names    map[string]bool
+	Read     func(name string) []byte
+	Decrypts func() bool
+}
+
+// PackageLearner is an optional Driver capability: folding the component
+// versions and build facts a vendor's package carries in its own members into
+// the bag. A package that is not the vendor's adds nothing.
+type PackageLearner interface {
+	LearnPackage(pkg PackageAccess, bag *facts.Bag)
+}
+
+// LearnPackage lets every driver that reads package members contribute facts.
+func LearnPackage(pkg PackageAccess, bag *facts.Bag) {
+	for _, d := range Drivers() {
+		if pl, ok := d.(PackageLearner); ok {
+			pl.LearnPackage(pkg, bag)
+		}
+	}
+}
+
 // DetectStock returns the driver whose stock-package format matches the path.
 func DetectStock(path string) (Driver, StockPackager, bool) {
 	for _, id := range ids() {
