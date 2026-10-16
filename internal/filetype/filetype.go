@@ -40,8 +40,8 @@ const (
 	TypeLib           Kind = "com-typelib" // .tlb, a COM type library
 	SQLite            Kind = "sqlite"
 	UBI               Kind = "ubi" // raw NAND UBI image (erase-block headers)
-	UBIFS Kind = "ubifs"
-	Ogg             Kind = "ogg"
+	UBIFS             Kind = "ubifs"
+	Ogg               Kind = "ogg"
 	QcomMBN           Kind = "qualcomm-mbn"             // non-ELF boot image (sbl1.mbn): 0x844bdcd1 header
 	QcomPartition     Kind = "qualcomm-partition-table" // partition.mbn
 	Unknown           Kind = "unknown"

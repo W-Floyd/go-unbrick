@@ -1125,6 +1125,23 @@ func reconArchive(path string, bag *facts.Bag) error {
 		}
 		return members[i].Name < members[j].Name
 	})
+	// With keys loaded, say which high-entropy members none of them opened
+	// (every key/IV pair and framing was tried): those need another key.
+	if len(reconSecrets) > 0 {
+		var locked []string
+		for _, m := range members {
+			base := filepath.Base(m.Name)
+			// By name too: model weights and the like are high-entropy
+			// without being encrypted.
+			if len(m.Head) >= 1024 && strings.Contains(strings.ToLower(base), "enc") &&
+				typeLabel(base, m.Head) == "encrypted or compressed" {
+				locked = append(locked, m.Name)
+			}
+		}
+		if len(locked) > 0 {
+			fmt.Printf("  Not opened by the %d loaded key/IV candidate(s): %s\n", len(reconSecrets), strings.Join(locked, ", "))
+		}
+	}
 	fmt.Printf("  Contents (%d members):\n", len(members))
 	if why := srcfile.Incomplete(path); why != "" {
 		fmt.Printf("    %s listing is partial: %s\n", cWarn("[!]"), why)
@@ -1870,6 +1887,9 @@ func typeLabel(name string, head []byte) string {
 		return "gzip"
 	case filetype.Zip:
 		return "zip"
+	}
+	if bootimg.IsZImage(head) {
+		return "ARM zImage"
 	}
 	if lp.IsSuper(head) {
 		return "super metadata"
