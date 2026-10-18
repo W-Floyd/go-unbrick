@@ -17,11 +17,15 @@ import (
 // point: it is routinely an order of magnitude larger than the real change.
 func newDiffCmd() *cobra.Command {
 	var verbose bool
+	var depth int
 	c := &cobra.Command{
 		Use:   "diff <a> <b>",
-		Short: "compare two signed images, separating re-signing from real change",
+		Short: "compare two signed images, separating re-signing from real change; or two packages, member by member",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if ok, err := diffContainers(args[0], args[1], depth, verbose); ok || err != nil {
+				return err
+			}
 			a, err := os.ReadFile(args[0])
 			if err != nil {
 				return err
@@ -121,7 +125,9 @@ func newDiffCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy")
+	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy (images); list unchanged members too (packages)")
+	c.Flags().IntVar(&depth, "depth", 3, "packages: how many container levels to compare into")
+	addSecrets(c)
 	return c
 }
 
