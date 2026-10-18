@@ -368,8 +368,20 @@ func identityFactLines(b *facts.Bag) []string {
 	if len(comp) > 0 {
 		add("Components: %s", strings.Join(comp, ", "))
 	}
+	if v, ok := facts.Get(b, vendor.DeviceTree); ok {
+		add("Device tree: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.ModemDeviceTree); ok {
+		add("Modem device tree: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.ModemFirmware); ok {
+		add("Modem firmware: %s", v)
+	}
 	if v, ok := facts.Get(b, vendor.KernelVersion); ok {
 		add("Kernel: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.KernelConfig); ok {
+		add("Kernel config: %s", v)
 	}
 	if v, ok := facts.Get(b, vendor.KernelCmdline); ok {
 		add("Kernel cmdline: %s", v)
@@ -1875,6 +1887,12 @@ func typeLabel(name string, head []byte) string {
 		return "SQLite"
 	case filetype.UBI:
 		return "UBI image"
+	case filetype.DEX:
+		return "Dalvik DEX"
+	case filetype.ODEX:
+		return "Dalvik odex"
+	case filetype.QCDT:
+		return "Qualcomm device-tree table"
 	case filetype.UBIFS:
 		return "UBIFS"
 	case filetype.Ogg:

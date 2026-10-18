@@ -65,3 +65,14 @@ func TestParseSplash(t *testing.T) {
 		t.Error("truncated table parsed")
 	}
 }
+
+func TestSummarizeKernelConfig(t *testing.T) {
+	cfg := "# CONFIG_X is not set\nCONFIG_ARCH_TCC=y\nCONFIG_ARCH_TCC803X=y\nCONFIG_DM_VERITY=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_OFF=n\n"
+	want := "4 options, ARCH_TCC803X, dm-verity, SELinux"
+	if got := SummarizeKernelConfig([]byte(cfg)); got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+	if SummarizeKernelConfig([]byte("# nothing")) != "" {
+		t.Error("summarised an empty config")
+	}
+}

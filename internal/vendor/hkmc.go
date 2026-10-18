@@ -1,10 +1,13 @@
 package vendor
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 )
@@ -71,6 +74,39 @@ func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 		facts.Set(bag, GPSFirmware, strings.Join(gps, ", "), facts.Provenance{Source: "gps/*.txt", Authority: facts.Attested})
 	}
 
+	// The modem's boot image carries its own device-tree table; the first
+	// variant's stands for all (the others differ in carrier config only).
+	for _, name := range slices.Sorted(maps.Keys(pkg.Names)) {
+		if strings.HasPrefix(name, "modem/") && strings.HasSuffix(name, "/mdm9607-boot.img") {
+			if v := DescribeQCDT(pkg.Read(name + "/dt")); v != "" {
+				facts.Set(bag, ModemDeviceTree, v, facts.Provenance{Source: name + "/dt", Authority: facts.Attested})
+			}
+			break
+		}
+	}
+
+	// The modem firmware ELF of each variant, joined from its split segments in
+	// NON-HLOS; variants that carry the same build are listed together.
+	fw := map[string][]string{}
+	for name := range pkg.Names {
+		dir, ok := strings.CutSuffix(name, "/NON-HLOS.ubi")
+		if !ok || !strings.HasPrefix(dir, "modem/") {
+			continue
+		}
+		if v := describeModemELF(pkg.Read(name + "/modem/image/modem.mdt.joined")); v != "" {
+			fw[v] = append(fw[v], strings.TrimPrefix(dir, "modem/"))
+		}
+	}
+	var fwList []string
+	for v, variants := range fw {
+		sort.Strings(variants)
+		fwList = append(fwList, v+" ("+strings.Join(variants, ", ")+")")
+	}
+	sort.Strings(fwList)
+	if len(fwList) > 0 {
+		facts.Set(bag, ModemFirmware, strings.Join(fwList, "; "), facts.Provenance{Source: "modem/*/NON-HLOS.ubi modem.mdt", Authority: facts.Attested})
+	}
+
 	const boot = "enc_system/enc_boot.img/boot.img"
 	if !pkg.Names["enc_system/enc_boot.img"] {
 		return
@@ -79,9 +115,15 @@ func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 	if !pkg.Decrypts() || hdr == nil {
 		return
 	}
+	if v := DescribeDeviceTree(pkg.Read("enc_system/enc_device_tree.dtb/device_tree.dtb")); v != "" {
+		facts.Set(bag, DeviceTree, v, facts.Provenance{Source: "enc_device_tree.dtb", Authority: facts.Attested})
+	}
 	prov := facts.Provenance{Source: "enc_boot.img", Authority: facts.Attested}
 	if im, err := bootimg.Parse(hdr); err == nil && im.Cmdline != "" {
 		facts.Set(bag, KernelCmdline, im.Cmdline, prov)
+	}
+	if v := SummarizeKernelConfig(pkg.Read(boot + "/kernel/config")); v != "" {
+		facts.Set(bag, KernelConfig, v, prov)
 	}
 	if v := ZImageKernelVersion(pkg.Read(boot + "/kernel")); v != "" {
 		facts.Set(bag, KernelVersion, v, prov)
@@ -89,6 +131,33 @@ func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 	if v := propValue(pkg.Read(boot+"/ramdisk/default.prop"), "ro.debuggable"); v != "" {
 		facts.Set(bag, DebugBuild, v == "1", prov)
 	}
+}
+
+// describeModemELF reads a firmware ELF's core, variant, build date and signing
+// root as one line, or "" when it is not a readable ELF.
+func describeModemELF(b []byte) string {
+	if b == nil {
+		return ""
+	}
+	info, err := bootelf.Analyze(b)
+	if err != nil {
+		return ""
+	}
+	parts := []string{info.Arch}
+	if info.Variant != "" {
+		parts = append(parts, info.Variant)
+	}
+	if info.Provenance.BuildDate != "" {
+		parts = append(parts, "built "+info.Provenance.BuildDate)
+	}
+	if id := info.Identity; id != nil && (id.RootCN != "" || id.Root != "") {
+		root := id.RootCN
+		if root == "" {
+			root = id.Root
+		}
+		parts = append(parts, "signed under "+root)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // propValue is the value of key in a key=value property file, or "".
