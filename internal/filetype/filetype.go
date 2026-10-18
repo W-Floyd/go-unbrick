@@ -41,6 +41,9 @@ const (
 	SQLite            Kind = "sqlite"
 	UBI               Kind = "ubi" // raw NAND UBI image (erase-block headers)
 	UBIFS             Kind = "ubifs"
+	QCDT              Kind = "qualcomm-dt-table"
+	ODEX              Kind = "dalvik-odex" // optimized DEX, pre-ART ("dey\n036")
+	DEX               Kind = "dalvik-dex"
 	Ogg               Kind = "ogg"
 	QcomMBN           Kind = "qualcomm-mbn"             // non-ELF boot image (sbl1.mbn): 0x844bdcd1 header
 	QcomPartition     Kind = "qualcomm-partition-table" // partition.mbn
@@ -113,6 +116,12 @@ func Detect(head []byte) Kind {
 		return UBI
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x06101831: // UBIFS node magic
 		return UBIFS
+	case len(head) >= 8 && bytes.Equal(head[:4], []byte("dex\n")):
+		return DEX
+	case len(head) >= 8 && bytes.Equal(head[:4], []byte("dey\n")):
+		return ODEX
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte("QCDT")):
+		return QCDT
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("OggS")):
 		return Ogg
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x844bdcd1:

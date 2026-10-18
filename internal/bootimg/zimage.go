@@ -16,6 +16,25 @@ func IsZImage(head []byte) bool {
 	return len(head) >= 0x28 && binary.LittleEndian.Uint32(head[0x24:]) == ZImageMagic
 }
 
+// KernelConfig returns the .config a kernel was built with (CONFIG_IKCONFIG):
+// a gzip stream between the IKCFG_ST and IKCFG_ED markers in the image. ok is
+// false when the kernel carries none.
+func KernelConfig(kernel []byte) ([]byte, bool) {
+	_, after, found := bytes.Cut(kernel, []byte("IKCFG_ST"))
+	if !found {
+		return nil, false
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(after))
+	if err != nil {
+		return nil, false
+	}
+	cfg, _ := io.ReadAll(io.LimitReader(zr, 4<<20))
+	if !bytes.Contains(cfg, []byte("CONFIG_")) {
+		return nil, false
+	}
+	return cfg, true
+}
+
 // ZImagePayload returns the kernel an ARM zImage's decompressor stub carries,
 // gzip-compressed after the stub. Trailing bytes after the stream are the
 // stub's own and not an error.

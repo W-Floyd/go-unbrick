@@ -88,3 +88,12 @@ func TestPEAndText(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectODEXAndQCDT(t *testing.T) {
+	if Detect([]byte("dey\n036\x00rest")) != ODEX {
+		t.Error("odex")
+	}
+	if Detect([]byte("QCDT\x03\x00\x00\x00")) != QCDT {
+		t.Error("qcdt")
+	}
+}

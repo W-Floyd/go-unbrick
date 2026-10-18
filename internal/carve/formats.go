@@ -21,6 +21,7 @@ import (
 	"github.com/pierrec/lz4/v4"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/dtbo"
 	"github.com/W-Floyd/go-unbrick/internal/ext4fs"
@@ -28,6 +29,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/lp"
 	"github.com/W-Floyd/go-unbrick/internal/modem"
 	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/qcdt"
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/tgzseek"
@@ -57,13 +59,53 @@ func init() {
 		Expander{Kind: "boot", Match: kind(filetype.AndroidBoot, filetype.AndroidVendorBoot), Expand: expandBoot},
 		Expander{Kind: "single_n_lonely", Match: kind(filetype.SingleNLonely), Expand: expandSingleNLonely},
 		Expander{Kind: "dtbo", Match: kind(filetype.DTBOTable), Expand: expandDTBO},
+		Expander{Kind: "odex", Match: kind(filetype.ODEX), Expand: expandODEX},
+		Expander{Kind: "qcdt", Match: kind(filetype.QCDT), Expand: expandQCDT},
 		Expander{Kind: "zimage", Match: func(_ *Node, h []byte) bool { return bootimg.IsZImage(h) }, Expand: expandZImage},
 		Expander{Kind: "ubi", Match: kind(filetype.UBI), Expand: expandUBI},
 		Expander{Kind: "ubifs", Match: kind(filetype.UBIFS), Expand: expandUBIFS, FS: ubifsFS},
 	)
 }
 
-// expandZImage lists the kernel an ARM zImage decompresses to.
+// expandODEX lists the DEX an optimized-DEX file wraps: its header (magic,
+// version, then little-endian dexOffset and dexLength) bounds the DEX, which
+// is followed by the dependency and optimization tables.
+func expandODEX(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(b) < 16 {
+		return nil, fmt.Errorf("odex: truncated header")
+	}
+	off, size := int(binary.LittleEndian.Uint32(b[8:])), int(binary.LittleEndian.Uint32(b[12:]))
+	if off < 0 || size < 0 || off+size > len(b) {
+		return nil, fmt.Errorf("odex: dex range [%d:%d] runs past the file", off, off+size)
+	}
+	name := strings.TrimSuffix(path.Base(n.Name), path.Ext(n.Name)) + ".dex"
+	return []*Node{FromBytes(name, b[off:off+size])}, nil
+}
+
+// expandQCDT lists the device trees of a Qualcomm DT table, named by the board
+// each is for.
+func expandQCDT(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	es, err := qcdt.Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Node
+	for i, e := range es {
+		out = append(out, FromBytes(fmt.Sprintf("%02d-plat%x-var%x-rev%x.dtb", i, e.Platform, e.Variant, e.SoCRev), e.DTB))
+	}
+	return out, nil
+}
+
+// expandZImage lists the kernel an ARM zImage decompresses to, and the build
+// config it embeds when it has one.
 func expandZImage(n *Node) ([]*Node, error) {
 	b, err := n.Bytes()
 	if err != nil {
@@ -73,7 +115,11 @@ func expandZImage(n *Node) ([]*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []*Node{FromBytes("Image", plain)}, nil
+	out := []*Node{FromBytes("Image", plain)}
+	if cfg, ok := bootimg.KernelConfig(plain); ok {
+		out = append(out, FromBytes("config", cfg))
+	}
+	return out, nil
 }
 
 func ubifsFS(n *Node) (fs.FS, error) {
@@ -89,8 +135,15 @@ func expandUBIFS(n *Node) ([]*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	return walkFS(img)
+}
+
+// walkFS lists a filesystem's regular files, reading each by path on demand,
+// and adds each PIL split (an .mdt with its .bNN segments) joined into the ELF
+// it was split from as "<name>.mdt.joined", as expandFirmwareFS does.
+func walkFS(img fs.FS) ([]*Node, error) {
 	var out []*Node
-	err = fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return nil
 		}
@@ -99,6 +152,20 @@ func expandUBIFS(n *Node) ([]*Node, error) {
 			return nil
 		}
 		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
+		if strings.EqualFold(path.Ext(p), ".mdt") {
+			head, err := fs.ReadFile(img, p)
+			if err != nil {
+				return nil
+			}
+			stem := strings.TrimSuffix(p, path.Ext(p))
+			joined, _, err := bootelf.JoinSplit(head, func(i int) []byte {
+				b, _ := fs.ReadFile(img, fmt.Sprintf("%s.b%02d", stem, i))
+				return b
+			})
+			if err == nil {
+				out = append(out, FromBytes(p+".joined", joined))
+			}
+		}
 		return nil
 	})
 	return out, err
@@ -403,19 +470,7 @@ func expandExt4(n *Node) ([]*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []*Node
-	err = fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
-		return nil
-	})
-	return out, err
+	return walkFS(img)
 }
 
 func erofsFS(n *Node) (fs.FS, error) {
@@ -431,19 +486,7 @@ func expandEROFS(n *Node) ([]*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []*Node
-	err = fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
-		return nil
-	})
-	return out, err
+	return walkFS(img)
 }
 
 func expandBoot(n *Node) ([]*Node, error) {
