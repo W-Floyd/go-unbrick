@@ -192,7 +192,7 @@ func (f *FS) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 	}
-	info := fileInfo{name: path.Base(name), size: int64(in.Size()), dir: e.dir, mod: in.ModificationTime()}
+	info := fileInfo{name: path.Base(name), size: int64(in.Size()), dir: e.dir, mod: in.ModificationTime(), imode: in.Data().IMode}
 	if e.dir {
 		return &dirFile{fs: f, e: e, info: info}, nil
 	}
@@ -302,14 +302,15 @@ func (d dirEntry) Info() (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return fileInfo{name: d.e.name, size: int64(in.Size()), dir: d.e.dir, mod: in.ModificationTime()}, nil
+	return fileInfo{name: d.e.name, size: int64(in.Size()), dir: d.e.dir, mod: in.ModificationTime(), imode: in.Data().IMode}, nil
 }
 
 type fileInfo struct {
-	name string
-	size int64
-	dir  bool
-	mod  time.Time
+	name  string
+	size  int64
+	dir   bool
+	mod   time.Time
+	imode uint16 // the inode's raw i_mode: type bits, permissions, setuid/setgid/sticky
 }
 
 func (i fileInfo) Name() string       { return i.name }
@@ -317,9 +318,36 @@ func (i fileInfo) Size() int64        { return i.size }
 func (i fileInfo) ModTime() time.Time { return i.mod }
 func (i fileInfo) IsDir() bool        { return i.dir }
 func (i fileInfo) Sys() any           { return nil }
-func (i fileInfo) Mode() fs.FileMode {
-	if i.dir {
-		return fs.ModeDir | 0o555
+func (i fileInfo) Mode() fs.FileMode  { return modeFromIMode(i.imode) }
+
+// modeFromIMode decodes an ext4 inode's i_mode (the on-disk POSIX st_mode:
+// S_IFMT type bits in the high nibbles, permissions and setuid/setgid/sticky
+// in the low 12 bits) into the fs.FileMode go-unbrick's callers rely on to
+// see real permissions, not a guess.
+func modeFromIMode(m uint16) fs.FileMode {
+	mode := fs.FileMode(m & 0o777)
+	switch m & 0o170000 {
+	case 0o040000:
+		mode |= fs.ModeDir
+	case 0o120000:
+		mode |= fs.ModeSymlink
+	case 0o140000:
+		mode |= fs.ModeSocket
+	case 0o060000:
+		mode |= fs.ModeDevice
+	case 0o020000:
+		mode |= fs.ModeDevice | fs.ModeCharDevice
+	case 0o010000:
+		mode |= fs.ModeNamedPipe
 	}
-	return 0o444
+	if m&0o4000 != 0 {
+		mode |= fs.ModeSetuid
+	}
+	if m&0o2000 != 0 {
+		mode |= fs.ModeSetgid
+	}
+	if m&0o1000 != 0 {
+		mode |= fs.ModeSticky
+	}
+	return mode
 }

@@ -37,6 +37,15 @@ var identityPartitions = map[string]bool{
 	// Boot images, whose ramdisk is where an OTA key hides. Usually past the
 	// default size cap; named so that raising the cap picks them up.
 	"boot": true, "recovery": true, "vendor_boot": true, "init_boot": true,
+	// Telechips (HKMC head units): LK and splash carry their own header, and
+	// each keeps a "_mirror" copy as a signed fallback — a convention distinct
+	// from the "_a"/"_b" slot suffix Base() strips, so these are named outright
+	// rather than relying on that stripping. "secure"/"telesecurity" are named
+	// for the Secure Boot/key-package material lk.rom's own strings describe
+	// ("Change Key Package to secure image", "Certificate Version").
+	"dtb": true, "splash": true, "splash_mirror": true,
+	"boot_mirror": true, "recovery_mirror": true,
+	"secure": true, "telesecurity": true, "telesecurity_backup": true,
 }
 
 // DefaultReadCap bounds one partition read. The signed boot chain is a few

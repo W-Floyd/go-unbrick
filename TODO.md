@@ -118,6 +118,24 @@ Assessed from `recon/ANALYSIS.md` against the current fastboot architecture
   ramdump/fb_mode, but these mutate state (`cmdl ""` wipes the kernel cmdline), so
   gate per-flag with an explicit confirm, not fire-all.
 
+## Telechips eMMC boot-hardware-partition content is unidentified
+
+`mmcblk0boot0`/`boot1` (Telechips' eMMC hardware boot area, not a named GPT
+partition — `internal/transport`'s `identityPartitions` has no path to read
+these at all yet) do **not** hold the `TCSBLBS`-tagged `lk.rom` the OTA
+package ships (confirmed live on a Mobis G5W unit: full 31.5 MB `boot0` dump
+has no `TCSBLBS` anywhere). Instead, two `ANDROID@`-tagged hits, each
+followed by `KEY PACKAGES\0` and a small offset table — a different,
+smaller structure than the OTA's LK image, unidentified. Content past
+~0x79000 is empty/padding. `boot1` (the eMMC mirror) not checked yet.
+
+Open: what this structure actually is (a BL1/SPL stage, a certificate/key
+table referenced by `lk.rom`'s own "Key Package to secure image" strings,
+or something else), where the real flashed LK actually lives if not here,
+and how to read `mmcblk0boot0/1` through go-unbrick at all (they're raw
+disks, not `by-name` GPT entries — a different code path than
+`IdentityPartitions`).
+
 **Deferred (bigger scope / off the EDL-blankflash mission):**
 - **Smart fastboot flash** (`flash --smart`): intersect a stock package's parts
   with the live table to skip missing partitions. The `safeguard` + `PartitionFacts`
