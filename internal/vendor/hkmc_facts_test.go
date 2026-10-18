@@ -76,3 +76,18 @@ func TestSummarizeKernelConfig(t *testing.T) {
 		t.Error("summarised an empty config")
 	}
 }
+
+func TestSummarizePosture(t *testing.T) {
+	fstab := []byte("/dev/block/by-name/system /system ext4 ro,nodev wait\n" +
+		"/dev/block/by-name/data /data ext4 noatime wait,check,encryptable=/dev/block/by-name/userdata\n")
+	props := []byte("ro.adb.secure=1\nro.secure=1\nro.debuggable=1\npersist.sys.usb.config=host,adb\n")
+	got := SummarizePosture([][]byte{fstab}, props, "console=null androidboot.selinux=disabled", true)
+	want := "/system ro, no verify flag (dm-verity is built into the kernel); /data encryptable; adb needs authorization; debuggable (adb root permitted); usb host,adb; SELinux disabled"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	verified := []byte("/dev/x /system ext4 ro wait,verify\n")
+	if got := SummarizePosture([][]byte{verified}, nil, "", false); got != "/system ro, verity enforced" {
+		t.Errorf("verity: %q", got)
+	}
+}

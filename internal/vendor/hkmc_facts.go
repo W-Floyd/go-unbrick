@@ -31,6 +31,90 @@ var (
 	KernelConfig = facts.Key[string]("kernel_config")
 )
 
+// BootPosture is what the boot ramdisk says about how locked down the device
+// is: system mount and verity, data encryption, adb and SELinux.
+var BootPosture = facts.Key[string]("boot_posture")
+
+// fstabEntry is one line of an Android fstab.
+type fstabEntry struct{ Dev, Mount, Type, MntFlags, FsMgrFlags string }
+
+func parseFstab(b []byte) []fstabEntry {
+	var out []fstabEntry
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || strings.HasPrefix(f[0], "#") || !strings.HasPrefix(f[0], "/") {
+			continue
+		}
+		out = append(out, fstabEntry{f[0], f[1], f[2], f[3], f[4]})
+	}
+	return out
+}
+
+// SummarizePosture reads the ramdisk's fstabs, default.prop and the kernel
+// command line. kernelVerity is whether the kernel was built with dm-verity.
+func SummarizePosture(fstabs [][]byte, defaultProp []byte, cmdline string, kernelVerity bool) string {
+	var parts []string
+	var sys *fstabEntry
+	var enc []string
+	seen := map[string]bool{}
+	for _, b := range fstabs {
+		es := parseFstab(b)
+		for i := range es {
+			e := es[i]
+			if e.Mount == "/system" && sys == nil {
+				sys = &es[i]
+			}
+			if e.Mount != "/data" && e.Mount != "/securedata" {
+				continue
+			}
+			for _, flag := range strings.Split(e.FsMgrFlags, ",") {
+				if k, _, ok := strings.Cut(flag, "="); ok && (k == "encryptable" || k == "forceencrypt") {
+					if s := e.Mount + " " + k; !seen[s] {
+						seen[s] = true
+						enc = append(enc, s)
+					}
+				}
+			}
+		}
+	}
+	if sys != nil {
+		verity := "no verify flag"
+		if strings.Contains(sys.FsMgrFlags, "verify") {
+			verity = "verity enforced"
+		} else if kernelVerity {
+			verity += " (dm-verity is built into the kernel)"
+		}
+		mode := "rw"
+		if strings.HasPrefix(sys.MntFlags, "ro") {
+			mode = "ro"
+		}
+		parts = append(parts, fmt.Sprintf("/system %s, %s", mode, verity))
+	}
+	parts = append(parts, enc...)
+	props := map[string]string{}
+	for _, line := range strings.Split(string(defaultProp), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			props[k] = v
+		}
+	}
+	if props["ro.adb.secure"] == "1" {
+		parts = append(parts, "adb needs authorization")
+	}
+	switch {
+	case props["ro.debuggable"] == "1" && props["ro.secure"] == "1":
+		parts = append(parts, "debuggable (adb root permitted)")
+	case props["ro.secure"] == "0":
+		parts = append(parts, "ro.secure=0 (adbd runs as root)")
+	}
+	if v := props["persist.sys.usb.config"]; v != "" {
+		parts = append(parts, "usb "+v)
+	}
+	if strings.Contains(cmdline, "androidboot.selinux=disabled") {
+		parts = append(parts, "SELinux disabled")
+	}
+	return strings.Join(parts, "; ")
+}
+
 // archCapability matches the generic ARCH_ options a kernel sets for every SoC.
 var archCapability = regexp.MustCompile(`^ARCH_(SUPPORTS|HAS|USE|WANT|HAVE|MIGHT|REQUIRE|HIBERNATION|SUSPEND|PHYS|DMA|BINFMT|MULTI|SPARSEMEM|FLATMEM)_|_MAP_`)
 

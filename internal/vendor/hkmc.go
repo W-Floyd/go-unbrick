@@ -128,8 +128,20 @@ func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 	if v := ZImageKernelVersion(pkg.Read(boot + "/kernel")); v != "" {
 		facts.Set(bag, KernelVersion, v, prov)
 	}
-	if v := propValue(pkg.Read(boot+"/ramdisk/default.prop"), "ro.debuggable"); v != "" {
+	defaultProp := pkg.Read(boot + "/ramdisk/default.prop")
+	if v := propValue(defaultProp, "ro.debuggable"); v != "" {
 		facts.Set(bag, DebugBuild, v == "1", prov)
+	}
+	var fstabs [][]byte
+	for _, name := range pkg.List(boot + "/ramdisk") {
+		if strings.HasPrefix(name, "fstab.") {
+			fstabs = append(fstabs, pkg.Read(boot+"/ramdisk/"+name))
+		}
+	}
+	cmdline, _ := facts.Get(bag, KernelCmdline)
+	verity := strings.Contains(string(pkg.Read(boot+"/kernel/config")), "CONFIG_DM_VERITY=y")
+	if v := SummarizePosture(fstabs, defaultProp, cmdline, verity); v != "" {
+		facts.Set(bag, BootPosture, v, prov)
 	}
 }
 

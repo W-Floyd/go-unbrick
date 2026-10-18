@@ -26,6 +26,21 @@ func learnPackageFacts(path string, bag *facts.Bag) {
 			b, _ := n.Bytes()
 			return b
 		},
+		List: func(dir string) []string {
+			n, err := carvePath(path, dir)
+			if err != nil {
+				return nil
+			}
+			_, kids, err := n.Children()
+			if err != nil {
+				return nil
+			}
+			out := make([]string, len(kids))
+			for i, k := range kids {
+				out[i] = k.Name
+			}
+			return out
+		},
 		Decrypts: func() bool { return len(reconSecrets) > 0 },
 	}, bag)
 }

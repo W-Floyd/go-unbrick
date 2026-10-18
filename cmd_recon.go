@@ -386,8 +386,8 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.KernelCmdline); ok {
 		add("Kernel cmdline: %s", v)
 	}
-	if v, ok := facts.Get(b, vendor.DebugBuild); ok && v {
-		add("Debug build: ro.debuggable=1")
+	if v, ok := facts.Get(b, vendor.BootPosture); ok {
+		add("Boot posture: %s", v)
 	}
 	if lock, ok := facts.Get(b, vendor.SubsidyLock); ok {
 		add("Subsidy: %s", b.Show(vendor.SubsidyLock.Name(), lock))

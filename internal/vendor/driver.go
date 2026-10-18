@@ -414,6 +414,7 @@ type StockExploder interface {
 type PackageAccess struct {
 	Names    map[string]bool
 	Read     func(name string) []byte
+	List     func(dir string) []string // names inside a member that is itself a container
 	Decrypts func() bool
 }
 
