@@ -56,9 +56,16 @@ format browse can reformat (currently: JSON) shows pretty-printed by default.
   backspace/h/←     go back up one level (lands back on what you came from)
   x                 extract the selected entry to the current directory
   p                 toggle a reformatted text file between pretty and raw
+  y                 copy the whole preview pane's text to the clipboard
   /                 filter the current list
   click / wheel     select, activate, or scroll with the mouse
   q, ctrl+c         quit
+
+Mouse reporting (for click/wheel above) is also what stops a terminal's own
+click-drag text selection from reaching it - most terminals still allow that
+under a modifier key (Option on macOS Terminal/iTerm2, Shift on many Linux
+terminals) if you want to select and copy only part of what's shown; 'y'
+above copies the whole pane without needing either.
 
 There is no flat/non-interactive mode for this command; it requires a real
 terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
@@ -123,6 +130,22 @@ func reconKey(e browseEntry) (key string, ok bool) {
 	default:
 		return "", false
 	}
+}
+
+// selectedIdentity names whatever list.Model.SelectedItem() currently is, for
+// detecting a selection change around a list.Update call. Index() alone
+// isn't enough: while filtering, the cursor can sit at the same numeric
+// index (often 0) across every keystroke while the item actually there
+// changes with each narrowing of the match set - comparing indices missed
+// that entirely, leaving the preview pane showing whatever was selected
+// before filtering started, through the entire session of typing a filter
+// and confirming it.
+func selectedIdentity(l list.Model) string {
+	e, ok := l.SelectedItem().(browseEntry)
+	if !ok {
+		return ""
+	}
+	return e.name + "\x00" + e.osPath + "\x00" + fmt.Sprintf("%p", e.node)
 }
 
 const browseNameWidth = 42
@@ -218,6 +241,10 @@ func newBrowseModel(input string, skip []string) (*browseModel, error) {
 		rq:      newReconQueue(),
 		skip:    skip,
 	}
+	// Without this a long line just vanishes past the pane's width - no
+	// scrollbar, no indicator it's cut off, and no keybinding here for
+	// horizontal scroll either.
+	m.preview.SoftWrap = true
 	// This isn't list.DefaultDelegate's two-line card view, and the
 	// breadcrumb/status line below the panes already says where we are and
 	// what the last action did — the list's own title/status/pagination/help
@@ -292,22 +319,42 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitReady(m.rq.ready)
 	case tea.KeyPressMsg:
-		switch msg.Keystroke() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "enter", "l", "right":
-			m.descend()
-			return m, nil
-		case "backspace", "h", "left":
-			m.ascend()
-			return m, nil
-		case "x":
-			m.extract()
-			return m, nil
-		case "p":
-			m.showRaw = !m.showRaw
-			m.showPreview()
-			return m, nil
+		// While actively typing a filter query, every key belongs to it -
+		// including ones that are otherwise our own bindings below (an 'x',
+		// 'p', 'q', 'h' or 'l' in the query would otherwise never reach the
+		// filter input, and 'enter' needs to confirm the filter, not
+		// descend into whatever stale/wrong item was selected before the
+		// filter changed what's showing).
+		if m.list.FilterState() != list.Filtering {
+			switch msg.Keystroke() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "enter", "l", "right":
+				m.descend()
+				return m, nil
+			case "backspace", "h", "left":
+				m.ascend()
+				return m, nil
+			case "x":
+				m.extract()
+				return m, nil
+			case "p":
+				m.showRaw = !m.showRaw
+				m.showPreview()
+				return m, nil
+			case "y":
+				// Our own mouse reporting (tea.MouseModeCellMotion, for
+				// click/wheel) is exactly what stops a terminal's native
+				// click-drag selection from reaching it at all - most
+				// terminals still allow it under a modifier key (Option on
+				// macOS Terminal/iTerm2, Shift on many Linux ones), but that's
+				// a per-terminal trick to remember, not something here. OSC
+				// 52 (tea.SetClipboard) copies the whole pane's plain text
+				// (stripANSI: chroma's highlighting is real ANSI color codes,
+				// not something to paste elsewhere) without needing either.
+				m.setStatus("copied to clipboard")
+				return m, tea.SetClipboard(stripANSI(m.preview.GetContent()))
+			}
 		}
 	case tea.MouseClickMsg:
 		m.handleClick(msg.Mouse())
@@ -317,9 +364,9 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmd tea.Cmd
-	before := m.list.Index()
+	before := selectedIdentity(m.list)
 	m.list, cmd = m.list.Update(msg)
-	if m.list.Index() != before {
+	if selectedIdentity(m.list) != before {
 		m.onSelectionChanged()
 	}
 	return m, cmd
@@ -438,6 +485,7 @@ func (m *browseModel) selected() (browseEntry, bool) {
 // next in line, not buried behind everything else in the current directory.
 func (m *browseModel) onSelectionChanged() {
 	m.showRaw = false // land on pretty-by-default for whatever's now highlighted, not whatever 'p' last left set
+	m.preview.GotoTop()
 	m.showPreview()
 	if e, ok := m.selected(); ok {
 		if key, ok := reconKey(e); ok {
