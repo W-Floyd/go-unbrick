@@ -14,6 +14,7 @@ require (
 	github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/anchore/go-lzo v0.1.0
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/electricbubble/gadb v0.1.0
 	github.com/go-git/go-git/v5 v5.19.3
@@ -39,7 +40,6 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
-	github.com/charmbracelet/x/ansi v0.11.9 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect

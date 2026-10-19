@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	cl "container/list" // aliased: "list" below is charm.land/bubbles/v2/list, the TUI widget - unrelated
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg" // registers the JPEG decoder with image.Decode; never called directly
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,6 +26,8 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/ansi/iterm2"
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
@@ -108,11 +115,18 @@ type browseEntry struct {
 	dir         bool
 	isContainer bool // carve-recognized container (meaningless when osPath != "": that's resolved lazily on Enter)
 	isText      bool // previewed as syntax-highlighted content instead of reconned - see reconKey
+	isImage     bool // previewed inline via the terminal's graphics protocol, if it has one - see imagePreview
+	isParent    bool // the synthetic ".." row - clicking or entering it ascends, same as backspace/h/left
 	osPath      string
 	node        *carve.Node
 }
 
 func (e browseEntry) FilterValue() string { return e.name }
+
+// parentEntry is the synthetic first row of every frame but the root one: a
+// mouse-clickable (and enter-able) equivalent of backspace/h/left, since
+// those have no on-screen representation to click at all.
+var parentEntry = browseEntry{name: "..", size: -1, label: "up one level", isParent: true}
 
 // reconKey identifies e for the recon queue/cache: a real path for an OS
 // file, or the carve.Node's own identity for a package member (two different
@@ -221,16 +235,17 @@ type browseFrame struct {
 }
 
 type browseModel struct {
-	frames  []browseFrame
-	list    list.Model
-	preview viewport.Model
-	spin    spinner.Model
-	rq      *reconQueue
-	skip    []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
-	showRaw bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
-	status  string
-	width   int
-	height  int
+	frames   []browseFrame
+	list     list.Model
+	preview  viewport.Model
+	spin     spinner.Model
+	rq       *reconQueue
+	skip     []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
+	showRaw  bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
+	graphics graphicsProtocol
+	status   string
+	width    int
+	height   int
 }
 
 func newBrowseModel(input string, skip []string) (*browseModel, error) {
@@ -245,6 +260,7 @@ func newBrowseModel(input string, skip []string) (*browseModel, error) {
 	// scrollbar, no indicator it's cut off, and no keybinding here for
 	// horizontal scroll either.
 	m.preview.SoftWrap = true
+	m.graphics = detectGraphics()
 	// This isn't list.DefaultDelegate's two-line card view, and the
 	// breadcrumb/status line below the panes already says where we are and
 	// what the last action did — the list's own title/status/pagination/help
@@ -489,7 +505,7 @@ func (m *browseModel) onSelectionChanged() {
 	m.showPreview()
 	if e, ok := m.selected(); ok {
 		if key, ok := reconKey(e); ok {
-			m.rq.bump(key)
+			m.rq.enqueueFront(reconJob{key: key, name: e.name, osPath: e.osPath, node: e.node})
 		}
 	}
 }
@@ -507,10 +523,11 @@ func (m *browseModel) handleClick(ms tea.Mouse) {
 		return
 	}
 	already := idx == m.list.Index()
+	wasParent, _ := items[idx].(browseEntry)
 	m.list.Select(idx)
 	m.onSelectionChanged()
-	if already {
-		m.descend()
+	if already || wasParent.isParent {
+		m.descend() // a click on ".." activates immediately - a real back button, not "select then click again"
 	}
 }
 
@@ -545,6 +562,25 @@ func (m *browseModel) showPreview() {
 		m.preview.SetContent("")
 		return
 	}
+	// An image renders inline via the terminal's own graphics protocol, if
+	// one was detected - if not (or the read/decode failed), imagePreview
+	// says so and this falls through to the plain size/type/recon preview
+	// below, same as any other unrecognized format.
+	//
+	// KNOWN BROKEN: confirmed live (iTerm2 protocol, real OSC 1337 sequence
+	// generated correctly) that the sequence does not survive
+	// viewport.Model+lipgloss.JoinHorizontal - neither understands an
+	// OSC/APC graphics sequence as a single zero-width unit, so SoftWrap's
+	// line-wrapping and JoinHorizontal's side-by-side width measurement
+	// both corrupt it before it reaches the terminal. Needs a render path
+	// that bypasses both for this case (Kitty's explicit X/Y cell
+	// positioning is one way) rather than composing through them like text.
+	if !e.dir && e.isImage {
+		if out, ok := m.imagePreview(e); ok {
+			m.preview.SetContent(out)
+			return
+		}
+	}
 	// A text file (isText is a direct content check - filetype.Text on its
 	// own head bytes, not e.label, which is recon's often-less-specific
 	// guess: a file this heuristic already calls readable can still earn an
@@ -569,6 +605,8 @@ func (m *browseModel) showPreview() {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", cHdr(e.name))
 	switch {
+	case e.isParent:
+		fmt.Fprintln(&b, "enter, or click, to go up one level")
 	case e.dir:
 		fmt.Fprintln(&b, "directory")
 	case e.osPath != "":
@@ -582,6 +620,164 @@ func (m *browseModel) showPreview() {
 		fmt.Fprintln(&b, "reconning in the background (spooled to a temp file); x extracts")
 	}
 	m.preview.SetContent(b.String())
+}
+
+// graphicsProtocol is which inline-image escape-sequence dialect, if any,
+// the terminal is believed to understand.
+type graphicsProtocol int
+
+const (
+	graphicsNone graphicsProtocol = iota
+	graphicsKitty
+	graphicsITerm2
+)
+
+// detectGraphics guesses the terminal's inline-image protocol from
+// well-known environment variables. There's no reliable cross-terminal
+// capability query for this (unlike color profile, which bubbletea can
+// actually ask the terminal about) - every terminal-image tool (chafa, viu,
+// timg, yazi) resorts to the same env-var sniffing. Not a guarantee in
+// either direction: a detected protocol can still be unsupported (TERM
+// overridden, a multiplexer in between that doesn't pass the sequences
+// through) and a real one can go undetected (an env var this doesn't know
+// about yet) - unrecognized falls back to the plain text/recon preview,
+// never a guess that might print raw escape garbage to the screen.
+func detectGraphics() graphicsProtocol {
+	switch {
+	case os.Getenv("KITTY_WINDOW_ID") != "", os.Getenv("TERM") == "xterm-kitty":
+		return graphicsKitty
+	case os.Getenv("TERM_PROGRAM") == "ghostty", os.Getenv("TERM_PROGRAM") == "WezTerm":
+		return graphicsKitty
+	case os.Getenv("TERM_PROGRAM") == "vscode":
+		// Shipped (microsoft/vscode#297073, closed passing on all three
+		// platforms as of February 2026) but opt-in behind
+		// terminal.integrated.enableImages - if that setting is off,
+		// nothing renders, the same failure mode as not detecting the
+		// terminal at all, not a crash or garbled screen.
+		return graphicsKitty
+	case os.Getenv("TERM_PROGRAM") == "iTerm.app":
+		return graphicsITerm2
+	default:
+		return graphicsNone
+	}
+}
+
+// maxImagePreviewBytes bounds what imagePreview will read and inline: a
+// mislabeled multi-GB file that happens to pass looksLikeImage's magic-byte
+// check (vanishingly unlikely for real JPEG/PNG magic, but not impossible)
+// shouldn't get fully buffered into memory on the strength of that alone.
+const maxImagePreviewBytes = 20 << 20
+
+// imagePreview renders e inline via the detected graphics protocol. ok is
+// false whenever that's not possible - no protocol detected, the read
+// failed or hit maxImagePreviewBytes, or (Kitty only) the image didn't
+// decode as a real JPEG/PNG despite looksLikeImage's magic-byte check -
+// callers fall back to the plain text/recon preview, which already has its
+// own "x to extract" escape hatch for actually getting the file.
+//
+// This draws straight into the terminal at the cursor position the escape
+// sequence is written at, same as every other graphics-protocol
+// implementation; running it through viewport.Model (a plain text buffer
+// that repositions the cursor and reprints lines on every scroll) is
+// untested against a real Kitty/iTerm2 session - if an image doesn't
+// survive a scroll of the pane, or leaves a stale copy behind, that's the
+// first thing to look at.
+func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
+	if m.graphics == graphicsNone {
+		return "", false
+	}
+	raw, truncated, err := readImageBytes(e, maxImagePreviewBytes)
+	if err != nil || truncated {
+		return "", false
+	}
+	cols := m.width - m.listWidth() - 1
+	rows := m.height - 2
+	switch m.graphics {
+	case graphicsITerm2:
+		f := iterm2.File{
+			Name:    e.name,
+			Size:    int64(len(raw)),
+			Width:   iterm2.Cells(cols),
+			Height:  iterm2.Cells(rows),
+			Inline:  true,
+			Content: []byte(base64.StdEncoding.EncodeToString(raw)),
+		}
+		return ansi.ITerm2(f), true
+	case graphicsKitty:
+		// f=100 is specifically "this is PNG data" in Kitty's own spec; a
+		// JPEG passed as-is is accepted by some implementations' lenient
+		// decoders and rejected by others, so it's decoded and re-encoded
+		// to PNG here rather than relied on either way.
+		png, err := toPNG(raw)
+		if err != nil {
+			return "", false
+		}
+		return kittyImageSequence(png, cols, rows), true
+	default:
+		return "", false
+	}
+}
+
+// readImageBytes reads up to capBytes+1 of e's content to detect whether it
+// was truncated, from disk or from its carve.Node - whichever e actually is.
+func readImageBytes(e browseEntry, capBytes int64) (data []byte, truncated bool, err error) {
+	var r io.ReadCloser
+	switch {
+	case e.osPath != "":
+		r, err = os.Open(e.osPath)
+	case e.node != nil:
+		r, err = e.node.Reader()
+	default:
+		return nil, false, fmt.Errorf("%s has no readable content", e.name)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer r.Close()
+	data, err = io.ReadAll(io.LimitReader(r, capBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > capBytes {
+		return data[:capBytes], true, nil
+	}
+	return data, false, nil
+}
+
+// toPNG decodes raw as whatever registered image format it is (JPEG or PNG,
+// per looksLikeImage) and re-encodes it as PNG, for Kitty's f=100.
+func toPNG(raw []byte) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// kittyChunkSize is the Kitty graphics protocol's own wire-format limit: at
+// most this many base64 bytes per escape sequence, continued via m=1/m=0.
+const kittyChunkSize = 4096
+
+func kittyImageSequence(pngData []byte, cols, rows int) string {
+	payload := base64.StdEncoding.EncodeToString(pngData)
+	var b strings.Builder
+	for i := 0; i < len(payload); i += kittyChunkSize {
+		end := min(i+kittyChunkSize, len(payload))
+		more := "0"
+		if end < len(payload) {
+			more = "1"
+		}
+		opts := []string{"m=" + more}
+		if i == 0 {
+			opts = []string{"a=T", "f=100", fmt.Sprintf("c=%d", cols), fmt.Sprintf("r=%d", rows), "m=" + more}
+		}
+		b.WriteString(ansi.KittyGraphics([]byte(payload[i:end]), opts...))
+	}
+	return b.String()
 }
 
 // textPreview reads e's content (bounded by textPreviewCap) and renders it
@@ -626,12 +822,27 @@ func (m *browseModel) textPreview(e browseEntry) (string, bool) {
 
 func (m *browseModel) setStatus(s string) { m.status = s }
 
-// enqueueAll preemptively queues every reconnable entry of a freshly built
-// frame, in list order, then bumps whichever one ends up selected (the first
-// one, right after ResetSelected) to the front — so it, at least, starts
-// immediately rather than waiting behind everything else just listed.
+// maxPreemptiveRecon bounds how many of a frame's entries enqueueAll queues
+// up front. A directory of firmware files or a tar's members is dozens to a
+// few hundred - fine to recon all of in the background. A filesystem (an
+// ext4 image can list thousands of files) is a different scale: queuing
+// every one of them, each spooled to a temp file and fully reconned, for
+// files nobody's looked at yet, is what "takes forever" when you open one.
+// Anything past this cap just isn't preemptively queued; onSelectionChanged
+// still reaches it the moment it's highlighted, via enqueueFront rather than
+// bump (which only works on something already in the queue).
+const maxPreemptiveRecon = 300
+
+// enqueueAll preemptively queues a freshly built frame's entries, in list
+// order up to maxPreemptiveRecon, then bumps whichever one ends up selected
+// (the first one, right after ResetSelected) to the front — so it, at
+// least, starts immediately rather than waiting behind everything else.
 func (m *browseModel) enqueueAll(items []list.Item) {
+	queued := 0
 	for _, it := range items {
+		if queued >= maxPreemptiveRecon {
+			break // a filesystem with thousands of members (an ext4 image) would otherwise queue all of them, each spooled to a temp file and fully reconned, for files nobody's looked at yet - highlighting one beyond this cap still reaches the front via onSelectionChanged's enqueueFront, same as any bumped entry
+		}
 		e, ok := it.(browseEntry)
 		if !ok {
 			continue
@@ -641,6 +852,7 @@ func (m *browseModel) enqueueAll(items []list.Item) {
 			continue
 		}
 		m.rq.enqueue(reconJob{key: key, name: e.name, osPath: e.osPath, node: e.node})
+		queued++
 	}
 	if e, ok := m.selected(); ok {
 		if key, ok := reconKey(e); ok {
@@ -689,14 +901,11 @@ func (m *browseModel) pushDirFrame(dir string) error {
 		if fi, err := d.Info(); err == nil {
 			size = fi.Size()
 		}
-		label, isText := fileHeadLabel(full)
-		items = append(items, browseEntry{name: d.Name(), size: size, label: label, isText: isText, osPath: full})
+		label, isText, isImage := fileHeadLabel(full)
+		items = append(items, browseEntry{name: d.Name(), size: size, label: label, isText: isText, isImage: isImage, osPath: full})
 	}
 	m.frames = append(m.frames, browseFrame{title: filepath.Base(dir), osDir: dir})
-	m.list.SetItems(items)
-	m.list.ResetSelected()
-	m.enqueueAll(items)
-	m.showPreview()
+	m.finishFrame(items)
 	return nil
 }
 
@@ -715,18 +924,36 @@ func (m *browseModel) pushNodeFrame(n *carve.Node) error {
 			isContainer = true
 		}
 		isText := looksLikeText(k.Name, k.Head())
-		items = append(items, browseEntry{name: k.Name, size: k.Size, label: label, isContainer: isContainer, isText: isText, node: k})
+		isImage := looksLikeImage(k.Head())
+		items = append(items, browseEntry{name: k.Name, size: k.Size, label: label, isContainer: isContainer, isText: isText, isImage: isImage, node: k})
 	}
 	title := n.Name
 	if title == "" {
 		title = "/"
 	}
 	m.frames = append(m.frames, browseFrame{title: title, node: n})
+	m.finishFrame(items)
+	return nil
+}
+
+// finishFrame prepends the synthetic ".." row (every frame but the root one
+// gets a mouse-clickable, enter-able equivalent of backspace/h/left, which
+// otherwise have no on-screen representation to click at all), then applies
+// the resulting list: selecting the first real entry rather than ".." itself
+// when there is one, so landing in a freshly opened directory or container
+// doesn't put the cursor on the one entry that leaves it again.
+func (m *browseModel) finishFrame(items []list.Item) {
+	hasParent := len(m.frames) > 1 // the frame for this listing was already appended by the caller
+	if hasParent {
+		items = append([]list.Item{parentEntry}, items...)
+	}
 	m.list.SetItems(items)
 	m.list.ResetSelected()
+	if hasParent && len(items) > 1 {
+		m.list.Select(1)
+	}
 	m.enqueueAll(items)
 	m.showPreview()
-	return nil
 }
 
 // current is the frame browse is showing the contents of.
@@ -735,6 +962,10 @@ func (m *browseModel) current() browseFrame { return m.frames[len(m.frames)-1] }
 func (m *browseModel) descend() {
 	e, ok := m.selected()
 	if !ok {
+		return
+	}
+	if e.isParent {
+		m.ascend()
 		return
 	}
 	// Remember where we were in this frame so ascend can put the cursor back
@@ -819,7 +1050,8 @@ type reconReadyMsg struct{ key, name string }
 type reconQueue struct {
 	mu           sync.Mutex
 	cond         *sync.Cond
-	pending      []reconJob
+	pending      *cl.List               // of reconJob, front = next to run
+	byKey        map[string]*cl.Element // pending[key]'s element, for O(1) bump - with pending a slice, bump had to linear-scan it (then shift up to N elements) on every single highlight change; for a few thousand entries (an ext4 with ~2000 files) that's real, felt lag on every j/k, not a one-off cost
 	inflightKey  string
 	inflightName string
 	cache        map[string]string
@@ -837,7 +1069,13 @@ type reconQueue struct {
 // Run is called, so it only builds the queue; Init - which bubbletea invokes
 // after the terminal is set up - starts it.
 func newReconQueue() *reconQueue {
-	q := &reconQueue{cache: map[string]string{}, seen: map[string]bool{}, ready: make(chan reconReadyMsg, 32)}
+	q := &reconQueue{
+		pending: cl.New(),
+		byKey:   map[string]*cl.Element{},
+		cache:   map[string]string{},
+		seen:    map[string]bool{},
+		ready:   make(chan reconReadyMsg, 32),
+	}
 	q.cond = sync.NewCond(&q.mu)
 	return q
 }
@@ -860,11 +1098,13 @@ func (q *reconQueue) run() {
 func (q *reconQueue) next() reconJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for len(q.pending) == 0 {
+	for q.pending.Len() == 0 {
 		q.cond.Wait()
 	}
-	job := q.pending[0]
-	q.pending = q.pending[1:]
+	front := q.pending.Front()
+	job := front.Value.(reconJob)
+	q.pending.Remove(front)
+	delete(q.byKey, job.key)
 	q.inflightKey, q.inflightName = job.key, job.name
 	return job
 }
@@ -879,7 +1119,7 @@ func (q *reconQueue) enqueue(job reconJob) {
 		return
 	}
 	q.seen[job.key] = true
-	q.pending = append(q.pending, job)
+	q.byKey[job.key] = q.pending.PushBack(job)
 	q.cond.Signal()
 }
 
@@ -889,13 +1129,30 @@ func (q *reconQueue) enqueue(job reconJob) {
 func (q *reconQueue) bump(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for i, p := range q.pending {
-		if p.key == key {
-			copy(q.pending[1:i+1], q.pending[:i])
-			q.pending[0] = p
-			return
-		}
+	if elem, ok := q.byKey[key]; ok {
+		q.pending.MoveToFront(elem)
 	}
+}
+
+// enqueueFront is bump, but for an entry that may never have been queued at
+// all (enqueueAll's maxPreemptiveRecon cap skips entries past it) - it
+// queues job at the front if this is the first time job.key has been seen,
+// same as bump if it's already pending, and does nothing if it's done or
+// in flight already. The single highlight-driven path for every entry,
+// capped or not.
+func (q *reconQueue) enqueueFront(job reconJob) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if elem, ok := q.byKey[job.key]; ok {
+		q.pending.MoveToFront(elem)
+		return
+	}
+	if q.seen[job.key] {
+		return
+	}
+	q.seen[job.key] = true
+	q.byKey[job.key] = q.pending.PushFront(job)
+	q.cond.Signal()
 }
 
 func (q *reconQueue) get(key string) (string, bool) {
@@ -1061,16 +1318,29 @@ func highlightText(name string, content []byte) string {
 
 // fileHeadLabel reads just enough of a plain OS file to type-label it, the
 // way recon and ls already do — cheap even for a multi-GB file.
-func fileHeadLabel(path string) (label string, isText bool) {
+func fileHeadLabel(path string) (label string, isText, isImage bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "unknown", false
+		return "unknown", false, false
 	}
 	defer f.Close()
 	head := make([]byte, 8192)
 	n, _ := f.Read(head)
 	head = head[:n]
-	return typeLabel(filepath.Base(path), head), looksLikeText(path, head)
+	return typeLabel(filepath.Base(path), head), looksLikeText(path, head), looksLikeImage(head)
+}
+
+// looksLikeImage is the isImage gate: a real decodable raster format
+// (JPEG/PNG - what the image preview path can actually re-encode or hand
+// the terminal directly), by content, not extension - a renamed non-image
+// file with a ".jpg" extension would otherwise fail to decode at preview
+// time instead of just not matching here.
+func looksLikeImage(head []byte) bool {
+	switch filetype.Detect(head) {
+	case filetype.JPEG, filetype.PNG:
+		return true
+	}
+	return false
 }
 
 // textExts names extensions worth previewing as text even when
