@@ -207,6 +207,14 @@ func captureStdout(fn func() error) (string, error) {
 
 var memberKind = regexp.MustCompile(`^    \S.*?\s+\[([^\]]+)\]`)
 
+// ansiCode matches one SGR escape sequence (bold, color, reset): the styling
+// helpers in cmd_fastboot.go (cHdr et al.) wrap text in these when stdout is a
+// terminal, and briefRecon's prefix/regex matching below needs the plain text
+// underneath, not the styled line it still writes out unchanged.
+var ansiCode = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansiCode.ReplaceAllString(s, "") }
+
 // briefRecon keeps a file recon's identity lines and the member count, and
 // folds the member listing and everything after it into a kind histogram and a
 // warning count. A directory holds dozens of such listings; per-file recon has
@@ -224,20 +232,24 @@ func briefRecon(out string) string {
 			first = false
 			continue
 		}
+		plain := line
+		if strings.Contains(plain, "\x1b[") {
+			plain = stripANSI(plain)
+		}
 		switch {
-		case strings.HasPrefix(line, "  Contents ("):
+		case strings.HasPrefix(plain, "  Contents ("):
 			inList = true
 			b.WriteString(line + "\n")
 		case inList:
-			if strings.Contains(line, "[encrypted filesystem") || strings.Contains(line, "ro.build.fingerprint") {
+			if strings.Contains(plain, "[encrypted filesystem") || strings.Contains(plain, "ro.build.fingerprint") {
 				b.WriteString(line + "\n")
 			}
-			if strings.Contains(line, "[encrypted filesystem") {
+			if strings.Contains(plain, "[encrypted filesystem") {
 				kinds["encrypted filesystem"]++
-			} else if m := memberKind.FindStringSubmatch(line); m != nil {
+			} else if m := memberKind.FindStringSubmatch(plain); m != nil {
 				kinds[m[1]]++
 			}
-			if strings.Contains(line, "[!]") {
+			if strings.Contains(plain, "[!]") {
 				warns++
 			}
 		default:
@@ -368,12 +380,16 @@ func reconParts(label string, parts []string) (failed []string) {
 			failed = append(failed, filepath.Base(p))
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if m := membersLine.FindStringSubmatch(line); m != nil {
+			plain := line
+			if strings.Contains(plain, "\x1b[") {
+				plain = stripANSI(plain)
+			}
+			if m := membersLine.FindStringSubmatch(plain); m != nil {
 				n, _ := strconv.Atoi(m[1])
 				members += n
-			} else if strings.Contains(line, "[!]") {
+			} else if strings.Contains(plain, "[!]") {
 				warns++
-			} else if m := memberKind.FindStringSubmatch(line); m != nil && !strings.Contains(line, "[!]") {
+			} else if m := memberKind.FindStringSubmatch(plain); m != nil && !strings.Contains(plain, "[!]") {
 				kinds[m[1]]++
 			}
 		}

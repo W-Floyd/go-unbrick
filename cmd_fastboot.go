@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
@@ -112,18 +113,38 @@ var colorEnabled = func() bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }()
 
-func paint(code, s string) string {
-	if !colorEnabled || s == "" {
+// lipgloss v2 dropped v1's per-Renderer color-profile binding (NewRenderer /
+// SetColorProfile): Style.Render always emits full ANSI codes, and any
+// terminal-aware downsampling happens only in the lipgloss.Writer/Fprint*
+// path, which this codebase's plain fmt.Print-based output doesn't go
+// through. So render below gates on colorEnabled itself rather than leaning
+// on lipgloss to detect it — which also sidesteps a hazard the v1 renderer
+// approach had to work around: directory recon temporarily swaps os.Stdout
+// for a pipe while capturing one file's output (captureStdout,
+// cmd_recon_dir.go), and anything that re-detects the terminal per call
+// would see that pipe mid-run.
+var (
+	styleGood  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
+	styleBad   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red
+	styleWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
+	styleHdr   = lipgloss.NewStyle().Bold(true).Underline(true)      // section headers
+	styleTag   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	styleLabel = lipgloss.NewStyle().Bold(true) // inline "Field:" labels — bold only, so a label never reads as a section header
+)
+
+func cGood(s string) string  { return render(styleGood, s) }
+func cBad(s string) string   { return render(styleBad, s) }
+func cWarn(s string) string  { return render(styleWarn, s) }
+func cHdr(s string) string   { return render(styleHdr, s) }   // bold + underline — section headers
+func cTag(s string) string   { return render(styleTag, s) }   // bold cyan — verdict tags
+func cLabel(s string) string { return render(styleLabel, s) } // bold — inline field labels
+
+func render(st lipgloss.Style, s string) string {
+	if s == "" || !colorEnabled {
 		return s
 	}
-	return "\033[" + code + "m" + s + "\033[0m"
+	return st.Render(s)
 }
-
-func cGood(s string) string { return paint("32", s) }   // green
-func cBad(s string) string  { return paint("31", s) }   // red
-func cWarn(s string) string { return paint("33", s) }   // yellow
-func cHdr(s string) string  { return paint("1", s) }    // bold — section headers
-func cTag(s string) string  { return paint("1;36", s) } // bold cyan — verdict tags
 
 // health paints a yes/no-style value by meaning, not literal truth: goodAffirm
 // says whether the affirmative answer (yes/true/enabled/…) is the healthy one,

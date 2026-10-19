@@ -13,11 +13,13 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	vpath "path" // aliased: several functions in this file already name a parameter "path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
+	"charm.land/lipgloss/v2/table"
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/adb"
@@ -271,8 +273,26 @@ func printWhy(b *facts.Bag) {
 // read off a live device print the same way.
 func printIdentityFacts(b *facts.Bag, indent string) {
 	for _, line := range append(identityFactLines(b), loaderLines(b)...) {
-		fmt.Println(indent + line)
+		fmt.Println(indent + boldIdentityLabel(line))
 	}
+}
+
+// boldIdentityLabel bolds a line's "Label:" prefix (cLabel — bold only, not
+// cHdr's bold+underline: a field label isn't a section header) so the eye
+// can scan down the left edge for field names; the value, and any indented
+// sub-line (addList's or loaderLines') beneath it, stay plain. A no-color
+// terminal or NO_COLOR gets the line back unchanged (render is a no-op then).
+func boldIdentityLabel(line string) string {
+	if strings.HasPrefix(line, "  ") {
+		return line
+	}
+	if i := strings.Index(line, ": "); i >= 0 {
+		return cLabel(line[:i+1]) + line[i+1:]
+	}
+	if strings.HasSuffix(line, ":") {
+		return cLabel(line)
+	}
+	return line
 }
 
 // addList appends label as its own line when there is more than one item,
@@ -796,11 +816,11 @@ func runDirRecon(dir string) error {
 			rel = p
 		}
 		if len(unit) > 1 {
-			fmt.Printf("=== %s (split parts: %s … %s) ===\n", partName.FindStringSubmatch(filepath.Base(p))[1], filepath.Base(p), filepath.Base(unit[len(unit)-1]))
+			fmt.Println(cHdr(fmt.Sprintf("=== %s (split parts: %s … %s) ===", partName.FindStringSubmatch(filepath.Base(p))[1], filepath.Base(p), filepath.Base(unit[len(unit)-1]))))
 			failed = append(failed, reconParts(rel, unit)...)
 			continue
 		}
-		fmt.Printf("=== %s ===\n", rel)
+		fmt.Println(cHdr(fmt.Sprintf("=== %s ===", rel)))
 		out, rerr := captureStdout(func() error { return runFileRecon(p) })
 		fmt.Print(briefRecon(out))
 		if rerr != nil {
@@ -1175,10 +1195,18 @@ func reconArchive(path string, bag *facts.Bag) error {
 			}
 		}
 		if len(locked) > 0 {
-			fmt.Printf("  Not opened by the %d loaded key/IV candidate(s): %s\n", len(reconSecrets), strings.Join(locked, ", "))
+			fmt.Println("  " + cHdr(fmt.Sprintf("Not opened by the %d loaded key/IV candidate(s):", len(reconSecrets))))
+			rows := make([][]string, len(locked))
+			for i, name := range locked {
+				rows[i] = []string{vpath.Dir(name), vpath.Base(name)}
+			}
+			t := table.New().Headers("Subsystem", "File").Rows(rows...)
+			for _, line := range strings.Split(t.Render(), "\n") {
+				fmt.Println("    " + line)
+			}
 		}
 	}
-	fmt.Printf("  Contents (%d members):\n", len(members))
+	fmt.Println("  " + cHdr(fmt.Sprintf("Contents (%d members):", len(members))))
 	if why := srcfile.Incomplete(path); why != "" {
 		fmt.Printf("    %s listing is partial: %s\n", cWarn("[!]"), why)
 		if reconWith == "" {
