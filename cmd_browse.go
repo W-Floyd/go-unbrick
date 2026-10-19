@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -28,13 +30,14 @@ func newBrowseCmd() *cobra.Command {
 directory, or over anything carve can open inside a file (archive members,
 payload partitions, filesystem files, boot image sections, ...).
 
-  enter / l / →   descend into the selected directory or container
-  backspace/h/←   go back up one level
-  r               recon the selected file (same report as 'unbrick recon') —
-                  only on a real file on disk, not a package member
-  x               extract the selected entry to the current directory
-  /               filter the current list
-  q, ctrl+c       quit
+  enter / l / →     descend into the selected directory or container
+  backspace/h/←     go back up one level
+  r                 recon the selected entry (same report as 'unbrick recon');
+                     a package member is spooled to a temp file first
+  x                 extract the selected entry to the current directory
+  /                 filter the current list
+  click / wheel     select, activate, or scroll with the mouse
+  q, ctrl+c         quit
 
 There is no flat/non-interactive mode for this command; it requires a real
 terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
@@ -55,7 +58,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 }
 
 // isInteractive reports whether both stdin and stdout are a real terminal —
-// bubbletea needs to read key events from one and draw to the other.
+// bubbletea needs to read key/mouse events from one and draw to the other.
 func isInteractive() bool {
 	fi, err := os.Stdin.Stat()
 	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
@@ -80,16 +83,43 @@ type browseEntry struct {
 }
 
 func (e browseEntry) FilterValue() string { return e.name }
-func (e browseEntry) Title() string       { return e.name }
-func (e browseEntry) Description() string {
+
+// line is the single-line "name  size  type" text a flat `ls` would print;
+// browseDelegate renders exactly this, so the list stays one row per entry
+// instead of the default delegate's two-line, blank-line-separated layout.
+func (e browseEntry) line() string {
+	desc := "directory"
 	switch {
 	case e.dir:
-		return "directory"
 	case e.size < 0:
-		return e.label
+		desc = e.label
 	default:
-		return humanBytes(e.size) + "  " + e.label
+		desc = humanBytes(e.size) + "  " + e.label
 	}
+	return fmt.Sprintf("%-40s  %s", e.name, desc)
+}
+
+// browseDelegate renders one entry per terminal row: no blank-line spacing,
+// no second description line — list.DefaultDelegate's two-line cards are
+// built for a handful of items, not the dozens-to-thousands a firmware
+// package or directory holds here.
+type browseDelegate struct{}
+
+func (browseDelegate) Height() int                         { return 1 }
+func (browseDelegate) Spacing() int                        { return 0 }
+func (browseDelegate) Update(tea.Msg, *list.Model) tea.Cmd { return nil }
+
+func (browseDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	e, ok := item.(browseEntry)
+	if !ok {
+		return
+	}
+	line := e.line()
+	style := lipgloss.NewStyle()
+	if index == m.Index() {
+		style = style.Reverse(true).Bold(true)
+	}
+	fmt.Fprint(w, style.MaxWidth(m.Width()).Render(line))
 }
 
 // browseFrame is one level of navigation: the title shown above the list, and
@@ -106,6 +136,8 @@ type browseModel struct {
 	frames  []browseFrame
 	list    list.Model
 	preview viewport.Model
+	spin    spinner.Model
+	busy    string // name of the entry being reconned, "" when idle
 	status  string
 	width   int
 	height  int
@@ -113,11 +145,18 @@ type browseModel struct {
 
 func newBrowseModel(input string) (*browseModel, error) {
 	m := &browseModel{
-		list:    list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		list:    list.New(nil, browseDelegate{}, 0, 0),
 		preview: viewport.New(),
+		spin:    spinner.New(),
 	}
-	m.list.Title = "browse"
-	m.list.SetShowHelp(true)
+	// This isn't list.DefaultDelegate's two-line card view, and the
+	// breadcrumb/status line below the panes already says where we are and
+	// what the last action did — the list's own title/status/pagination/help
+	// chrome would just repeat that in a second place.
+	m.list.SetShowTitle(false)
+	m.list.SetShowStatusBar(false)
+	m.list.SetShowPagination(false)
+	m.list.SetShowHelp(false)
 
 	fi, err := os.Stat(input)
 	if err == nil && fi.IsDir() {
@@ -138,11 +177,31 @@ func newBrowseModel(input string) (*browseModel, error) {
 
 func (m *browseModel) Init() tea.Cmd { return nil }
 
+// reconDoneMsg carries a completed 'r' recon's report back to Update; it runs
+// as a tea.Cmd (a goroutine) so a multi-GB file doesn't freeze the UI, and so
+// the spinner started alongside it actually animates.
+type reconDoneMsg struct {
+	name string
+	out  string
+}
+
 func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.layout()
+		return m, nil
+	case spinner.TickMsg:
+		if m.busy == "" {
+			return m, nil // recon finished; stop the chain, don't tick forever
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+	case reconDoneMsg:
+		m.busy = ""
+		m.preview.SetContent(msg.out)
+		m.status = "recon: " + msg.name
 		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.Keystroke() {
@@ -155,12 +214,17 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ascend()
 			return m, nil
 		case "r":
-			m.recon()
-			return m, nil
+			return m, m.startRecon()
 		case "x":
 			m.extract()
 			return m, nil
 		}
+	case tea.MouseClickMsg:
+		m.handleClick(msg.Mouse())
+		return m, nil
+	case tea.MouseWheelMsg:
+		m.handleWheel(msg.Mouse())
+		return m, nil
 	}
 	var cmd tea.Cmd
 	before := m.list.Index()
@@ -177,10 +241,15 @@ func (m *browseModel) View() tea.View {
 	right := lipgloss.NewStyle().Width(m.width - listW - 1).Render(m.preview.View())
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 	status := m.status
-	if status == "" {
+	switch {
+	case m.busy != "":
+		status = m.spin.View() + " reconning " + m.busy + "..."
+	case status == "":
 		status = strings.Join(m.breadcrumb(), " / ")
 	}
-	return tea.NewView(body + "\n" + cLabel(status))
+	v := tea.NewView(body + "\n" + cLabel(status))
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 func (m *browseModel) breadcrumb() []string {
@@ -191,8 +260,12 @@ func (m *browseModel) breadcrumb() []string {
 	return out
 }
 
+// listWidth is how wide the left pane is — also the X boundary mouse
+// handling uses to tell the list from the preview.
+func (m *browseModel) listWidth() int { return m.width * 2 / 5 }
+
 func (m *browseModel) layout() {
-	listW := m.width * 2 / 5
+	listW := m.listWidth()
 	h := m.height - 2 // status line + a little breathing room
 	if h < 1 {
 		h = 1
@@ -209,10 +282,53 @@ func (m *browseModel) selected() (browseEntry, bool) {
 	return e, ok
 }
 
+// handleClick selects the entry under the pointer; clicking the entry that
+// was already selected activates it (same as pressing enter), matching the
+// usual file-manager convention of a second interaction to open.
+func (m *browseModel) handleClick(ms tea.Mouse) {
+	if ms.X >= m.listWidth() {
+		return
+	}
+	idx := m.list.Paginator.Page*m.list.Paginator.PerPage + ms.Y
+	items := m.list.Items()
+	if idx < 0 || idx >= len(items) {
+		return
+	}
+	already := idx == m.list.Index()
+	m.list.Select(idx)
+	m.showPreview()
+	if already {
+		m.descend()
+	}
+}
+
+func (m *browseModel) handleWheel(ms tea.Mouse) {
+	onList := ms.X < m.listWidth()
+	switch ms.Button {
+	case tea.MouseWheelDown:
+		if onList {
+			m.list.CursorDown()
+			m.showPreview()
+		} else {
+			m.preview.ScrollDown(3)
+		}
+	case tea.MouseWheelUp:
+		if onList {
+			m.list.CursorUp()
+			m.showPreview()
+		} else {
+			m.preview.ScrollUp(3)
+		}
+	}
+}
+
 // showPreview sets the preview pane to cheap, always-available info about the
 // highlighted entry — never a full recon (that's 'r', on request: it can mean
 // hashing a multi-GB file).
 func (m *browseModel) showPreview() {
+	if m.busy != "" {
+		return // a recon in flight owns the preview pane until it reports back
+	}
 	m.status = ""
 	e, ok := m.selected()
 	if !ok {
@@ -232,7 +348,7 @@ func (m *browseModel) showPreview() {
 		if e.isContainer {
 			fmt.Fprintln(&b, "\npress enter to open")
 		}
-		fmt.Fprintln(&b, "press x to extract")
+		fmt.Fprintln(&b, "press r to recon (spooled to a temp file), x to extract")
 	}
 	m.preview.SetContent(b.String())
 }
@@ -263,7 +379,6 @@ func (m *browseModel) pushDirFrame(dir string) error {
 		items = append(items, browseEntry{name: d.Name(), size: size, label: fileHeadLabel(full), osPath: full})
 	}
 	m.frames = append(m.frames, browseFrame{title: filepath.Base(dir), osDir: dir})
-	m.list.Title = dir
 	m.list.SetItems(items)
 	m.list.ResetSelected()
 	m.showPreview()
@@ -291,7 +406,6 @@ func (m *browseModel) pushNodeFrame(n *carve.Node) error {
 		title = "/"
 	}
 	m.frames = append(m.frames, browseFrame{title: title, node: n})
-	m.list.Title = title
 	m.list.SetItems(items)
 	m.list.ResetSelected()
 	m.showPreview()
@@ -359,28 +473,66 @@ func (m *browseModel) rebuildNodeFrame(n *carve.Node) error {
 	return m.pushNodeFrame(n)
 }
 
-// recon reports the selected entry the same way 'unbrick recon' would — only
-// meaningful for a real file on disk, since recon's own machinery (fact
-// resolution, package learning) is built around a path, not a carve.Node a
-// few containers deep.
-func (m *browseModel) recon() {
+// startRecon kicks off 'r' as a background command: the spinner in View
+// animates via spinner.TickMsg while it runs, and reconDoneMsg delivers the
+// report when it's ready. A package member (e.node, no osPath) has no path
+// recon's machinery can open directly — it's spooled to a temp file first,
+// the same bytes 'x' would extract.
+func (m *browseModel) startRecon() tea.Cmd {
 	e, ok := m.selected()
-	if !ok || e.osPath == "" || e.dir {
-		m.setStatus("recon only works on a file on disk, not a directory or a package member")
-		return
+	if !ok || e.dir {
+		m.setStatus("recon needs a file, not a directory")
+		return nil
 	}
-	// recon's progress spinner/bar writes straight to os.Stderr assuming it
-	// owns the terminal; browse already does, via bubbletea's alt screen, so
-	// suppress it for the duration or its redraws corrupt the TUI.
-	prevTTY := stderrIsTTY
-	stderrIsTTY = false
-	out, rerr := captureStdout(func() error { return runFileRecon(e.osPath) })
-	stderrIsTTY = prevTTY
-	if rerr != nil {
-		out += "\n" + cWarn("[!] "+rerr.Error())
+	if e.osPath == "" && e.node == nil {
+		m.setStatus("nothing to recon here")
+		return nil
 	}
-	m.preview.SetContent(out)
-	m.status = "recon: " + e.name
+	if m.busy != "" {
+		return nil // one recon at a time
+	}
+	m.busy = e.name
+	work := func() tea.Msg {
+		path := e.osPath
+		if path == "" {
+			tmp, cleanup, err := spoolNodeToTemp(e.node)
+			if err != nil {
+				return reconDoneMsg{name: e.name, out: cWarn("[!] spooling for recon: " + err.Error())}
+			}
+			defer cleanup()
+			path = tmp
+		}
+		// recon's progress spinner/bar writes straight to os.Stderr assuming
+		// it owns the terminal; browse already does, via bubbletea's alt
+		// screen, so suppress it here or its redraws corrupt the TUI.
+		prevTTY := stderrIsTTY
+		stderrIsTTY = false
+		out, rerr := captureStdout(func() error { return runFileRecon(path) })
+		stderrIsTTY = prevTTY
+		if rerr != nil {
+			out += "\n" + cWarn("[!] "+rerr.Error())
+		}
+		return reconDoneMsg{name: e.name, out: out}
+	}
+	return tea.Batch(m.spin.Tick, work)
+}
+
+// spoolNodeToTemp writes n's bytes to a temp file under n's own base name
+// (some recon checks match a known filename, e.g. "micom_sw.bin" — a random
+// temp name would silently skip those), so recon sees the same name it would
+// if this were extracted to disk and pointed at directly.
+func spoolNodeToTemp(n *carve.Node) (path string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "unbrick-browse-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	dst := filepath.Join(dir, filepath.Base(strings.TrimSuffix(n.Name, "/")))
+	if err := writeNode(n, dst, true); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return dst, cleanup, nil
 }
 
 // extract writes the selected carve.Node to the current directory, the same
