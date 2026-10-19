@@ -278,6 +278,38 @@ func ParseUpdateInfo(b []byte) string {
 	return ""
 }
 
+// UpdateInfoEntry is one file update.info lists: the directory the package
+// member lives under (as the package itself names it, e.g. "modem/bell" —
+// not update.info's own un-prefixed names for the enc_* members, see below),
+// the file's name, and its HyundaiSHA224 hash.
+type UpdateInfoEntry struct {
+	Dir, Name, Hash string
+}
+
+var updateInfoFileLine = regexp.MustCompile(`^:\s*(\S+):([0-9a-f]{56})$`)
+
+// ParseUpdateInfoEntries reads update.info's own "./dir" then ": name:hash"
+// sections. Entries under "./system" and "./micom/..." name the decrypted
+// files (e.g. "lk.rom"), not the package's actual "enc_system/enc_lk.rom" —
+// a caller matching these against real package members needs its own
+// enc_-prefix mapping, or to accept that those specific entries can't be
+// found without first decrypting.
+func ParseUpdateInfoEntries(b []byte) []UpdateInfoEntry {
+	var entries []UpdateInfoEntry
+	dir := ""
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case strings.HasPrefix(line, "./"):
+			dir = strings.TrimPrefix(line, "./")
+		case updateInfoFileLine.MatchString(line):
+			m := updateInfoFileLine.FindStringSubmatch(line)
+			entries = append(entries, UpdateInfoEntry{Dir: dir, Name: m[1], Hash: m[2]})
+		}
+	}
+	return entries
+}
+
 // ParseModemVersion reads a modem_version.txt ("boot:01J_BBOOT, modem:01T_WVZW,
 // gw:37") as "01T_WVZW [boot 01J_BBOOT, gw 37]": the modem build first, the
 // rest of the sheet after it.

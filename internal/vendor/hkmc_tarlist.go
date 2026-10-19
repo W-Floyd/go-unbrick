@@ -18,24 +18,25 @@ func DecodeTarList(data []byte) []byte {
 	return out
 }
 
-// tarListHashBlockSize/tarListHashBufSize must match gen5w-utils'
+// hyundaiHashBlockSize/hyundaiHashBufSize must match gen5w-utils'
 // sha224_gen.py exactly (SHA_BUF_SIZE = 16MiB - SHA_BLOCK_SIZE*2); changing
 // the chunk size changes the result.
 const (
-	tarListHashBlockSize = 64
-	tarListHashBufSize   = 16*1024*1024 - tarListHashBlockSize*2
+	hyundaiHashBlockSize = 64
+	hyundaiHashBufSize   = 16*1024*1024 - hyundaiHashBlockSize*2
 )
 
-// TarListHash is Hyundai's customized two-level SHA-224 used for each
-// @FILE entry's hash in NEW_TarList.txt_encrypted. It is NOT plain SHA-224
-// of the file — confirmed by direct comparison against this repo's own
-// firmware package, where plain SHA-224 does not match any listed hash.
-// Per gen5w-utils' sha224_gen.py ("Hyundai's specialized SHA224"): SHA-224
-// each tarListHashBufSize chunk of the file, concatenate the digests, then
+// HyundaiSHA224 is Hyundai's customized two-level SHA-224, used both for
+// each @FILE entry's hash in NEW_TarList.txt_encrypted and for each file's
+// hash in update.info. It is NOT plain SHA-224 of the file — confirmed by
+// direct comparison against this repo's own firmware package (both
+// manifests), where plain SHA-224 does not match any listed hash. Per
+// gen5w-utils' sha224_gen.py ("Hyundai's specialized SHA224"): SHA-224 each
+// hyundaiHashBufSize chunk of the file, concatenate the digests, then
 // SHA-224 the concatenation once more.
-func TarListHash(r io.Reader) (string, error) {
+func HyundaiSHA224(r io.Reader) (string, error) {
 	var first []byte
-	buf := make([]byte, tarListHashBufSize)
+	buf := make([]byte, hyundaiHashBufSize)
 	for {
 		n, err := io.ReadFull(r, buf)
 		if n > 0 {

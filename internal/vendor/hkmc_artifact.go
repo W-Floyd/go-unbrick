@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -34,8 +35,39 @@ func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
 		return ArtifactInfo{Label: "Trimble GPS firmware (TRMB)"}, true
 	case filepath.Base(name) == "ffu_sw.bin" && len(data) >= 0x28 && bytes.HasPrefix(data[0x20:], []byte("FQT")):
 		return ArtifactInfo{Label: "Micron FFU firmware", Detail: string(bytes.TrimRight(data[0x20:0x28], "\x00"))}, true
+	case looksLikeTarList(data):
+		info := ArtifactInfo{Label: "TarList manifest (XOR 0x11)"}
+		if m := tarListVersionRe.FindSubmatch(DecodeTarList(data)); m != nil {
+			info.Detail = string(m[1])
+		}
+		return info, true
+	case bytes.HasPrefix(data, []byte("SWVERSION")):
+		info := ArtifactInfo{Label: "update.info manifest"}
+		if v := ParseUpdateInfo(data); v != "" {
+			info.Detail = v
+		}
+		return info, true
 	}
 	return ArtifactInfo{}, false
+}
+
+var tarListVersionRe = regexp.MustCompile(`@NEW_VERSION:(\S+)`)
+
+// looksLikeTarList checks only the first few bytes (decoded) for one of
+// NEW_TarList.txt_encrypted's record markers, so it's cheap to run against
+// every file recon sees and works even on a head-only sample of a large one.
+func looksLikeTarList(data []byte) bool {
+	n := min(len(data), 32)
+	if n == 0 {
+		return false
+	}
+	dec := DecodeTarList(data[:n])
+	for _, p := range [...]string{"@FILE:", "@VERSION:", "@NEW_VERSION:", "@SWVERSION", "@NEW_SWVERSION"} {
+		if bytes.HasPrefix(dec, []byte(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // utf16Name reads the first NUL-terminated UTF-16LE ASCII string of b, which

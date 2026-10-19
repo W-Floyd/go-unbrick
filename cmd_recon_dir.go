@@ -271,7 +271,7 @@ func histogramLine(kinds map[string]int) string {
 
 // reportTarList decodes a Hyundai/Kia NEW_TarList.txt_encrypted, printing the
 // versions it states. Its per-file hashes (Hyundai's own two-level SHA-224,
-// not plain SHA-224 — see vendor.TarListHash) are checked only under
+// not plain SHA-224 — see vendor.HyundaiSHA224) are checked only under
 // --verify, which reads each listed file in full.
 func reportTarList(path string, byName map[string]string, verify bool) {
 	data, err := os.ReadFile(path)
@@ -313,7 +313,7 @@ func tarListFileHash(path string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	return vendor.TarListHash(f)
+	return vendor.HyundaiSHA224(f)
 }
 
 var (

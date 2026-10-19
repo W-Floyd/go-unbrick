@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"path"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
@@ -46,7 +47,8 @@ func ParseSplash(b []byte) ([]splashImage, error) {
 	return out, nil
 }
 
-// CarveExpanders implements Carver: a splash container's images as members.
+// CarveExpanders implements Carver: a splash container's images as members,
+// and NEW_TarList.txt_encrypted decoded to its one plaintext member.
 func (hkmc) CarveExpanders() []carve.Expander {
 	return []carve.Expander{{
 		Kind:  "splash",
@@ -74,6 +76,25 @@ func (hkmc) CarveExpanders() []carve.Expander {
 				out = append(out, carve.FromReaderAt(name, io.NewSectionReader(ra, int64(im.Off), int64(im.Size)), int64(im.Size)))
 			}
 			return out, nil
+		},
+	}, {
+		Kind:  "tarlist",
+		Match: func(_ *carve.Node, head []byte) bool { return looksLikeTarList(head) },
+		Expand: func(n *carve.Node) ([]*carve.Node, error) {
+			rc, err := n.Reader()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err != nil {
+				return nil, err
+			}
+			name := strings.TrimSuffix(path.Base(n.Name), "_encrypted")
+			if name == path.Base(n.Name) {
+				name += ".decoded"
+			}
+			return []*carve.Node{carve.FromBytes(name, DecodeTarList(data))}, nil
 		},
 	}}
 }
