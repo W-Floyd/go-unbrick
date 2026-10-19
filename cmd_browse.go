@@ -226,6 +226,17 @@ func newBrowseModel(input string, skip []string) (*browseModel, error) {
 	m.list.SetShowStatusBar(false)
 	m.list.SetShowPagination(false)
 	m.list.SetShowHelp(false)
+	// showFilter (unlike the four above) is true by default regardless of
+	// Title, and list.Model.View renders its title/filter row whenever
+	// showTitle || (showFilter && FilteringEnabled) - so with filtering
+	// left on (it is: '/' is a real feature here), that row still rendered,
+	// pushing every item down a row the preview pane - a plain viewport,
+	// with no such reserved row of its own - never budgeted for. That's
+	// what actually desynced which preview belonged to which highlighted
+	// row. '/' still narrows the list with this off; you just don't see the
+	// query text you're typing while you type it, same as a plain filter-
+	// as-you-go without the input echoed.
+	m.list.SetShowFilter(false)
 
 	fi, err := os.Stat(input)
 	if err == nil && fi.IsDir() {
@@ -329,6 +340,15 @@ func (m *browseModel) View() tea.View {
 
 	v := tea.NewView(body + "\n" + m.progressLine() + "\n" + cLabel(status))
 	v.MouseMode = tea.MouseModeCellMotion
+	// Without this, bubbletea renders inline below the shell prompt instead
+	// of taking over the screen - the prompt and command line stay visible,
+	// eating into the window height WindowSizeMsg reports as fully ours, so
+	// our content gets cut off at the bottom by exactly that much. This is
+	// the real explanation for the "hidden rows" that no amount of height
+	// math on our side could fix: the rows genuinely weren't ours to draw
+	// into. (v1's tea.WithAltScreen() program option became a per-View
+	// field in v2 - there's no equivalent program-level option to miss.)
+	v.AltScreen = true
 	return v
 }
 
@@ -390,12 +410,17 @@ func (m *browseModel) listWidth() int { return m.width * 2 / 5 }
 
 func (m *browseModel) layout() {
 	listW := m.listWidth()
-	h := m.height - 3 // progress line + status line + a little breathing room
-	if h < 1 {
-		h = 1
+	h := m.height - 2 // progress line + status line
+	if h < 2 {
+		h = 2
 	}
 	m.list.SetSize(listW, h)
 	m.preview.SetWidth(m.width - listW - 1)
+	// Same h as the list: with SetShowFilter(false) above, list.Model no
+	// longer reserves one of its own rows for a filter prompt it would
+	// otherwise draw even while not filtering - every one of its h rows is
+	// a real item row now, so the plain viewport here needs the same h to
+	// stay row-for-row aligned with it.
 	m.preview.SetHeight(h)
 	m.showPreview()
 }
