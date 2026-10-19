@@ -47,11 +47,25 @@ func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
 			info.Detail = v
 		}
 		return info, true
+	case strings.HasSuffix(filepath.Base(name), "_encrypted.rsa") && isRSASigLen(len(data)):
+		return ArtifactInfo{Label: fmt.Sprintf("RSA-%d signature (TarList)", len(data)*8)}, true
 	}
 	return ArtifactInfo{}, false
 }
 
 var tarListVersionRe = regexp.MustCompile(`@NEW_VERSION:(\S+)`)
+
+// isRSASigLen reports a plausible raw RSA signature length (modulus size in
+// bytes, for a common key size); not a parse, just a sanity bound so a file
+// that merely shares the ".rsa" suffix convention by coincidence isn't
+// mislabeled.
+func isRSASigLen(n int) bool {
+	switch n {
+	case 128, 256, 384, 512: // RSA-1024, -2048, -3072, -4096
+		return true
+	}
+	return false
+}
 
 // looksLikeTarList checks only the first few bytes (decoded) for one of
 // NEW_TarList.txt_encrypted's record markers, so it's cheap to run against

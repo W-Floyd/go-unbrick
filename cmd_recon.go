@@ -380,6 +380,9 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.KernelVersion); ok {
 		add("Kernel: %s", v)
 	}
+	if v, ok := facts.Get(b, vendor.KernelArch); ok {
+		add("Kernel arch: %s", v)
+	}
 	if v, ok := facts.Get(b, vendor.KernelConfig); ok {
 		add("Kernel config: %s", v)
 	}

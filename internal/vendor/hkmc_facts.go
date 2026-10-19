@@ -19,6 +19,14 @@ import (
 var (
 	KernelVersion = facts.Key[string]("kernel_version")
 	KernelCmdline = facts.Key[string]("kernel_cmdline")
+	// KernelArch is the kernel image's own word size, from its container
+	// format (zImage vs Image) — NOT the SoC's capability. A real 64-bit
+	// core (e.g. Cortex-A53) can ship running a 32-bit kernel regardless of
+	// what the device tree's "compatible" strings claim the core is: the
+	// DT names the silicon, not what firmware chose to boot it as. Report
+	// this fact, not DeviceTree's compatible string, when the question is
+	// what the system actually runs.
+	KernelArch = facts.Key[string]("kernel_arch")
 	// DebugBuild is ro.debuggable from the ramdisk's default.prop.
 	DebugBuild  = facts.Key[bool]("debug_build")
 	GPSFirmware = facts.Key[string]("gps_firmware")
@@ -351,4 +359,63 @@ func ZImageKernelVersion(z []byte) string {
 		banner = banner[:k]
 	}
 	return string(banner)
+}
+
+// KernelImageArch reports the word size of a kernel image from its own
+// container format, not from the device tree's SoC "compatible" strings
+// (see KernelArch's doc comment for why those can disagree).
+func KernelImageArch(z []byte) string {
+	switch {
+	case bootimg.IsZImage(z):
+		return "32-bit ARM (zImage)"
+	case bootimg.IsAArch64Image(z):
+		return "64-bit AArch64 (Image)"
+	}
+	return ""
+}
+
+// abiWordSize maps a ro.product.cpu.abi value to "32-bit"/"64-bit", or "" if
+// unrecognized.
+func abiWordSize(abi string) string {
+	switch {
+	case strings.HasPrefix(abi, "arm64"), abi == "x86_64", strings.HasPrefix(abi, "mips64"):
+		return "64-bit"
+	case strings.HasPrefix(abi, "armeabi"), abi == "x86", strings.HasPrefix(abi, "mips"):
+		return "32-bit"
+	}
+	return ""
+}
+
+// SummarizeArch combines the kernel image's own word size with independent
+// userspace evidence (ro.product.cpu.abi, /lib64's presence) into one display
+// string, flagging any of the three that disagrees with the kernel - which
+// would mean the kernel container format alone isn't the whole story, not
+// that one of the checks is buggy. abi and sawLib64Check (whether the
+// system image was even readable, not what it held) are empty/false when
+// that evidence could not be gathered, in which case it's omitted rather
+// than reported as agreeing or disagreeing.
+func SummarizeArch(kernelArch, abi string, sawLib64Check, hasLib64 bool) string {
+	kernelBits := "32-bit"
+	if strings.HasPrefix(kernelArch, "64-bit") {
+		kernelBits = "64-bit"
+	}
+	parts := []string{kernelArch}
+	if abi != "" {
+		note := "cpu.abi=" + abi
+		if b := abiWordSize(abi); b != "" && b != kernelBits {
+			note += fmt.Sprintf(" — disagrees (%s)", b)
+		}
+		parts = append(parts, note)
+	}
+	if sawLib64Check {
+		note, bits := "no lib64", "32-bit"
+		if hasLib64 {
+			note, bits = "has lib64", "64-bit"
+		}
+		if bits != kernelBits {
+			note += " — disagrees"
+		}
+		parts = append(parts, note)
+	}
+	return strings.Join(parts, "; ")
 }

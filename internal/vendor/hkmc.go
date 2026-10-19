@@ -125,8 +125,24 @@ func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 	if v := SummarizeKernelConfig(pkg.Read(boot + "/kernel/config")); v != "" {
 		facts.Set(bag, KernelConfig, v, prov)
 	}
-	if v := ZImageKernelVersion(pkg.Read(boot + "/kernel")); v != "" {
+	kernel := pkg.Read(boot + "/kernel")
+	if v := ZImageKernelVersion(kernel); v != "" {
 		facts.Set(bag, KernelVersion, v, prov)
+	}
+	if v := KernelImageArch(kernel); v != "" {
+		const sysRoot = "enc_system/enc_system.ext4/system.ext4"
+		var abi string
+		var sawLib64Check, hasLib64 bool
+		if pkg.Names["enc_system/enc_system.ext4"] {
+			if bp := pkg.Read(sysRoot + "/build.prop"); bp != nil {
+				abi = propValue(bp, "ro.product.cpu.abi")
+			}
+			if kids := pkg.List(sysRoot); kids != nil {
+				sawLib64Check = true
+				hasLib64 = slices.Contains(kids, "lib64")
+			}
+		}
+		facts.Set(bag, KernelArch, SummarizeArch(v, abi, sawLib64Check, hasLib64), prov)
 	}
 	defaultProp := pkg.Read(boot + "/ramdisk/default.prop")
 	if v := propValue(defaultProp, "ro.debuggable"); v != "" {

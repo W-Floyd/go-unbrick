@@ -11,9 +11,21 @@ import (
 // ZImageMagic sits at offset 0x24 of an ARM zImage.
 const ZImageMagic = 0x016f2818
 
-// IsZImage reports an ARM zImage header.
+// IsZImage reports an ARM (32-bit, AArch32) zImage header.
 func IsZImage(head []byte) bool {
 	return len(head) >= 0x28 && binary.LittleEndian.Uint32(head[0x24:]) == ZImageMagic
+}
+
+// arm64ImageMagic ("ARM\x64", little-endian) sits at offset 0x38 of an
+// AArch64 Linux "Image" (the booti/kernel.img format, kernel's own
+// Documentation/arm64/booting.rst) — unrelated to, and not interchangeable
+// with, the 32-bit zImage format above: a kernel is one or the other, never
+// both, so this distinguishes a system's real kernel word size.
+const arm64ImageMagic = 0x644d5241
+
+// IsAArch64Image reports an AArch64 Linux "Image" header.
+func IsAArch64Image(head []byte) bool {
+	return len(head) >= 0x3c && binary.LittleEndian.Uint32(head[0x38:]) == arm64ImageMagic
 }
 
 // KernelConfig returns the .config a kernel was built with (CONFIG_IKCONFIG):
