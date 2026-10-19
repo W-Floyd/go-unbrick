@@ -527,25 +527,28 @@ func (m *browseModel) textPreview(e browseEntry) (string, bool) {
 	if usingPretty {
 		display = prettyBytes
 	}
-	out := highlightText(e.name, display)
+	body := highlightText(e.name, display)
 	switch {
 	case usingPretty:
-		out += "\n" + cLabel("p") + ": raw file contents"
+		body += "\n" + cLabel("p") + ": raw file contents"
 	case prettyOK:
-		out += "\n" + cLabel("p") + ": pretty-printed"
+		body += "\n" + cLabel("p") + ": pretty-printed"
 	}
 	if truncated {
-		out += "\n" + cWarn("[!] preview truncated; x to extract the whole file")
+		body += "\n" + cWarn("[!] preview truncated; x to extract the whole file")
 	}
-	// Appended, not swapped in: the content is already useful the instant
+	// Prepended, not swapped in: the content is already useful the instant
 	// it's read, and recon - still running in the background for this entry
 	// like any other - adds to that once it lands rather than replacing it.
+	// Recon goes above: it's the shorter, structured summary, so it's the
+	// first thing in view; the raw/pretty content, often much longer, scrolls
+	// below it rather than pushing it out of the visible pane.
 	if key, ok := reconKey(e); ok {
 		if recon, ok := m.rq.get(key); ok {
-			out += "\n\n" + cHdr("recon:") + "\n" + recon
+			return cHdr("recon:") + "\n" + recon + "\n\n" + body, true
 		}
 	}
-	return out, true
+	return body, true
 }
 
 func (m *browseModel) setStatus(s string) { m.status = s }
