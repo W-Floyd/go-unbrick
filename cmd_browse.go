@@ -641,7 +641,7 @@ func (m *browseModel) pushNodeFrame(n *carve.Node) error {
 			label = sub.Kind
 			isContainer = true
 		}
-		isText, _ := filetype.Text(k.Head())
+		isText := looksLikeText(k.Name, k.Head())
 		items = append(items, browseEntry{name: k.Name, size: k.Size, label: label, isContainer: isContainer, isText: isText, node: k})
 	}
 	title := n.Name
@@ -997,6 +997,28 @@ func fileHeadLabel(path string) (label string, isText bool) {
 	head := make([]byte, 8192)
 	n, _ := f.Read(head)
 	head = head[:n]
-	ok, _ := filetype.Text(head)
-	return typeLabel(filepath.Base(path), head), ok
+	return typeLabel(filepath.Base(path), head), looksLikeText(path, head)
+}
+
+// textExts names extensions worth previewing as text even when
+// filetype.Text's content heuristic says no - a real .ini/.log/.cfg can have
+// one stray non-UTF8 or control byte (a mis-encoded string, a CRLF artifact,
+// one binary-ish line in an otherwise-text log) and that heuristic rejects
+// the whole file over it. The name already says "this is text" more
+// reliably than a byte-level scan of just the head can refute.
+var textExts = map[string]bool{
+	".txt": true, ".ini": true, ".cfg": true, ".conf": true, ".config": true,
+	".log": true, ".json": true, ".xml": true, ".yaml": true, ".yml": true,
+	".md": true, ".markdown": true, ".csv": true, ".tsv": true, ".properties": true,
+	".rc": true, ".env": true, ".sh": true, ".bash": true, ".inf": true,
+}
+
+// looksLikeText is the isText gate shared by OS files and carve.Node
+// members: a real content check first, a known text extension as a
+// fallback for what that check's strict UTF-8/control-byte rule rejects.
+func looksLikeText(name string, head []byte) bool {
+	if ok, _ := filetype.Text(head); ok {
+		return true
+	}
+	return textExts[strings.ToLower(filepath.Ext(name))]
 }
