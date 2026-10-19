@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -12,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // verEntry is one file a .ver manifest lists: the firmware downloader writes
@@ -269,17 +269,16 @@ func histogramLine(kinds map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-// reportTarList decodes a Hyundai/Kia NEW_TarList.txt_encrypted — XOR 0x11, not
-// encryption — printing the versions it states. Its per-file SHA-224s are
-// checked only under --verify, which reads each listed file in full.
+// reportTarList decodes a Hyundai/Kia NEW_TarList.txt_encrypted, printing the
+// versions it states. Its per-file hashes (Hyundai's own two-level SHA-224,
+// not plain SHA-224 — see vendor.TarListHash) are checked only under
+// --verify, which reads each listed file in full.
 func reportTarList(path string, byName map[string]string, verify bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	for i := range data {
-		data[i] ^= 0x11
-	}
+	data = vendor.DecodeTarList(data)
 	var bad []string
 	checked := 0
 	for _, line := range strings.Split(string(data), "\n") {
@@ -292,7 +291,7 @@ func reportTarList(path string, byName map[string]string, verify bool) {
 				continue
 			}
 			checked++
-			if got, err := fileSHA224(p); err != nil || got != f[2] {
+			if got, err := tarListFileHash(p); err != nil || got != f[2] {
 				bad = append(bad, f[0])
 			}
 		case strings.HasPrefix(line, "@NEW_SWVERSION_K:"), strings.HasPrefix(line, "@NEW_VERSION:"):
@@ -301,24 +300,20 @@ func reportTarList(path string, byName map[string]string, verify bool) {
 	}
 	if verify {
 		if len(bad) > 0 {
-			fmt.Printf("  %s TarList SHA-224 mismatch: %s\n", cWarn("[!]"), strings.Join(bad, ", "))
+			fmt.Printf("  %s TarList hash mismatch: %s\n", cWarn("[!]"), strings.Join(bad, ", "))
 		} else {
-			fmt.Printf("  TarList SHA-224: %d file(s) verified\n", checked)
+			fmt.Printf("  TarList hash: %d file(s) verified\n", checked)
 		}
 	}
 }
 
-func fileSHA224(path string) (string, error) {
+func tarListFileHash(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	h := sha256.New224()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return vendor.TarListHash(f)
 }
 
 var (
