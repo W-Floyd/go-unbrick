@@ -143,6 +143,16 @@ func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 	if v := SummarizePosture(fstabs, defaultProp, cmdline, verity); v != "" {
 		facts.Set(bag, BootPosture, v, prov)
 	}
+
+	// lk.rom embedding an OP-TEE TA's UUID means LK's own boot-time
+	// verification calls into that TA directly — a hardware-backed check
+	// distinct from (and not defeated by) otaagentd's plain-OpenSSL,
+	// replaceable-file install-time one.
+	if lk := pkg.Read("enc_system/enc_lk.rom/lk.rom"); lk != nil {
+		if tas := ReferencedTAs(lk); len(tas) > 0 {
+			facts.Set(bag, TAReferences, strings.Join(tas, "; "), facts.Provenance{Source: "enc_lk.rom", Authority: facts.Attested})
+		}
+	}
 }
 
 // describeModemELF reads a firmware ELF's core, variant, build date and signing

@@ -2,6 +2,7 @@ package vendor
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -34,6 +35,70 @@ var (
 // BootPosture is what the boot ramdisk says about how locked down the device
 // is: system mount and verity, data encryption, adb and SELinux.
 var BootPosture = facts.Key[string]("boot_posture")
+
+// TAReferences is which OP-TEE Trusted Applications a binary embeds the UUID
+// of — found in lk.rom itself this names which TA its own boot-time
+// verification calls into, as opposed to otaagentd's unrelated plain-OpenSSL
+// install-time check (res.dat key, no TEE at all). The same UUID also
+// appearing in a userspace client library is how each TA below was identified
+// in the first place (vendor/lib/libtsm_secureflash.so, libtsm_securestorage.so,
+// libtsm_ask_server.so, libcaHSM.so, against the system.ext4 files under
+// vendor/lib/optee_armtz/*.ta).
+var TAReferences = facts.Key[string]("ta_references")
+
+// knownTAs maps an OP-TEE TA UUID to the capability it backs, from TAs
+// identified in this platform's own system.ext4.
+var knownTAs = map[string]string{
+	"981fbe6c-bd38-467c-92c6-66b66bbff412": "secure-flash (libtsm_secureflash.so)",
+	"14be5fc2-2dca-4f4b-8575-f50cc82716be": "secure-storage (libtsm_securestorage.so, tsmd)",
+	"58388e33-8d64-4086-b929-feb722415ae3": "ask-server (libtsm_ask_server.so)",
+	"9aec3623-b887-4491-a453-3de7735a3e85": "HSM/crypto — sign/verify, cipher, MAC, KDF, RNG (libcaHSM.so)",
+}
+
+// taUUIDBytes is u as a TEEC_UUID: the first three fields byte-swapped to
+// little-endian (as ARM TEE client code stores them), the last two as-is.
+func taUUIDBytes(u string) []byte {
+	p := strings.Split(u, "-")
+	if len(p) != 5 {
+		return nil
+	}
+	rev := func(h string) []byte {
+		b, err := hex.DecodeString(h)
+		if err != nil {
+			return nil
+		}
+		for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+			b[i], b[j] = b[j], b[i]
+		}
+		return b
+	}
+	straight := func(h string) []byte {
+		b, _ := hex.DecodeString(h)
+		return b
+	}
+	var out []byte
+	for i, part := range []func(string) []byte{rev, rev, rev, straight, straight} {
+		b := part(p[i])
+		if b == nil {
+			return nil
+		}
+		out = append(out, b...)
+	}
+	return out
+}
+
+// ReferencedTAs returns the known TAs whose UUID appears (as a TEEC_UUID
+// struct) anywhere in data, each as "label (uuid)", sorted.
+func ReferencedTAs(data []byte) []string {
+	var out []string
+	for u, label := range knownTAs {
+		if b := taUUIDBytes(u); b != nil && bytes.Contains(data, b) {
+			out = append(out, fmt.Sprintf("%s (%s)", label, u))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // fstabEntry is one line of an Android fstab.
 type fstabEntry struct{ Dev, Mount, Type, MntFlags, FsMgrFlags string }

@@ -389,6 +389,9 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.BootPosture); ok {
 		add("Boot posture: %s", v)
 	}
+	if v, ok := facts.Get(b, vendor.TAReferences); ok {
+		add("LK TA references: %s", v)
+	}
 	if lock, ok := facts.Get(b, vendor.SubsidyLock); ok {
 		add("Subsidy: %s", b.Show(vendor.SubsidyLock.Name(), lock))
 	}
