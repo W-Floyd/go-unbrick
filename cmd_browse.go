@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -10,13 +12,19 @@ import (
 	"sync"
 
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
 )
 
 // browse is the one TUI in go-unbrick: everything else (ls, tree, extract,
@@ -24,6 +32,7 @@ import (
 // This is the file-manager-style front end over the same primitives: a
 // directory on disk, and anything carve can open inside a file.
 func newBrowseCmd() *cobra.Command {
+	var skip []string
 	c := &cobra.Command{
 		Use:   "browse <file | dir | url>",
 		Short: "interactively navigate a directory or anything carve can open inside a file",
@@ -32,17 +41,21 @@ directory, or over anything carve can open inside a file (archive members,
 payload partitions, filesystem files, boot image sections, ...).
 
 Every reconnable entry in the current list recons itself in the background,
-one at a time, lowest-index first; highlighting an entry jumps its recon to
-the front of that queue, so the one you're looking at finishes soonest and
-the preview pane fills in with the full report on its own, not just on 'r'.
+one at a time, lowest-index first; just highlighting an entry (arrow keys,
+j/k, click, or wheel) jumps its recon to the front of that queue, so whatever
+you're looking at finishes soonest and the preview pane fills in with the
+full report on its own — there's no separate "recon this" key to press. Two
+progress bars in the footer track it: how much of the current page is done,
+and how much of everything seen so far across the whole session.
+
+A text file (syntax-highlighted via chroma) previews as its content directly,
+not a generic size/type blurb — no need to extract it first to read it. A
+format browse can reformat (currently: JSON) shows pretty-printed by default.
 
   enter / l / →     descend into the selected directory or container
-  backspace/h/←     go back up one level
-  r                 jump the selected entry to the front of the recon queue
-                     and wait for it (a package member is spooled to a temp
-                     file first; most entries are already done by the time
-                     you look, from the background queue above)
+  backspace/h/←     go back up one level (lands back on what you came from)
   x                 extract the selected entry to the current directory
+  p                 toggle a reformatted text file between pretty and raw
   /                 filter the current list
   click / wheel     select, activate, or scroll with the mouse
   q, ctrl+c         quit
@@ -54,7 +67,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 			if !isInteractive() {
 				return fmt.Errorf("browse needs an interactive terminal (stdin and stdout); use ls/tree/recon/extract instead")
 			}
-			m, err := newBrowseModel(args[0])
+			m, err := newBrowseModel(args[0], skip)
 			if err != nil {
 				return err
 			}
@@ -62,6 +75,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 			return err
 		},
 	}
+	c.Flags().StringSliceVar(&skip, "skip", nil, "directory listings: leave files out (they're never listed, so never preemptively reconned either): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated - same values as 'recon --skip'")
 	return addSecrets(addFullDownload(c))
 }
 
@@ -86,6 +100,7 @@ type browseEntry struct {
 	label       string
 	dir         bool
 	isContainer bool // carve-recognized container (meaningless when osPath != "": that's resolved lazily on Enter)
+	isText      bool // previewed as syntax-highlighted content instead of reconned - see reconKey
 	osPath      string
 	node        *carve.Node
 }
@@ -176,9 +191,10 @@ func (browseDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 // OS-directory frame reached by descending into a subdirectory; it is set once
 // a frame's contents came from carve.Node.Children.
 type browseFrame struct {
-	title string
-	osDir string
-	node  *carve.Node
+	title    string
+	osDir    string
+	node     *carve.Node
+	selected int // index to restore on ascend - set by descend() just before leaving this frame
 }
 
 type browseModel struct {
@@ -187,19 +203,20 @@ type browseModel struct {
 	preview viewport.Model
 	spin    spinner.Model
 	rq      *reconQueue
-	busy    string // display name of the entry 'r' is actively waiting on, "" when idle
-	busyKey string
+	skip    []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
+	showRaw bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
 	status  string
 	width   int
 	height  int
 }
 
-func newBrowseModel(input string) (*browseModel, error) {
+func newBrowseModel(input string, skip []string) (*browseModel, error) {
 	m := &browseModel{
 		list:    list.New(nil, browseDelegate{}, 0, 0),
 		preview: viewport.New(),
 		spin:    spinner.New(),
 		rq:      newReconQueue(),
+		skip:    skip,
 	}
 	// This isn't list.DefaultDelegate's two-line card view, and the
 	// breadcrumb/status line below the panes already says where we are and
@@ -235,7 +252,7 @@ func waitReady(ch <-chan reconReadyMsg) tea.Cmd {
 }
 
 func (m *browseModel) Init() tea.Cmd {
-	return tea.Batch(waitReady(m.rq.ready), func() tea.Msg {
+	return tea.Batch(waitReady(m.rq.ready), m.spin.Tick, func() tea.Msg {
 		m.rq.start()
 		return nil
 	})
@@ -248,20 +265,16 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 	case spinner.TickMsg:
-		if m.busy == "" {
-			return m, nil // nothing being actively waited on; stop the chain
-		}
+		// Always kept alive (bubbles' spinner self-chains its own next tick):
+		// it also drives the periodic redraw that lets the progress bars and
+		// the "reconning ..." status line advance while nothing else is
+		// happening - a bump from highlighting doesn't itself trigger a
+		// render once the key event is handled.
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
 	case reconReadyMsg:
-		if m.busyKey == msg.key {
-			m.busy, m.busyKey = "", ""
-			if out, ok := m.rq.get(msg.key); ok {
-				m.preview.SetContent(out)
-				m.status = "recon: " + msg.name
-			}
-		} else if sel, ok := m.selected(); ok {
+		if sel, ok := m.selected(); ok {
 			if k, ok := reconKey(sel); ok && k == msg.key {
 				m.showPreview() // picks up the result that just landed in the cache
 			}
@@ -277,10 +290,12 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "backspace", "h", "left":
 			m.ascend()
 			return m, nil
-		case "r":
-			return m, m.startRecon()
 		case "x":
 			m.extract()
+			return m, nil
+		case "p":
+			m.showRaw = !m.showRaw
+			m.showPreview()
 			return m, nil
 		}
 	case tea.MouseClickMsg:
@@ -304,16 +319,61 @@ func (m *browseModel) View() tea.View {
 	left := lipgloss.NewStyle().Width(listW).Render(m.list.View())
 	right := lipgloss.NewStyle().Width(m.width - listW - 1).Render(m.preview.View())
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+
 	status := m.status
-	switch {
-	case m.busy != "":
-		status = m.spin.View() + " reconning " + m.busy + "..."
-	case status == "":
+	if name, ok := m.rq.inflightDisplay(); ok {
+		status = m.spin.View() + " reconning " + name + "..."
+	} else if status == "" {
 		status = strings.Join(m.breadcrumb(), " / ")
 	}
-	v := tea.NewView(body + "\n" + cLabel(status))
+
+	v := tea.NewView(body + "\n" + m.progressLine() + "\n" + cLabel(status))
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+const progressBarWidth = 16
+
+// progressLine shows two bars: how much of the entries listed right now are
+// reconned, and how much of every entry browse has ever seen across the
+// whole session (every frame visited, not just the current one) - the first
+// answers "is this directory done yet", the second "how much is left overall".
+func (m *browseModel) progressLine() string {
+	pageDone, pageTotal := m.pageProgress()
+	allDone, allTotal := m.rq.stats()
+	bar := progress.New(progress.WithWidth(progressBarWidth), progress.WithoutPercentage())
+	var pagePct, allPct float64
+	if pageTotal > 0 {
+		pagePct = float64(pageDone) / float64(pageTotal)
+	}
+	if allTotal > 0 {
+		allPct = float64(allDone) / float64(allTotal)
+	}
+	return fmt.Sprintf("%s %d/%d this page   %s %d/%d overall",
+		bar.ViewAs(pagePct), pageDone, pageTotal,
+		bar.ViewAs(allPct), allDone, allTotal)
+}
+
+// pageProgress counts how many of the current frame's reconnable entries are
+// already cached. Recomputed fresh on every render rather than tracked
+// incrementally - it's a scan over a slice already in memory, cheap even for
+// a few thousand entries, and avoids another piece of state to keep in sync.
+func (m *browseModel) pageProgress() (done, total int) {
+	for _, it := range m.list.Items() {
+		e, ok := it.(browseEntry)
+		if !ok {
+			continue
+		}
+		key, ok := reconKey(e)
+		if !ok {
+			continue
+		}
+		total++
+		if _, ok := m.rq.get(key); ok {
+			done++
+		}
+	}
+	return done, total
 }
 
 func (m *browseModel) breadcrumb() []string {
@@ -330,7 +390,7 @@ func (m *browseModel) listWidth() int { return m.width * 2 / 5 }
 
 func (m *browseModel) layout() {
 	listW := m.listWidth()
-	h := m.height - 2 // status line + a little breathing room
+	h := m.height - 3 // progress line + status line + a little breathing room
 	if h < 1 {
 		h = 1
 	}
@@ -352,6 +412,7 @@ func (m *browseModel) selected() (browseEntry, bool) {
 // looked at an entry for more than a moment, its recon is either done or
 // next in line, not buried behind everything else in the current directory.
 func (m *browseModel) onSelectionChanged() {
+	m.showRaw = false // land on pretty-by-default for whatever's now highlighted, not whatever 'p' last left set
 	m.showPreview()
 	if e, ok := m.selected(); ok {
 		if key, ok := reconKey(e); ok {
@@ -403,17 +464,28 @@ func (m *browseModel) handleWheel(ms tea.Mouse) {
 // showPreview sets the preview pane for the highlighted entry: the full
 // cached recon report if the background queue has already reached it,
 // otherwise cheap, always-available info (size, type label) plus a note that
-// it's queued. A recon 'r' is actively waiting on owns the pane until it
-// reports back.
+// it's running - highlighting it already put it at the front of the queue.
 func (m *browseModel) showPreview() {
-	if m.busy != "" {
-		return
-	}
 	m.status = ""
 	e, ok := m.selected()
 	if !ok {
 		m.preview.SetContent("")
 		return
+	}
+	// A text file (isText is a direct content check - filetype.Text on its
+	// own head bytes, not e.label, which is recon's often-less-specific
+	// guess: a file this heuristic already calls readable can still earn an
+	// "unknown" label from typeLabel's other, stricter checks) always
+	// previews as itself immediately, rather than waiting on or being
+	// evicted by a cached recon result. It's still reconned in the
+	// background like everything else (enqueueAll doesn't check isText),
+	// and textPreview appends that once it lands rather than replacing the
+	// content with it - "text can match and be read" means both, not either.
+	if !e.dir && e.isText {
+		if out, ok := m.textPreview(e); ok {
+			m.preview.SetContent(out)
+			return
+		}
 	}
 	if key, ok := reconKey(e); ok {
 		if out, ok := m.rq.get(key); ok {
@@ -428,15 +500,52 @@ func (m *browseModel) showPreview() {
 		fmt.Fprintln(&b, "directory")
 	case e.osPath != "":
 		fmt.Fprintf(&b, "%s\n%s\n", humanBytes(e.size), e.label)
-		fmt.Fprintln(&b, "\nrecon queued in the background; r to jump the queue")
+		fmt.Fprintln(&b, "\nreconning in the background")
 	default:
 		fmt.Fprintf(&b, "%s\n%s\n", humanBytes(e.size), e.label)
 		if e.isContainer {
 			fmt.Fprintln(&b, "\npress enter to open")
 		}
-		fmt.Fprintln(&b, "recon queued in the background (spooled to a temp file); r to jump the queue, x to extract")
+		fmt.Fprintln(&b, "reconning in the background (spooled to a temp file); x extracts")
 	}
 	m.preview.SetContent(b.String())
+}
+
+// textPreview reads e's content (bounded by textPreviewCap) and renders it
+// syntax-highlighted, pretty-printed by default when a known format allows
+// it (p toggles that - see m.showRaw). ok is false only on a read error
+// (e.g. a carve.Node whose container can't be reopened), not on "not text" -
+// callers already know e.isText before calling this.
+func (m *browseModel) textPreview(e browseEntry) (string, bool) {
+	content, truncated, err := readForPreview(e)
+	if err != nil {
+		return "", false
+	}
+	display := content
+	prettyBytes, prettyOK := prettyPrint(e.name, content)
+	usingPretty := prettyOK && !m.showRaw
+	if usingPretty {
+		display = prettyBytes
+	}
+	out := highlightText(e.name, display)
+	switch {
+	case usingPretty:
+		out += "\n" + cLabel("p") + ": raw file contents"
+	case prettyOK:
+		out += "\n" + cLabel("p") + ": pretty-printed"
+	}
+	if truncated {
+		out += "\n" + cWarn("[!] preview truncated; x to extract the whole file")
+	}
+	// Appended, not swapped in: the content is already useful the instant
+	// it's read, and recon - still running in the background for this entry
+	// like any other - adds to that once it lands rather than replacing it.
+	if key, ok := reconKey(e); ok {
+		if recon, ok := m.rq.get(key); ok {
+			out += "\n\n" + cHdr("recon:") + "\n" + recon
+		}
+	}
+	return out, true
 }
 
 func (m *browseModel) setStatus(s string) { m.status = s }
@@ -471,6 +580,22 @@ func (m *browseModel) pushDirFrame(dir string) error {
 		return err
 	}
 	sort.Slice(des, func(i, j int) bool { return des[i].Name() < des[j].Name() })
+	var filePaths []string
+	for _, d := range des {
+		if !d.IsDir() {
+			filePaths = append(filePaths, filepath.Join(dir, d.Name()))
+		}
+	}
+	// applySkips prints a "Skipped navi: N file(s), ..." line straight to
+	// os.Stdout, meant for recon's flat report; here it would just corrupt
+	// bubbletea's screen, so it's captured and dropped rather than shown -
+	// the files simply aren't in the listing, which says the same thing.
+	var kept []string
+	captureStdout(func() error { kept = applySkips(filePaths, m.skip); return nil }) //nolint:errcheck
+	keep := map[string]bool{}
+	for _, p := range kept {
+		keep[p] = true
+	}
 	items := make([]list.Item, 0, len(des))
 	for _, d := range des {
 		if d.Name() != "." && strings.HasPrefix(d.Name(), ".") {
@@ -481,11 +606,15 @@ func (m *browseModel) pushDirFrame(dir string) error {
 			items = append(items, browseEntry{name: d.Name(), size: -1, dir: true, osPath: full})
 			continue
 		}
+		if !keep[full] {
+			continue
+		}
 		size := int64(-1)
 		if fi, err := d.Info(); err == nil {
 			size = fi.Size()
 		}
-		items = append(items, browseEntry{name: d.Name(), size: size, label: fileHeadLabel(full), osPath: full})
+		label, isText := fileHeadLabel(full)
+		items = append(items, browseEntry{name: d.Name(), size: size, label: label, isText: isText, osPath: full})
 	}
 	m.frames = append(m.frames, browseFrame{title: filepath.Base(dir), osDir: dir})
 	m.list.SetItems(items)
@@ -509,7 +638,8 @@ func (m *browseModel) pushNodeFrame(n *carve.Node) error {
 			label = sub.Kind
 			isContainer = true
 		}
-		items = append(items, browseEntry{name: k.Name, size: k.Size, label: label, isContainer: isContainer, node: k})
+		isText, _ := filetype.Text(k.Head())
+		items = append(items, browseEntry{name: k.Name, size: k.Size, label: label, isContainer: isContainer, isText: isText, node: k})
 	}
 	title := n.Name
 	if title == "" {
@@ -530,6 +660,11 @@ func (m *browseModel) descend() {
 	e, ok := m.selected()
 	if !ok {
 		return
+	}
+	// Remember where we were in this frame so ascend can put the cursor back
+	// on the entry we came from, instead of always landing on the first item.
+	if len(m.frames) > 0 {
+		m.frames[len(m.frames)-1].selected = m.list.Index()
 	}
 	switch {
 	case e.dir:
@@ -559,16 +694,20 @@ func (m *browseModel) ascend() {
 		return
 	}
 	m.frames = m.frames[:len(m.frames)-1]
-	f := m.current()
-	switch {
-	case f.node != nil:
-		if err := m.rebuildNodeFrame(f.node); err != nil {
-			m.setStatus(err.Error())
-		}
-	default:
-		if err := m.rebuildDirFrame(f.osDir); err != nil {
-			m.setStatus(err.Error())
-		}
+	f := m.current() // a copy: rebuild*Frame below pops and re-pushes the slice entry, but f.selected survives in this local copy
+	var err error
+	if f.node != nil {
+		err = m.rebuildNodeFrame(f.node)
+	} else {
+		err = m.rebuildDirFrame(f.osDir)
+	}
+	if err != nil {
+		m.setStatus(err.Error())
+		return
+	}
+	if f.selected >= 0 && f.selected < len(m.list.Items()) {
+		m.list.Select(f.selected)
+		m.onSelectionChanged()
 	}
 }
 
@@ -582,35 +721,6 @@ func (m *browseModel) rebuildDirFrame(dir string) error {
 func (m *browseModel) rebuildNodeFrame(n *carve.Node) error {
 	m.frames = m.frames[:len(m.frames)-1]
 	return m.pushNodeFrame(n)
-}
-
-// startRecon handles 'r': if the background queue already finished this
-// entry, show it immediately — no need to wait on anything. Otherwise jump
-// it to the front of the queue (ahead of whatever's merely queued; the job
-// already in flight, if any, still finishes first) and wait, with the
-// spinner in View animating via spinner.TickMsg until reconReadyMsg matches.
-func (m *browseModel) startRecon() tea.Cmd {
-	e, ok := m.selected()
-	if !ok || e.dir {
-		m.setStatus("recon needs a file, not a directory")
-		return nil
-	}
-	key, ok := reconKey(e)
-	if !ok {
-		m.setStatus("nothing to recon here")
-		return nil
-	}
-	if out, ok := m.rq.get(key); ok {
-		m.preview.SetContent(out)
-		m.status = "recon: " + e.name
-		return nil
-	}
-	if m.busy != "" {
-		return nil // already actively waiting on one
-	}
-	m.rq.bump(key)
-	m.busy, m.busyKey = e.name, key
-	return m.spin.Tick
 }
 
 // reconJob is one entry's recon work: a real OS path, or a package member
@@ -631,13 +741,15 @@ type reconReadyMsg struct{ key, name string }
 // point of bumping is that whatever you're looking at gets there next, not
 // that everything finishes faster.
 type reconQueue struct {
-	mu        sync.Mutex
-	cond      *sync.Cond
-	pending   []reconJob
-	inflight  string
-	cache     map[string]string
-	ready     chan reconReadyMsg
-	startOnce sync.Once
+	mu           sync.Mutex
+	cond         *sync.Cond
+	pending      []reconJob
+	inflightKey  string
+	inflightName string
+	cache        map[string]string
+	seen         map[string]bool // every key ever enqueued, whether done, pending, or in flight - stats()'s total
+	ready        chan reconReadyMsg
+	startOnce    sync.Once
 }
 
 // newReconQueue only allocates - start() launches the worker. A job's work
@@ -649,7 +761,7 @@ type reconQueue struct {
 // Run is called, so it only builds the queue; Init - which bubbletea invokes
 // after the terminal is set up - starts it.
 func newReconQueue() *reconQueue {
-	q := &reconQueue{cache: map[string]string{}, ready: make(chan reconReadyMsg, 32)}
+	q := &reconQueue{cache: map[string]string{}, seen: map[string]bool{}, ready: make(chan reconReadyMsg, 32)}
 	q.cond = sync.NewCond(&q.mu)
 	return q
 }
@@ -662,7 +774,7 @@ func (q *reconQueue) run() {
 		out := runReconJob(job)
 		q.mu.Lock()
 		q.cache[job.key] = out
-		q.inflight = ""
+		q.inflightKey, q.inflightName = "", ""
 		q.mu.Unlock()
 		q.ready <- reconReadyMsg{key: job.key, name: job.name}
 	}
@@ -677,21 +789,20 @@ func (q *reconQueue) next() reconJob {
 	}
 	job := q.pending[0]
 	q.pending = q.pending[1:]
-	q.inflight = job.key
+	q.inflightKey, q.inflightName = job.key, job.name
 	return job
 }
 
+// enqueue appends job once per key, ever - a frame revisited later (ascend
+// back into it) calls this again for the same entries, and seen is what
+// keeps that from re-running or re-counting work already done.
 func (q *reconQueue) enqueue(job reconJob) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if _, done := q.cache[job.key]; done || q.inflight == job.key {
+	if q.seen[job.key] {
 		return
 	}
-	for _, p := range q.pending {
-		if p.key == job.key {
-			return
-		}
-	}
+	q.seen[job.key] = true
 	q.pending = append(q.pending, job)
 	q.cond.Signal()
 }
@@ -718,11 +829,29 @@ func (q *reconQueue) get(key string) (string, bool) {
 	return out, ok
 }
 
-// runReconJob is the actual work a queue worker (or a direct 'r' wait) does:
-// a package member (node set) has no path recon's own machinery can open, so
-// it's spooled to a temp file first, under its own base name (some recon
-// checks match a known filename, e.g. "micom_sw.bin" - a random temp name
-// would silently skip those) — the same bytes 'x' would extract.
+// stats is the global progress bar's (done, total) across every key this
+// queue has ever seen, regardless of which frame it came from.
+func (q *reconQueue) stats() (done, total int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.cache), len(q.seen)
+}
+
+// inflightDisplay is the name of the job actively running right now, if any.
+func (q *reconQueue) inflightDisplay() (name string, ok bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.inflightKey == "" {
+		return "", false
+	}
+	return q.inflightName, true
+}
+
+// runReconJob is the actual work a queue worker does: a package member (node
+// set) has no path recon's own machinery can open, so it's spooled to a temp
+// file first, under its own base name (some recon checks match a known
+// filename, e.g. "micom_sw.bin" - a random temp name would silently skip
+// those) — the same bytes 'x' would extract.
 func runReconJob(job reconJob) string {
 	path := job.osPath
 	if path == "" {
@@ -779,15 +908,92 @@ func (m *browseModel) extract() {
 	m.setStatus("extracted to ./" + dst)
 }
 
+// prettyPrint reformats content for a format browse knows how to, by
+// extension first and then by sniffing the content itself (a renamed or
+// extensionless .json still opens brace-first). ok is false for anything
+// else - a plain text file just shows as its (already readable) self, not
+// "pretty-printed" vs. "raw" versions of the same bytes.
+func prettyPrint(name string, content []byte) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(content)
+	looksJSON := len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
+	if strings.ToLower(filepath.Ext(name)) != ".json" && !looksJSON {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, content, "", "  "); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// textPreviewCap bounds how much of a text file showPreview reads: enough
+// for a real look at it, not so much that a mislabeled multi-GB file (text
+// detection is a heuristic on the first 8KB, not a guarantee) stalls the UI.
+const textPreviewCap = 256 << 10
+
+// readForPreview reads up to textPreviewCap bytes of e's content, from disk
+// or from its carve.Node - whichever e actually is.
+func readForPreview(e browseEntry) (content []byte, truncated bool, err error) {
+	var r io.ReadCloser
+	switch {
+	case e.osPath != "":
+		r, err = os.Open(e.osPath)
+	case e.node != nil:
+		r, err = e.node.Reader()
+	default:
+		return nil, false, fmt.Errorf("%s has no readable content", e.name)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer r.Close()
+	content, err = io.ReadAll(io.LimitReader(r, textPreviewCap+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(content) > textPreviewCap {
+		return content[:textPreviewCap], true, nil
+	}
+	return content, false, nil
+}
+
+// highlightText renders content with chroma's syntax highlighting, matched
+// by filename first and falling back to content analysis, when color is on;
+// plain text otherwise (NO_COLOR - browse itself already requires a real
+// terminal, so colorEnabled is normally true here already).
+func highlightText(name string, content []byte) string {
+	if !colorEnabled {
+		return string(content)
+	}
+	lexer := lexers.Match(name)
+	if lexer == nil {
+		lexer = lexers.Analyse(string(content))
+	}
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	iter, err := chroma.Coalesce(lexer).Tokenise(nil, string(content))
+	if err != nil {
+		return string(content)
+	}
+	var buf bytes.Buffer
+	if err := formatters.TTY256.Format(&buf, styles.Get("monokai"), iter); err != nil {
+		return string(content)
+	}
+	return buf.String()
+}
+
 // fileHeadLabel reads just enough of a plain OS file to type-label it, the
 // way recon and ls already do — cheap even for a multi-GB file.
-func fileHeadLabel(path string) string {
+func fileHeadLabel(path string) (label string, isText bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "unknown"
+		return "unknown", false
 	}
 	defer f.Close()
 	head := make([]byte, 8192)
 	n, _ := f.Read(head)
-	return typeLabel(filepath.Base(path), head[:n])
+	head = head[:n]
+	ok, _ := filetype.Text(head)
+	return typeLabel(filepath.Base(path), head), ok
 }
