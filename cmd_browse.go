@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
@@ -30,10 +31,17 @@ func newBrowseCmd() *cobra.Command {
 directory, or over anything carve can open inside a file (archive members,
 payload partitions, filesystem files, boot image sections, ...).
 
+Every reconnable entry in the current list recons itself in the background,
+one at a time, lowest-index first; highlighting an entry jumps its recon to
+the front of that queue, so the one you're looking at finishes soonest and
+the preview pane fills in with the full report on its own, not just on 'r'.
+
   enter / l / →     descend into the selected directory or container
   backspace/h/←     go back up one level
-  r                 recon the selected entry (same report as 'unbrick recon');
-                     a package member is spooled to a temp file first
+  r                 jump the selected entry to the front of the recon queue
+                     and wait for it (a package member is spooled to a temp
+                     file first; most entries are already done by the time
+                     you look, from the background queue above)
   x                 extract the selected entry to the current directory
   /                 filter the current list
   click / wheel     select, activate, or scroll with the mouse
@@ -84,9 +92,50 @@ type browseEntry struct {
 
 func (e browseEntry) FilterValue() string { return e.name }
 
+// reconKey identifies e for the recon queue/cache: a real path for an OS
+// file, or the carve.Node's own identity for a package member (two different
+// members can share a name, e.g. "boot.img" in two variants, so the name
+// alone isn't unique - the node pointer is, for as long as its frame is on
+// the stack). ok is false for anything recon can't run on at all.
+func reconKey(e browseEntry) (key string, ok bool) {
+	switch {
+	case e.dir:
+		return "", false
+	case e.osPath != "":
+		return "os:" + e.osPath, true
+	case e.node != nil:
+		return fmt.Sprintf("node:%p", e.node), true
+	default:
+		return "", false
+	}
+}
+
+const browseNameWidth = 42
+
+// fitWidth pads or truncates s to exactly w cells (ASCII-width; these are
+// filenames, not arbitrary text), so a column after it lines up the same way
+// on every row regardless of how long any one name is.
+func fitWidth(s string, w int) string {
+	switch {
+	case w <= 0:
+		return ""
+	case len(s) == w:
+		return s
+	case len(s) < w:
+		return s + strings.Repeat(" ", w-len(s))
+	case w == 1:
+		return s[:1]
+	default:
+		return s[:w-1] + "…"
+	}
+}
+
 // line is the single-line "name  size  type" text a flat `ls` would print;
 // browseDelegate renders exactly this, so the list stays one row per entry
-// instead of the default delegate's two-line, blank-line-separated layout.
+// instead of list.DefaultDelegate's two-line, blank-line-separated layout.
+// The name column is a fixed width regardless of how the full line is later
+// clipped to the pane's width, so a long name truncates in place instead of
+// pushing the size/type out of alignment with every shorter name above it.
 func (e browseEntry) line() string {
 	desc := "directory"
 	switch {
@@ -96,7 +145,7 @@ func (e browseEntry) line() string {
 	default:
 		desc = humanBytes(e.size) + "  " + e.label
 	}
-	return fmt.Sprintf("%-40s  %s", e.name, desc)
+	return fitWidth(e.name, browseNameWidth) + "  " + desc
 }
 
 // browseDelegate renders one entry per terminal row: no blank-line spacing,
@@ -137,7 +186,9 @@ type browseModel struct {
 	list    list.Model
 	preview viewport.Model
 	spin    spinner.Model
-	busy    string // name of the entry being reconned, "" when idle
+	rq      *reconQueue
+	busy    string // display name of the entry 'r' is actively waiting on, "" when idle
+	busyKey string
 	status  string
 	width   int
 	height  int
@@ -148,6 +199,7 @@ func newBrowseModel(input string) (*browseModel, error) {
 		list:    list.New(nil, browseDelegate{}, 0, 0),
 		preview: viewport.New(),
 		spin:    spinner.New(),
+		rq:      newReconQueue(),
 	}
 	// This isn't list.DefaultDelegate's two-line card view, and the
 	// breadcrumb/status line below the panes already says where we are and
@@ -175,14 +227,18 @@ func newBrowseModel(input string) (*browseModel, error) {
 	return m, nil
 }
 
-func (m *browseModel) Init() tea.Cmd { return nil }
+// waitReady turns the queue's completion channel into a tea.Cmd: Update
+// re-issues this after every reconReadyMsg, so it's always listening for the
+// next one without a worker goroutine ever needing a *tea.Program reference.
+func waitReady(ch <-chan reconReadyMsg) tea.Cmd {
+	return func() tea.Msg { return <-ch }
+}
 
-// reconDoneMsg carries a completed 'r' recon's report back to Update; it runs
-// as a tea.Cmd (a goroutine) so a multi-GB file doesn't freeze the UI, and so
-// the spinner started alongside it actually animates.
-type reconDoneMsg struct {
-	name string
-	out  string
+func (m *browseModel) Init() tea.Cmd {
+	return tea.Batch(waitReady(m.rq.ready), func() tea.Msg {
+		m.rq.start()
+		return nil
+	})
 }
 
 func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -193,16 +249,24 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case spinner.TickMsg:
 		if m.busy == "" {
-			return m, nil // recon finished; stop the chain, don't tick forever
+			return m, nil // nothing being actively waited on; stop the chain
 		}
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
-	case reconDoneMsg:
-		m.busy = ""
-		m.preview.SetContent(msg.out)
-		m.status = "recon: " + msg.name
-		return m, nil
+	case reconReadyMsg:
+		if m.busyKey == msg.key {
+			m.busy, m.busyKey = "", ""
+			if out, ok := m.rq.get(msg.key); ok {
+				m.preview.SetContent(out)
+				m.status = "recon: " + msg.name
+			}
+		} else if sel, ok := m.selected(); ok {
+			if k, ok := reconKey(sel); ok && k == msg.key {
+				m.showPreview() // picks up the result that just landed in the cache
+			}
+		}
+		return m, waitReady(m.rq.ready)
 	case tea.KeyPressMsg:
 		switch msg.Keystroke() {
 		case "q", "ctrl+c":
@@ -230,7 +294,7 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before := m.list.Index()
 	m.list, cmd = m.list.Update(msg)
 	if m.list.Index() != before {
-		m.showPreview()
+		m.onSelectionChanged()
 	}
 	return m, cmd
 }
@@ -282,6 +346,20 @@ func (m *browseModel) selected() (browseEntry, bool) {
 	return e, ok
 }
 
+// onSelectionChanged refreshes the preview for whatever is now highlighted
+// and, if it's reconnable, jumps its background job to the front of the
+// queue — the point of the preemptive queue is that by the time you've
+// looked at an entry for more than a moment, its recon is either done or
+// next in line, not buried behind everything else in the current directory.
+func (m *browseModel) onSelectionChanged() {
+	m.showPreview()
+	if e, ok := m.selected(); ok {
+		if key, ok := reconKey(e); ok {
+			m.rq.bump(key)
+		}
+	}
+}
+
 // handleClick selects the entry under the pointer; clicking the entry that
 // was already selected activates it (same as pressing enter), matching the
 // usual file-manager convention of a second interaction to open.
@@ -296,7 +374,7 @@ func (m *browseModel) handleClick(ms tea.Mouse) {
 	}
 	already := idx == m.list.Index()
 	m.list.Select(idx)
-	m.showPreview()
+	m.onSelectionChanged()
 	if already {
 		m.descend()
 	}
@@ -308,32 +386,40 @@ func (m *browseModel) handleWheel(ms tea.Mouse) {
 	case tea.MouseWheelDown:
 		if onList {
 			m.list.CursorDown()
-			m.showPreview()
+			m.onSelectionChanged()
 		} else {
 			m.preview.ScrollDown(3)
 		}
 	case tea.MouseWheelUp:
 		if onList {
 			m.list.CursorUp()
-			m.showPreview()
+			m.onSelectionChanged()
 		} else {
 			m.preview.ScrollUp(3)
 		}
 	}
 }
 
-// showPreview sets the preview pane to cheap, always-available info about the
-// highlighted entry — never a full recon (that's 'r', on request: it can mean
-// hashing a multi-GB file).
+// showPreview sets the preview pane for the highlighted entry: the full
+// cached recon report if the background queue has already reached it,
+// otherwise cheap, always-available info (size, type label) plus a note that
+// it's queued. A recon 'r' is actively waiting on owns the pane until it
+// reports back.
 func (m *browseModel) showPreview() {
 	if m.busy != "" {
-		return // a recon in flight owns the preview pane until it reports back
+		return
 	}
 	m.status = ""
 	e, ok := m.selected()
 	if !ok {
 		m.preview.SetContent("")
 		return
+	}
+	if key, ok := reconKey(e); ok {
+		if out, ok := m.rq.get(key); ok {
+			m.preview.SetContent(out)
+			return
+		}
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", cHdr(e.name))
@@ -342,18 +428,41 @@ func (m *browseModel) showPreview() {
 		fmt.Fprintln(&b, "directory")
 	case e.osPath != "":
 		fmt.Fprintf(&b, "%s\n%s\n", humanBytes(e.size), e.label)
-		fmt.Fprintln(&b, "\npress r to recon, enter to open as a container")
+		fmt.Fprintln(&b, "\nrecon queued in the background; r to jump the queue")
 	default:
 		fmt.Fprintf(&b, "%s\n%s\n", humanBytes(e.size), e.label)
 		if e.isContainer {
 			fmt.Fprintln(&b, "\npress enter to open")
 		}
-		fmt.Fprintln(&b, "press r to recon (spooled to a temp file), x to extract")
+		fmt.Fprintln(&b, "recon queued in the background (spooled to a temp file); r to jump the queue, x to extract")
 	}
 	m.preview.SetContent(b.String())
 }
 
 func (m *browseModel) setStatus(s string) { m.status = s }
+
+// enqueueAll preemptively queues every reconnable entry of a freshly built
+// frame, in list order, then bumps whichever one ends up selected (the first
+// one, right after ResetSelected) to the front — so it, at least, starts
+// immediately rather than waiting behind everything else just listed.
+func (m *browseModel) enqueueAll(items []list.Item) {
+	for _, it := range items {
+		e, ok := it.(browseEntry)
+		if !ok {
+			continue
+		}
+		key, ok := reconKey(e)
+		if !ok {
+			continue
+		}
+		m.rq.enqueue(reconJob{key: key, name: e.name, osPath: e.osPath, node: e.node})
+	}
+	if e, ok := m.selected(); ok {
+		if key, ok := reconKey(e); ok {
+			m.rq.bump(key)
+		}
+	}
+}
 
 // pushDirFrame lists an OS directory's entries as the new top frame.
 func (m *browseModel) pushDirFrame(dir string) error {
@@ -381,6 +490,7 @@ func (m *browseModel) pushDirFrame(dir string) error {
 	m.frames = append(m.frames, browseFrame{title: filepath.Base(dir), osDir: dir})
 	m.list.SetItems(items)
 	m.list.ResetSelected()
+	m.enqueueAll(items)
 	m.showPreview()
 	return nil
 }
@@ -408,6 +518,7 @@ func (m *browseModel) pushNodeFrame(n *carve.Node) error {
 	m.frames = append(m.frames, browseFrame{title: title, node: n})
 	m.list.SetItems(items)
 	m.list.ResetSelected()
+	m.enqueueAll(items)
 	m.showPreview()
 	return nil
 }
@@ -473,54 +584,170 @@ func (m *browseModel) rebuildNodeFrame(n *carve.Node) error {
 	return m.pushNodeFrame(n)
 }
 
-// startRecon kicks off 'r' as a background command: the spinner in View
-// animates via spinner.TickMsg while it runs, and reconDoneMsg delivers the
-// report when it's ready. A package member (e.node, no osPath) has no path
-// recon's machinery can open directly — it's spooled to a temp file first,
-// the same bytes 'x' would extract.
+// startRecon handles 'r': if the background queue already finished this
+// entry, show it immediately — no need to wait on anything. Otherwise jump
+// it to the front of the queue (ahead of whatever's merely queued; the job
+// already in flight, if any, still finishes first) and wait, with the
+// spinner in View animating via spinner.TickMsg until reconReadyMsg matches.
 func (m *browseModel) startRecon() tea.Cmd {
 	e, ok := m.selected()
 	if !ok || e.dir {
 		m.setStatus("recon needs a file, not a directory")
 		return nil
 	}
-	if e.osPath == "" && e.node == nil {
+	key, ok := reconKey(e)
+	if !ok {
 		m.setStatus("nothing to recon here")
 		return nil
 	}
+	if out, ok := m.rq.get(key); ok {
+		m.preview.SetContent(out)
+		m.status = "recon: " + e.name
+		return nil
+	}
 	if m.busy != "" {
-		return nil // one recon at a time
+		return nil // already actively waiting on one
 	}
-	m.busy = e.name
-	work := func() tea.Msg {
-		path := e.osPath
-		if path == "" {
-			tmp, cleanup, err := spoolNodeToTemp(e.node)
-			if err != nil {
-				return reconDoneMsg{name: e.name, out: cWarn("[!] spooling for recon: " + err.Error())}
-			}
-			defer cleanup()
-			path = tmp
-		}
-		// recon's progress spinner/bar writes straight to os.Stderr assuming
-		// it owns the terminal; browse already does, via bubbletea's alt
-		// screen, so suppress it here or its redraws corrupt the TUI.
-		prevTTY := stderrIsTTY
-		stderrIsTTY = false
-		out, rerr := captureStdout(func() error { return runFileRecon(path) })
-		stderrIsTTY = prevTTY
-		if rerr != nil {
-			out += "\n" + cWarn("[!] "+rerr.Error())
-		}
-		return reconDoneMsg{name: e.name, out: out}
-	}
-	return tea.Batch(m.spin.Tick, work)
+	m.rq.bump(key)
+	m.busy, m.busyKey = e.name, key
+	return m.spin.Tick
 }
 
-// spoolNodeToTemp writes n's bytes to a temp file under n's own base name
-// (some recon checks match a known filename, e.g. "micom_sw.bin" — a random
-// temp name would silently skip those), so recon sees the same name it would
-// if this were extracted to disk and pointed at directly.
+// reconJob is one entry's recon work: a real OS path, or a package member
+// spooled to a temp file first (see runReconJob).
+type reconJob struct {
+	key, name, osPath string
+	node              *carve.Node
+}
+
+// reconReadyMsg announces that job.key's report is in the cache now.
+type reconReadyMsg struct{ key, name string }
+
+// reconQueue runs recon jobs one at a time in the background, in priority
+// order: bump moves an entry to the front (used when it's highlighted),
+// enqueue appends one at the back (used when a frame is first listed). One
+// worker, deliberately: these can mean hashing or decompressing a multi-GB
+// file, and running many at once would thrash disk/CPU for no benefit — the
+// point of bumping is that whatever you're looking at gets there next, not
+// that everything finishes faster.
+type reconQueue struct {
+	mu        sync.Mutex
+	cond      *sync.Cond
+	pending   []reconJob
+	inflight  string
+	cache     map[string]string
+	ready     chan reconReadyMsg
+	startOnce sync.Once
+}
+
+// newReconQueue only allocates - start() launches the worker. A job's work
+// (runReconJob) swaps the global os.Stdout to capture recon's printed report,
+// and bubbletea's Program.Run reads that same global to find the terminal's
+// real fd during its own startup; starting the worker any earlier races that
+// startup (confirmed with -race: the worker's first job could run, and swap
+// os.Stdout, before Run ever gets to look at it). newBrowseModel runs before
+// Run is called, so it only builds the queue; Init - which bubbletea invokes
+// after the terminal is set up - starts it.
+func newReconQueue() *reconQueue {
+	q := &reconQueue{cache: map[string]string{}, ready: make(chan reconReadyMsg, 32)}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *reconQueue) start() { q.startOnce.Do(func() { go q.run() }) }
+
+func (q *reconQueue) run() {
+	for {
+		job := q.next()
+		out := runReconJob(job)
+		q.mu.Lock()
+		q.cache[job.key] = out
+		q.inflight = ""
+		q.mu.Unlock()
+		q.ready <- reconReadyMsg{key: job.key, name: job.name}
+	}
+}
+
+// next blocks until a job is pending, then claims it.
+func (q *reconQueue) next() reconJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.pending) == 0 {
+		q.cond.Wait()
+	}
+	job := q.pending[0]
+	q.pending = q.pending[1:]
+	q.inflight = job.key
+	return job
+}
+
+func (q *reconQueue) enqueue(job reconJob) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, done := q.cache[job.key]; done || q.inflight == job.key {
+		return
+	}
+	for _, p := range q.pending {
+		if p.key == job.key {
+			return
+		}
+	}
+	q.pending = append(q.pending, job)
+	q.cond.Signal()
+}
+
+// bump moves key to the front of the queue if it's waiting there; a no-op if
+// it's already done, already in flight, or not queued at all (not every
+// list entry is reconnable).
+func (q *reconQueue) bump(key string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i, p := range q.pending {
+		if p.key == key {
+			copy(q.pending[1:i+1], q.pending[:i])
+			q.pending[0] = p
+			return
+		}
+	}
+}
+
+func (q *reconQueue) get(key string) (string, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out, ok := q.cache[key]
+	return out, ok
+}
+
+// runReconJob is the actual work a queue worker (or a direct 'r' wait) does:
+// a package member (node set) has no path recon's own machinery can open, so
+// it's spooled to a temp file first, under its own base name (some recon
+// checks match a known filename, e.g. "micom_sw.bin" - a random temp name
+// would silently skip those) — the same bytes 'x' would extract.
+func runReconJob(job reconJob) string {
+	path := job.osPath
+	if path == "" {
+		tmp, cleanup, err := spoolNodeToTemp(job.node)
+		if err != nil {
+			return cWarn("[!] spooling for recon: " + err.Error())
+		}
+		defer cleanup()
+		path = tmp
+	}
+	// recon's progress spinner/bar writes straight to os.Stderr assuming it
+	// owns the terminal; browse already does, via bubbletea's alt screen, so
+	// suppress it here or its redraws corrupt the TUI. Safe without a lock:
+	// only one job runs at a time (see reconQueue's doc comment).
+	prevTTY := stderrIsTTY
+	stderrIsTTY = false
+	out, rerr := captureStdout(func() error { return runFileRecon(path) })
+	stderrIsTTY = prevTTY
+	if rerr != nil {
+		out += "\n" + cWarn("[!] "+rerr.Error())
+	}
+	return out
+}
+
+// spoolNodeToTemp writes n's bytes to a temp file under n's own base name.
 func spoolNodeToTemp(n *carve.Node) (path string, cleanup func(), err error) {
 	dir, err := os.MkdirTemp("", "unbrick-browse-")
 	if err != nil {
