@@ -275,6 +275,26 @@ func printIdentityFacts(b *facts.Bag, indent string) {
 	}
 }
 
+// addList appends label as its own line when there is more than one item,
+// each item then indented on its own line below it; with 0 or 1 items it's
+// one line like every other field here, not a label with nothing or one
+// orphaned sub-item under it. Several of these facts pack multiple
+// semicolon-joined clauses (modem variants, boot-posture checks, TA
+// references) into one string meant for machine comparison (--why, --learn);
+// splitting only at render time keeps that value intact for those.
+func addList(out *[]string, label string, items []string) {
+	switch len(items) {
+	case 0:
+	case 1:
+		*out = append(*out, fmt.Sprintf("%s: %s", label, items[0]))
+	default:
+		*out = append(*out, label+":")
+		for _, it := range items {
+			*out = append(*out, "  "+it)
+		}
+	}
+}
+
 func identityFactLines(b *facts.Bag) []string {
 	var out []string
 	add := func(format string, a ...any) { out = append(out, fmt.Sprintf(format, a...)) }
@@ -365,9 +385,7 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.GPSFirmware); ok {
 		comp = append(comp, "GPS "+v)
 	}
-	if len(comp) > 0 {
-		add("Components: %s", strings.Join(comp, ", "))
-	}
+	addList(&out, "Components", comp)
 	if v, ok := facts.Get(b, vendor.DeviceTree); ok {
 		add("Device tree: %s", v)
 	}
@@ -375,7 +393,7 @@ func identityFactLines(b *facts.Bag) []string {
 		add("Modem device tree: %s", v)
 	}
 	if v, ok := facts.Get(b, vendor.ModemFirmware); ok {
-		add("Modem firmware: %s", v)
+		addList(&out, "Modem firmware", strings.Split(v, "; "))
 	}
 	if v, ok := facts.Get(b, vendor.KernelVersion); ok {
 		add("Kernel: %s", v)
@@ -390,10 +408,10 @@ func identityFactLines(b *facts.Bag) []string {
 		add("Kernel cmdline: %s", v)
 	}
 	if v, ok := facts.Get(b, vendor.BootPosture); ok {
-		add("Boot posture: %s", v)
+		addList(&out, "Boot posture", strings.Split(v, "; "))
 	}
 	if v, ok := facts.Get(b, vendor.TAReferences); ok {
-		add("LK TA references: %s", v)
+		addList(&out, "LK TA references", strings.Split(v, "; "))
 	}
 	if lock, ok := facts.Get(b, vendor.SubsidyLock); ok {
 		add("Subsidy: %s", b.Show(vendor.SubsidyLock.Name(), lock))

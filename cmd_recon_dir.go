@@ -216,7 +216,14 @@ func briefRecon(out string) string {
 	kinds := map[string]int{}
 	warns := 0
 	inList := false
+	first := true
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		// runFileRecon's own first line is just the filename, already shown
+		// in the caller's "=== name ===" header right above this.
+		if first {
+			first = false
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "  Contents ("):
 			inList = true
