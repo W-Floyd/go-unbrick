@@ -259,6 +259,7 @@ type browseModel struct {
 	showRaw      bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
 	graphics     graphicsProtocol
 	previewImage string // raw escape sequence for the currently previewed image, "" when not showing one - drawn separately in View(), never through m.preview/lipgloss (see showPreview)
+	lastKittyID  int    // most recent Kitty image id transmitted, 0 if none yet - see kittyImageSequence
 	status       string
 	width        int
 	height       int
@@ -839,7 +840,9 @@ func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
 			return "", false
 		}
 		debugImagePreview(e.name, len(raw), bounds, cols, rows)
-		return kittyImageSequence(png, cols, rows), true
+		oldID := m.lastKittyID
+		m.lastKittyID++
+		return kittyImageSequence(png, oldID, m.lastKittyID, cols, rows), true
 	default:
 		return "", false
 	}
@@ -910,26 +913,27 @@ func debugImagePreview(name string, rawLen int, bounds image.Rectangle, cols, ro
 // most this many base64 bytes per escape sequence, continued via m=1/m=0.
 const kittyChunkSize = 4096
 
-// kittyImageID is a fixed Kitty image id: the preview pane only ever shows
-// one image at a time, so there's nothing to distinguish between calls for.
-// Without an id, every a=T (transmit+display) call creates a brand new
-// placement rather than updating one - and View() re-renders (so re-emits
-// this) on every keystroke or spinner tick, not just when the selection
-// changes, which stacked a fresh overlapping copy on every single frame
-// (confirmed live: "duplicated and covering"). Reusing the same id so a
-// retransmit replaces the existing image isn't enough on its own - a
-// transmit's implicit placement and an old one can still coexist as two
-// placements of the same (now-identical) image - so the old placement for
-// this id is explicitly deleted first.
-const kittyImageID = 1
-
-func kittyImageSequence(pngData []byte, cols, rows int) string {
-	// a=d,d=i deletes every placement of image id i without touching other
-	// images; harmless (and cheap - no payload) when there was none.
-	del := ansi.KittyGraphics(nil, "a=d", "d=i", fmt.Sprintf("i=%d", kittyImageID))
-	payload := base64.StdEncoding.EncodeToString(pngData)
+// kittyImageSequence transmits pngData as a new placement under newID,
+// deleting oldID (0 if there wasn't a previous one) first. A FIXED id was
+// tried first (delete-then-retransmit under the same id=1 every time a
+// selection changed) and mostly worked, but left an intermittent,
+// non-deterministic "image overlays the list" that survived verifying
+// every other input byte-for-byte correct (CUP, decoded bounds, c=/r=,
+// chunk framing) across dozens of captures - the one remaining variable
+// was reusing the same id for a rapid delete+retransmit of visually
+// different content, which is exactly the pattern most likely to hit a
+// terminal-side caching assumption tied to image identity. A fresh id per
+// image removes that variable entirely: nothing is ever "the same
+// placement" with different content underneath it.
+func kittyImageSequence(pngData []byte, oldID, newID int, cols, rows int) string {
 	var b strings.Builder
-	b.WriteString(del)
+	if oldID != 0 {
+		// a=d,d=i deletes every placement of image id i without touching
+		// other images; harmless (and cheap - no payload) when there was
+		// none, so this only runs when there's an actual previous id.
+		b.WriteString(ansi.KittyGraphics(nil, "a=d", "d=i", fmt.Sprintf("i=%d", oldID)))
+	}
+	payload := base64.StdEncoding.EncodeToString(pngData)
 	for i := 0; i < len(payload); i += kittyChunkSize {
 		end := min(i+kittyChunkSize, len(payload))
 		more := "0"
@@ -938,7 +942,7 @@ func kittyImageSequence(pngData []byte, cols, rows int) string {
 		}
 		opts := []string{"m=" + more}
 		if i == 0 {
-			opts = []string{"a=T", "f=100", fmt.Sprintf("i=%d", kittyImageID), fmt.Sprintf("c=%d", cols), fmt.Sprintf("r=%d", rows), "m=" + more}
+			opts = []string{"a=T", "f=100", fmt.Sprintf("i=%d", newID), fmt.Sprintf("c=%d", cols), fmt.Sprintf("r=%d", rows), "m=" + more}
 		}
 		b.WriteString(ansi.KittyGraphics([]byte(payload[i:end]), opts...))
 	}
