@@ -235,17 +235,18 @@ type browseFrame struct {
 }
 
 type browseModel struct {
-	frames   []browseFrame
-	list     list.Model
-	preview  viewport.Model
-	spin     spinner.Model
-	rq       *reconQueue
-	skip     []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
-	showRaw  bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
-	graphics graphicsProtocol
-	status   string
-	width    int
-	height   int
+	frames       []browseFrame
+	list         list.Model
+	preview      viewport.Model
+	spin         spinner.Model
+	rq           *reconQueue
+	skip         []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
+	showRaw      bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
+	graphics     graphicsProtocol
+	previewImage string // raw escape sequence for the currently previewed image, "" when not showing one - drawn separately in View(), never through m.preview/lipgloss (see showPreview)
+	status       string
+	width        int
+	height       int
 }
 
 func newBrowseModel(input string, skip []string) (*browseModel, error) {
@@ -401,7 +402,19 @@ func (m *browseModel) View() tea.View {
 		status = strings.Join(m.breadcrumb(), " / ")
 	}
 
-	v := tea.NewView(body + "\n" + m.progressLine() + "\n" + cLabel(status))
+	content := body + "\n" + m.progressLine() + "\n" + cLabel(status)
+	if m.previewImage != "" {
+		// Appended after the rest, not interleaved with it: CUP is an
+		// absolute position, not relative to wherever this string's own
+		// line breaks put the cursor, so where in the stream it's emitted
+		// doesn't matter - only that it's outside anything (lipgloss,
+		// m.preview) that would measure or wrap it as text. Saved/restored
+		// around it so the real cursor ends up wherever the rest of this
+		// content already left it, not mid-image.
+		col := m.listWidth() + 2 // list width + the " " separator + 1 (CUP is 1-indexed)
+		content += ansi.SaveCursor + ansi.CUP(col, 1) + m.previewImage + ansi.RestoreCursor
+	}
+	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	// Without this, bubbletea renders inline below the shell prompt instead
 	// of taking over the screen - the prompt and command line stay visible,
@@ -557,6 +570,12 @@ func (m *browseModel) handleWheel(ms tea.Mouse) {
 // it's running - highlighting it already put it at the front of the queue.
 func (m *browseModel) showPreview() {
 	m.status = ""
+	// Cleared up front, not just in the branches that don't use it: every
+	// return path below is "not showing an image", and View() draws
+	// m.previewImage on top of whatever's there whenever it's non-empty, so
+	// a stale one has to be cleared explicitly rather than just left
+	// unset by the branch that would otherwise set it.
+	m.previewImage = ""
 	e, ok := m.selected()
 	if !ok {
 		m.preview.SetContent("")
@@ -567,17 +586,19 @@ func (m *browseModel) showPreview() {
 	// says so and this falls through to the plain size/type/recon preview
 	// below, same as any other unrecognized format.
 	//
-	// KNOWN BROKEN: confirmed live (iTerm2 protocol, real OSC 1337 sequence
-	// generated correctly) that the sequence does not survive
-	// viewport.Model+lipgloss.JoinHorizontal - neither understands an
-	// OSC/APC graphics sequence as a single zero-width unit, so SoftWrap's
-	// line-wrapping and JoinHorizontal's side-by-side width measurement
-	// both corrupt it before it reaches the terminal. Needs a render path
-	// that bypasses both for this case (Kitty's explicit X/Y cell
-	// positioning is one way) rather than composing through them like text.
+	// It does NOT go through m.preview (a plain text viewport) or
+	// lipgloss.JoinHorizontal in View(): confirmed live that neither
+	// treats an OSC/APC graphics sequence as the atomic zero-width unit it
+	// is - SoftWrap's line-wrapping and JoinHorizontal's side-by-side width
+	// measurement both corrupted it before it reached the terminal, on both
+	// iTerm2 and Ghostty/Kitty. m.previewImage is drawn separately, in
+	// View(), via an absolute cursor position (save/CUP/restore) wrapped
+	// around the raw sequence - outside anything that measures string width
+	// at all.
 	if !e.dir && e.isImage {
 		if out, ok := m.imagePreview(e); ok {
-			m.preview.SetContent(out)
+			m.preview.SetContent("")
+			m.previewImage = out
 			return
 		}
 	}
