@@ -85,3 +85,89 @@ func TestFS(t *testing.T) {
 		t.Error("missing path found")
 	}
 }
+
+// OpenAt reads a file at any offset without reading what precedes it, and
+// agrees with reading it through from the start.
+func TestOpenAt(t *testing.T) {
+	fsys := open(t)
+	whole, err := fs.ReadFile(fsys, "lib/big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra := fsys.OpenAt("lib/big.bin")
+	for _, c := range []struct{ off, n int }{{0, 10}, {4090, 20}, {len(whole) - 7, 7}, {len(whole) / 2, 5000}, {8192, 4096}} {
+		got := make([]byte, c.n)
+		if n, err := ra.ReadAt(got, int64(c.off)); n != c.n || err != nil {
+			t.Fatalf("ReadAt(%d,%d) = %d, %v", c.off, c.n, n, err)
+		}
+		if !bytes.Equal(got, whole[c.off:c.off+c.n]) {
+			t.Errorf("ReadAt(%d,%d) differs from the sequential read", c.off, c.n)
+		}
+	}
+	// Past the end is a short read with io.EOF.
+	got := make([]byte, 10)
+	if n, err := ra.ReadAt(got, int64(len(whole))-4); n != 4 || err != io.EOF {
+		t.Errorf("read across the end: %d, %v", n, err)
+	}
+	// A missing file reports it on the first read, not when handed out.
+	if _, err := fsys.OpenAt("nope").ReadAt(got, 0); err == nil {
+		t.Error("missing file read")
+	}
+}
+
+type countReads struct {
+	io.ReaderAt
+	n int
+}
+
+func (c *countReads) ReadAt(p []byte, off int64) (int, error) {
+	c.n++
+	return c.ReaderAt.ReadAt(p, off)
+}
+
+// A directory is read from the image once: opening more files in it, or in
+// directories below it, does not read it again.
+func TestDirectoriesAreReadOnce(t *testing.T) {
+	f, err := os.Open("testdata/small.ext4.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	z, _ := gzip.NewReader(f)
+	img, _ := io.ReadAll(z)
+	c := &countReads{ReaderAt: bytes.NewReader(img)}
+	fsys, err := Open(c, int64(len(img)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReadFile(fsys, "many/f1.txt"); err != nil { // resolves root and many/
+		t.Fatal(err)
+	}
+	before := c.n
+	for i := 2; i <= 40; i++ {
+		if _, err := fsys.Open(fmt.Sprintf("many/f%d.txt", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Each open still reads its own inode; the two directories on the way are cached.
+	cached := float64(c.n-before) / 39
+	// Control: with the cache emptied before each open, the same opens read
+	// the directories every time, so the cache is what the figure above measures.
+	before = c.n
+	for i := 2; i <= 40; i++ {
+		fsys.dirsMu.Lock()
+		fsys.dirs = nil
+		fsys.dirsMu.Unlock()
+		if _, err := fsys.Open(fmt.Sprintf("many/f%d.txt", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	uncached := float64(c.n-before) / 39
+	t.Logf("image reads per open: %.1f cached, %.1f with the directory cache emptied", cached, uncached)
+	if uncached < cached*1.5 {
+		t.Errorf("emptying the cache did not cost reads (%.1f vs %.1f): the test is not measuring it", uncached, cached)
+	}
+	if cached > 6 {
+		t.Errorf("%.1f image reads per open of a file in a directory already read; want its own inode only", cached)
+	}
+}

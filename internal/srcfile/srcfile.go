@@ -84,12 +84,18 @@ type Member struct {
 
 // entry is one regular file in an archive, however the archive stores it.
 type entry struct {
-	name string
-	size uint64
-	head []byte // prefilled when reading the head again would be costly (tgz)
-	open func() (io.ReadCloser, error)
-	at   io.ReaderAt // the member at random, when its container allows; nil otherwise
-	defl *Deflated
+	name   string
+	size   uint64
+	head   []byte // prefilled when reading the head again would be costly (tgz)
+	open   func() (io.ReadCloser, error)
+	at     io.ReaderAt // the member at random, when its container allows; nil otherwise
+	defl   *Deflated
+	crc    uint32 // the zip directory's checksum, when hasCRC
+	hasCRC bool
+	// srcOff and srcLen are where the member's bytes sit in the archive file
+	// (compressed, for a deflated zip member), when hasSrc.
+	srcOff, srcLen int64
+	hasSrc         bool
 }
 
 // Deflated locates a member stored as a raw deflate stream, for a reader
@@ -117,8 +123,9 @@ func openArchive(path string) (*archive, error) {
 			if f.FileInfo().IsDir() {
 				continue
 			}
-			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open}
+			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open, crc: f.CRC32, hasCRC: true}
 			if off, err := f.DataOffset(); err == nil {
+				e.srcOff, e.srcLen, e.hasSrc = off, int64(f.CompressedSize64), true
 				switch f.Method {
 				case zip.Store:
 					e.at = io.NewSectionReader(zr.Input(), off, int64(f.UncompressedSize64))
@@ -168,7 +175,8 @@ func openTar(path string) (*archive, error) {
 			return nil, err
 		}
 		sr := io.NewSectionReader(f, off, hdr.Size)
-		a.entries = append(a.entries, entry{name: filepath.ToSlash(filepath.Clean(hdr.Name)), size: uint64(hdr.Size), at: sr, // "./x" would never match a cleaned lookup path
+		a.entries = append(a.entries, entry{name: filepath.ToSlash(filepath.Clean(hdr.Name)), size: uint64(hdr.Size), at: sr,
+			srcOff: off, srcLen: hdr.Size, hasSrc: true, // "./x" would never match a cleaned lookup path
 			open: func() (io.ReadCloser, error) { return io.NopCloser(io.NewSectionReader(sr, 0, sr.Size())), nil }})
 	}
 }
@@ -247,6 +255,14 @@ type Entry struct {
 	At io.ReaderAt
 	// Deflate is set for a deflated zip member.
 	Deflate *Deflated
+	// CRC32 is the checksum the zip directory states for the member, valid
+	// when HasCRC.
+	CRC32  uint32
+	HasCRC bool
+	// SrcOff and SrcLen are where the member's bytes sit in the archive file
+	// (compressed, for a deflated zip member), when HasSrc.
+	SrcOff, SrcLen int64
+	HasSrc         bool
 }
 
 // Entries lists path's members for reading, which stays possible until close.
@@ -261,7 +277,8 @@ func Entries(path string) ([]Entry, io.Closer, error) {
 	}
 	out := make([]Entry, 0, len(a.entries))
 	for _, e := range a.entries {
-		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at, Deflate: e.defl})
+		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at, Deflate: e.defl, CRC32: e.crc, HasCRC: e.hasCRC,
+			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc})
 	}
 	return out, closerFunc(a.close), nil
 }

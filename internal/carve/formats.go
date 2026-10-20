@@ -5,7 +5,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -44,7 +46,7 @@ func init() {
 		Expander{Kind: "archive", Match: func(n *Node, _ []byte) bool { return n.path != "" && srcfile.IsArchive(n.path) }, Expand: expandInput},
 		Expander{Kind: "zip", Match: kind(filetype.Zip), Expand: expandZip},
 		// Before tar: a deflated one is entered mid-stream, not buffered whole.
-		Expander{Kind: "tar", Match: func(n *Node, h []byte) bool { return n.defl != nil && filetype.Detect(h) == filetype.Tar }, Expand: expandDeflatedTar},
+		Expander{Kind: "tar", Match: func(n *Node, h []byte) bool { return filetype.Detect(h) == filetype.Tar && n.deflated() != nil }, Expand: expandDeflatedTar},
 		Expander{Kind: "tar", Match: kind(filetype.Tar), Expand: expandTar},
 		// Before gzip: a boot image's ramdisk is often gzip, and is a cpio.
 		Expander{Kind: "ramdisk", Match: isRamdisk, Expand: expandRamdisk},
@@ -71,19 +73,22 @@ func init() {
 // version, then little-endian dexOffset and dexLength) bounds the DEX, which
 // is followed by the dependency and optimization tables.
 func expandODEX(n *Node) ([]*Node, error) {
-	b, err := n.Bytes()
+	// The header says where the dex sits; the rest of the file is read only if
+	// someone reads the dex.
+	ra, err := n.ReaderAt()
 	if err != nil {
 		return nil, err
 	}
-	if len(b) < 16 {
+	var h [16]byte
+	if _, err := ra.ReadAt(h[:], 0); err != nil {
 		return nil, fmt.Errorf("odex: truncated header")
 	}
-	off, size := int(binary.LittleEndian.Uint32(b[8:])), int(binary.LittleEndian.Uint32(b[12:]))
-	if off < 0 || size < 0 || off+size > len(b) {
+	off, size := int64(binary.LittleEndian.Uint32(h[8:])), int64(binary.LittleEndian.Uint32(h[12:]))
+	if off+size > n.Size {
 		return nil, fmt.Errorf("odex: dex range [%d:%d] runs past the file", off, off+size)
 	}
 	name := strings.TrimSuffix(path.Base(n.Name), path.Ext(n.Name)) + ".dex"
-	return []*Node{FromBytes(name, b[off:off+size])}, nil
+	return []*Node{FromReaderAt(name, io.NewSectionReader(ra, off, size), size)}, nil
 }
 
 // expandQCDT lists the device trees of a Qualcomm DT table, named by the board
@@ -151,7 +156,13 @@ func walkFS(img fs.FS) ([]*Node, error) {
 		if err != nil {
 			return nil
 		}
-		out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
+		if ra, ok := img.(interface{ OpenAt(string) io.ReaderAt }); ok {
+			// A filesystem that reads files at random hands them out that way, so
+			// a zip's directory is read without the rest of it.
+			out = append(out, FromReaderAt(p, ra.OpenAt(p), info.Size()))
+		} else {
+			out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
+		}
 		if strings.EqualFold(path.Ext(p), ".mdt") {
 			head, err := fs.ReadFile(img, p)
 			if err != nil {
@@ -206,13 +217,20 @@ func expandInput(n *Node) ([]*Node, error) {
 	}
 	var out []*Node
 	for _, e := range es {
+		var k *Node
 		if e.At != nil {
-			out = append(out, FromReaderAt(e.Name, e.At, int64(e.Size)))
+			k = FromReaderAt(e.Name, e.At, int64(e.Size))
 		} else {
-			k := FromStream(e.Name, int64(e.Size), e.Open)
+			k = FromStream(e.Name, int64(e.Size), e.Open)
 			k.defl = e.Deflate
-			out = append(out, k)
 		}
+		if e.HasCRC {
+			withClaim(k, "crc32", fmt.Sprintf("%08x", e.CRC32), int64(e.Size))
+		}
+		if e.HasSrc {
+			k.src = &source{path: n.path, off: e.SrcOff, length: e.SrcLen}
+		}
+		out = append(out, k)
 	}
 	return joinSuperChunks(out), nil
 }
@@ -231,24 +249,62 @@ func expandZip(n *Node) ([]*Node, error) {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		if off, err := f.DataOffset(); err == nil && f.Method == zip.Store {
-			out = append(out, FromReaderAt(f.Name, io.NewSectionReader(ra, off, int64(f.UncompressedSize64)), int64(f.UncompressedSize64)))
+		crc := fmt.Sprintf("%08x", f.CRC32)
+		size := int64(f.UncompressedSize64)
+		// Where a member's data starts is in its local header, a read of its own:
+		// done when the member is read, not once per member of every zip listed.
+		if f.Method == zip.Store {
+			out = append(out, withClaim(FromReaderAt(f.Name, &zipStored{f: f, ra: ra, size: size}, size), "crc32", crc, size))
 			continue
 		}
 		open := func() (io.ReadCloser, error) { return f.Open() }
-		k := FromStream(f.Name, int64(f.UncompressedSize64), open)
-		if off, err := f.DataOffset(); err == nil && f.Method == zip.Deflate {
-			k.defl = &srcfile.Deflated{R: ra, Start: off, End: off + int64(f.CompressedSize64)}
+		k := FromStream(f.Name, size, open)
+		if f.Method == zip.Deflate {
+			k.deflFn = func() *srcfile.Deflated {
+				off, err := f.DataOffset()
+				if err != nil {
+					return nil
+				}
+				return &srcfile.Deflated{R: ra, Start: off, End: off + int64(f.CompressedSize64)}
+			}
 		}
-		out = append(out, k)
+		out = append(out, withClaim(k, "crc32", crc, size))
 	}
 	return joinSuperChunks(out), nil
+}
+
+// zipStored reads a stored zip member at random, finding where its data starts
+// on first use.
+type zipStored struct {
+	f    *zip.File
+	ra   io.ReaderAt
+	size int64
+
+	once sync.Once
+	sec  io.ReaderAt
+	err  error
+}
+
+func (z *zipStored) ReadAt(p []byte, off int64) (int, error) {
+	z.once.Do(func() {
+		start, err := z.f.DataOffset()
+		if err != nil {
+			z.err = err
+			return
+		}
+		z.sec = io.NewSectionReader(z.ra, start, z.size)
+	})
+	if z.err != nil {
+		return 0, z.err
+	}
+	return z.sec.ReadAt(p, off)
 }
 
 // expandDeflatedTar lists a tar held deflated in a zip without decoding it
 // through: an Odin .tar.md5 is gigabytes of lz4 images.
 func expandDeflatedTar(n *Node) ([]*Node, error) {
-	a, err := tgzseek.OpenDeflate(n.defl.R, n.defl.Start, n.defl.End, n.Size)
+	d := n.deflated()
+	a, err := tgzseek.OpenDeflate(d.R, d.Start, d.End, n.Size)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +413,12 @@ func expandPayload(n *Node) ([]*Node, error) {
 		if err != nil {
 			continue // a delta partition, which needs the old image to apply
 		}
-		out = append(out, FromReaderAt(name, pra, size))
+		k := FromReaderAt(name, pra, size)
+		// The manifest states the SHA-256 of the partition as installed.
+		if info := p.Partition(name).GetNewPartitionInfo(); len(info.GetHash()) == sha256.Size && int64(info.GetSize()) == size {
+			withClaim(k, "sha256", hex.EncodeToString(info.GetHash()), size)
+		}
+		out = append(out, k)
 	}
 	return out, nil
 }

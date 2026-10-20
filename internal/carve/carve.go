@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
@@ -44,7 +45,11 @@ type Node struct {
 	at     io.ReaderAt
 	stream func() (io.ReadCloser, error)
 	path   string // the input itself, for the root
+	id     string // names the content for caching; "" when it cannot be
+	claim  *Claim // what the container says this member digests to
+	src    *source
 	defl   *srcfile.Deflated
+	deflFn func() *srcfile.Deflated // finds defl on demand
 
 	once    sync.Once
 	partial string
@@ -67,7 +72,7 @@ func Open(p string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{Name: infile.Base(p), Size: f.Size(), at: f, path: p}
+	n := &Node{Name: infile.Base(p), Size: f.Size(), at: f, path: p, id: infile.Identity(p)}
 	roots.m[p] = n
 	return n, nil
 }
@@ -98,6 +103,61 @@ func (n *Node) RandomAccess() bool { return n.at != nil }
 // Partial says why n's children may not be all of them, once expanded; ""
 // when they are.
 func (n *Node) Partial() string { return n.partial }
+
+// OnExpand, when set, is told how long each container took to list its
+// members. For profiling.
+var OnExpand func(kind, name string, d time.Duration)
+
+// deflated locates n as a raw deflate stream inside its container, or nil. It
+// may cost a read, so it is asked for only once n looks like what needs it.
+func (n *Node) deflated() *srcfile.Deflated {
+	if n.defl == nil && n.deflFn != nil {
+		n.defl = n.deflFn()
+		n.deflFn = nil
+	}
+	return n.defl
+}
+
+// Source says where n's bytes sit in a file read by path: the whole input for a
+// root, or the range of an archive member stored in it as-is (a tar member, a
+// zip member, compressed or not). ok is false for anything derived, which has
+// no range of its own to fetch.
+func (n *Node) Source() (path string, off, length int64, ok bool) {
+	if n.src != nil {
+		return n.src.path, n.src.off, n.src.length, true
+	}
+	if n.path != "" {
+		return n.path, 0, n.Size, n.Size >= 0
+	}
+	return "", 0, 0, false
+}
+
+type source struct {
+	path        string
+	off, length int64
+}
+
+// Claim is a digest a container states for one of its members, readable
+// without reading the member: a zip directory's CRC32, an OTA manifest's
+// partition SHA-256. Unverified; whoever relies on it decides when to.
+type Claim struct {
+	Algo string // "crc32", "sha256": names understood by vendor.HasherFor
+	Sum  string // lowercase hex
+	Size int64  // the size the digest covers
+}
+
+// Claim is the digest n's container states for it, or nil.
+func (n *Node) Claim() *Claim { return n.claim }
+
+func withClaim(n *Node, algo, sum string, size int64) *Node {
+	n.claim = &Claim{Algo: algo, Sum: sum, Size: size}
+	return n
+}
+
+// ID names n's content for caching: the root's location, size and mtime, then
+// the member names down to n. "" when unknown (a directory, or an input whose
+// identity could not be read).
+func (n *Node) ID() string { return n.id }
 
 // Path is the input path the root was opened from; "" below the root.
 func (n *Node) Path() string { return n.path }
@@ -244,7 +304,18 @@ func (n *Node) Children() (kind string, kids []*Node, err error) {
 			return
 		}
 		n.kind = e.Kind
+		start := time.Now()
 		n.kids, n.err = e.Expand(n)
+		if OnExpand != nil {
+			OnExpand(e.Kind, n.Name, time.Since(start))
+		}
+		if n.id != "" {
+			for _, k := range n.kids {
+				if k.id == "" {
+					k.id = n.id + "\x00" + k.Name
+				}
+			}
+		}
 	})
 	return n.kind, n.kids, n.err
 }

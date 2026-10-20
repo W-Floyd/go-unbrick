@@ -11,6 +11,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	ext4 "github.com/W-Floyd/go-ext4"
@@ -27,6 +28,13 @@ type FS struct {
 	ra   io.ReaderAt
 	size int64
 	bgdl *ext4.BlockGroupDescriptorList
+
+	// dirs caches each directory's entries by inode. Resolving a path reads
+	// every directory along it, so without this each open of a file in a large
+	// directory re-reads that directory from the image, which on a remote disk
+	// is the cost of a seek per block.
+	dirsMu sync.Mutex
+	dirs   map[int][]entry
 }
 
 // Open reads the superblock and group descriptors of the image at ra.
@@ -129,6 +137,12 @@ type entry struct {
 }
 
 func (f *FS) entries(n int) ([]entry, error) {
+	f.dirsMu.Lock()
+	if es, ok := f.dirs[n]; ok {
+		f.dirsMu.Unlock()
+		return es, nil
+	}
+	f.dirsMu.Unlock()
 	in, r, err := f.inode(n)
 	if err != nil {
 		return nil, err
@@ -138,7 +152,7 @@ func (f *FS) entries(n int) ([]entry, error) {
 	for {
 		de, err := db.Next()
 		if err == io.EOF {
-			return out, nil
+			break
 		}
 		if err != nil {
 			return nil, err
@@ -147,6 +161,13 @@ func (f *FS) entries(n int) ([]entry, error) {
 			out = append(out, entry{name, int(de.Data().Inode), de.IsDirectory(), de.IsRegular()})
 		}
 	}
+	f.dirsMu.Lock()
+	if f.dirs == nil {
+		f.dirs = map[int][]entry{}
+	}
+	f.dirs[n] = out
+	f.dirsMu.Unlock()
+	return out, nil
 }
 
 // lookup resolves name to its entry, the root being a directory.
@@ -196,7 +217,36 @@ func (f *FS) Open(name string) (fs.File, error) {
 	if e.dir {
 		return &dirFile{fs: f, e: e, info: info}, nil
 	}
-	return &file{info: info, r: ext4.NewInodeReader(ext4.NewExtentNavigatorWithReadSeeker(r, in))}, nil
+	en := ext4.NewExtentNavigatorWithReadSeeker(r, in)
+	return &file{info: info, r: ext4.NewInodeReader(en), en: en}, nil
+}
+
+// OpenAt is a regular file read at random. Nothing is looked up until the
+// first read, so offering one per file of a large image costs nothing.
+func (f *FS) OpenAt(name string) io.ReaderAt { return &lazyFile{fs: f, name: name} }
+
+type lazyFile struct {
+	fs   *FS
+	name string
+	once sync.Once
+	f    *file
+	err  error
+}
+
+func (l *lazyFile) ReadAt(p []byte, off int64) (int, error) {
+	l.once.Do(func() {
+		var of fs.File
+		if of, l.err = l.fs.Open(l.name); l.err == nil {
+			var ok bool
+			if l.f, ok = of.(*file); !ok {
+				l.err = &fs.PathError{Op: "open", Path: l.name, Err: errors.New("not a regular file")}
+			}
+		}
+	})
+	if l.err != nil {
+		return 0, l.err
+	}
+	return l.f.ReadAt(p, off)
 }
 
 func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
@@ -228,7 +278,30 @@ func (f *FS) readDir(e entry) ([]fs.DirEntry, error) {
 type file struct {
 	info fileInfo
 	r    io.Reader
+	en   *ext4.ExtentNavigator // for ReadAt, which does not move r
 	read int64
+}
+
+// ReadAt reads at an offset by mapping each filesystem block through the
+// extent tree, so reading the end of a large file costs the end, not the file.
+func (f *file) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for n < len(p) && off < f.info.size {
+		data, err := f.en.Read(uint64(off))
+		if err != nil {
+			return n, err
+		}
+		if len(data) == 0 {
+			break
+		}
+		c := copy(p[n:], data)
+		n += c
+		off += int64(c)
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 func (f *file) Stat() (fs.FileInfo, error) { return f.info, nil }
