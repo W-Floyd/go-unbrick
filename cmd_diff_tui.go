@@ -444,9 +444,13 @@ func (m *diffTUI) describeContainer(it diffItem) string {
 	b.WriteString(styDim.Render(fmt.Sprintf("A %s    B %s", humanBytes(it.e.SizeA), humanBytes(it.e.SizeB))) + "\n\n")
 	if it.summary != "" {
 		b.WriteString("Inside it: " + it.summary + "\n\n" + styDim.Render("enter or l to go in") + "\n")
-	} else {
+	} else if it.e.Compared || it.kind == '>' {
 		b.WriteString("Nothing inside it differs: its members are all the same.\n\n" +
 			styDim.Render("enter or l to list its members") + "\n")
+	} else {
+		// The depth ran out before its members were looked at: say so, not that they match.
+		b.WriteString("Its members were not compared: the depth ran out first.\n\n" +
+			styDim.Render("enter or l to list them, comparing them now") + "\n")
 	}
 	b.WriteString("\n" + styDim.Render(fmt.Sprintf("3 shows how much of the container's own bytes are shared; that reads the first %s of each.", humanBytes(m.limit))) + "\n")
 	return b.String()
@@ -1008,7 +1012,7 @@ func (m *diffTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		// Whether the level was still being listed is read before the snapshot, as
 		// with the comparison: a snapshot taken after that point is all of it.
-		wasBusy := m.busy()
+		wasBusy := m.busy() || m.run.Working()
 		cmd := m.syncLines()
 		if m.complete && !wasBusy {
 			m.ticking = false
@@ -1177,6 +1181,19 @@ func (m *diffTUI) key(k string) (tea.Model, tea.Cmd) {
 	case "d":
 		m.words = !m.words
 		return m, m.refresh()
+	case "D":
+		// One container level deeper: the pairs it stopped at have their members
+		// compared now, and show up in the list as they are found.
+		n, err := m.run.Deepen()
+		switch {
+		case err != nil:
+			m.note = "deeper: " + err.Error()
+		case n == 0:
+			m.note = fmt.Sprintf("depth %d: nothing left to compare deeper", m.run.Depth())
+		default:
+			m.note = fmt.Sprintf("depth %d: comparing %d more…", m.run.Depth(), n)
+		}
+		return m, tea.Batch(m.syncLines(), m.ensureTick())
 	case "x":
 		m.hexMore = !m.hexMore
 		m.mode = modeHex
@@ -1271,7 +1288,10 @@ func (m *diffTUI) View() tea.View {
 		where = m.note
 	}
 	crumb := padToWidth(styMid.Render(where), m.width)
-	foot := padToWidth(styDim.Render("j/k move  enter/l in  h/⌫ out  tab view  w wrap  d words  f more  x hex+  y copy  q quit")+status, m.width)
+	// The status is what changes, so the key hints give way to it, not the reverse.
+	hints := "j/k move  enter/l in  h out  tab view  w wrap  d words  y copy  D deeper  f more  x hex  q quit   "
+	hints = ansi.Truncate(hints, max(m.width-ansi.StringWidth(status)-1, 0), "…")
+	foot := padToWidth(styDim.Render(hints)+status, m.width)
 	v := tea.NewView(head + "\n" + strings.TrimRight(body.String(), "\n") + "\n" + crumb + "\n" + foot)
 	v.AltScreen = true
 	// Wheel and click. (It is also what stops the terminal's own text selection,

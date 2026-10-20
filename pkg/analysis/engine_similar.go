@@ -207,6 +207,7 @@ func (t *treeDiffTally) descend(g, f *diffEnt) {
 	}
 	live(func() {
 		g.line.subT, g.line.sub = nil, sub.lines
+		g.line.compared = true
 		if same {
 			g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
 			g.line.kind = '>'
@@ -275,6 +276,7 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 		t.trusted += sub.trusted
 		live(func() {
 			line.subT = nil
+			line.compared = true
 			line.text = fmt.Sprintf("%s~ %-48s %10s -> %s  (members identical; container bytes differ)", indent, path, size(x), size(y))
 		})
 	case sub.differences() == 0:
@@ -282,6 +284,7 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 		t.trusted += sub.trusted
 		live(func() {
 			line.subT = nil
+			line.compared = true
 			if verbose {
 				line.kind, line.text = '=', fmt.Sprintf("%s= %-48s %10s", indent, path, size(x))
 			} else {
@@ -293,6 +296,7 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 		t.merge(sub)
 		live(func() {
 			line.subT, line.sub = nil, sub.lines
+			line.compared = true
 			line.text = fmt.Sprintf("%s~ %-48s %10s -> %s", indent, path, size(x), size(y))
 		})
 	}

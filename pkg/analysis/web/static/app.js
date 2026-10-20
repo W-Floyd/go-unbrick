@@ -20,6 +20,7 @@ function app() {
     words: store.get('words', true),
     hexMore: false,
     loading: false,
+    deepenNote: '',
     loadInfo: null, // how far the read of the entry on screen has got: {read, total}
     _seq: 0,
     _curSig: '',
@@ -28,8 +29,49 @@ function app() {
     async init() {
       this.$watch('wrap', (v) => store.set('wrap', v));
       this.$watch('words', (v) => store.set('words', v));
+      // The place on screen lives in the URL fragment, in the text form of the Go
+      // library's analysis.Location (analysis.ParseLocation reads it), so a link
+      // opens the same level, entry and view, and back/forward move through levels.
+      this.fromFragment(location.hash);
+      this._urlPath = this.path.join('\0');
+      for (const k of ['path', 'sel', 'view', 'words']) this.$watch(k, () => this.toFragment());
+      window.addEventListener('popstate', () => this.restore());
       await this.poll();
       this._timer = setInterval(() => this.poll(), 700);
+    },
+
+    // fragment is the location in analysis.Location's text form:
+    // p=<level>&p=...&sel=<entry>&view=<view>&words=0
+    fragment() {
+      const u = new URLSearchParams();
+      for (const p of this.path) u.append('p', p);
+      if (this.sel) u.set('sel', this.sel);
+      if (this.view !== 'auto') u.set('view', this.view);
+      if (!this.words) u.set('words', '0');
+      return u.toString();
+    },
+    fromFragment(h) {
+      const u = new URLSearchParams(h.replace(/^[#?]/, ''));
+      this.path = u.getAll('p');
+      this.sel = u.get('sel') || '';
+      this._wantSel = !!this.sel; // kept while the comparison has not found it yet
+      this.view = this.views.includes(u.get('view')) ? u.get('view') : 'auto';
+      if (u.get('words') === '0') this.words = false;
+    },
+    toFragment() {
+      const f = this.fragment();
+      const h = f ? '#' + f : '';
+      if (h === location.hash || (!h && !location.hash)) return;
+      const here = this.path.join('\0');
+      // A new level is a step back can return to; a selection or a view is not.
+      history[here !== this._urlPath ? 'pushState' : 'replaceState'](null, '', location.pathname + location.search + h);
+      this._urlPath = here;
+    },
+    async restore() {
+      this.fromFragment(location.hash);
+      this._urlPath = this.path.join('\0');
+      this.cur = null; this._curSig = ''; this.loadInfo = null;
+      try { await this.loadLevel(); } catch (e) { /* not there (yet) */ }
     },
 
     async get(url) {
@@ -44,16 +86,23 @@ function app() {
         this.state = await this.get('api/state');
         document.title = (this.state.title || 'Diff') + (this.state.finished ? '' : ' …');
         await this.loadLevel();
-      } catch (e) { /* the server is gone, or the level no longer exists: keep what is shown */ }
+      } catch (e) {
+        // The server is gone, or the level is not there: while the comparison runs it
+        // may yet be found; once finished, a place that does not exist is the top.
+        if (this.state.finished && this.path.length) { this.path = []; this.sel = ''; this._wantSel = false; this._curSig = ''; this.cur = null; }
+      }
     },
 
     async loadLevel() {
       const lv = await this.get('api/level?' + q(this.path.map((p) => ['p', p])));
       this.level = { title: lv.title, busy: lv.busy };
       this.entries = lv.entries;
-      if (!this.sel || !this.entries.some((e) => e.name === this.sel)) {
+      if (!this.entries.some((e) => e.name === this.sel)) {
+        // A selection from the URL waits for the comparison to find it.
+        if (this._wantSel && this.sel && !this.state.finished) { this.cur = null; return; }
         this.sel = this.entries.length ? this.entries[0].name : '';
       }
+      this._wantSel = false;
       const e = this.entries.find((e) => e.name === this.sel);
       // The entry on screen is read again only when it has become something else.
       const sig = e ? [e.kind, e.pending, e.hasKids, e.summary, e.sizeNote].join('|') : '';
@@ -117,6 +166,21 @@ function app() {
     async goTo(n) { while (this.path.length > n) await this.up(); },
     setView(v) { this.view = v; return this.reload(); },
 
+    // deeper compares one more container level: the pairs the first pass stopped at
+    // have their members compared now, and appear in the list as they are found.
+    async deeper() {
+      this.deepenNote = '';
+      try {
+        const r = await fetch('api/deepen', { method: 'POST' });
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        this.deepenNote = d.started ? 'comparing ' + d.started + ' more…' : 'nothing left to compare deeper';
+        await this.poll();
+      } catch (e) {
+        this.deepenNote = String(e.message || e).trim();
+      }
+    },
+
     key(ev) {
       if (ev.target.closest('input,textarea') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
       const i = this.entries.findIndex((e) => e.name === this.sel);
@@ -128,6 +192,7 @@ function app() {
         case 'h': case 'ArrowLeft': case 'Backspace': this.up(); break;
         case '1': case '2': case '3': case '4': this.setView(this.views[+ev.key - 1]); break;
         case 'w': this.wrap = !this.wrap; break;
+        case 'D': this.deeper(); break;
         case 'd': this.words = !this.words; this.reload(); break;
         case 'x': this.hexMore = !this.hexMore; this.setView('hex'); break;
         default: return;

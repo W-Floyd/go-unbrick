@@ -65,3 +65,5 @@ button.open:hover { background: var(--sel); }
 .reading { padding: 24px 4px; max-width: 520px; }
 .meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--mid); transition: width .3s; }
+.depth { display: inline-flex; gap: 8px; align-items: baseline; }
+button.open:disabled { opacity: .5; cursor: default; }

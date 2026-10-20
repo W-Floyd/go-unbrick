@@ -88,6 +88,12 @@ type Run struct {
 	summary string
 	err     error
 	done    chan struct{} // closed when the comparison has finished, successfully or not
+
+	depth     int        // container levels compared into: Config.Depth, and Deepen's
+	xmu       sync.Mutex // one expansion at a time (the disks underneath are not safe for more)
+	rootLevel *Level
+	lmu       sync.Mutex
+	levels    map[string]*Level // opened by LevelAt, by path
 }
 
 func newRun() *Run { return &Run{done: make(chan struct{})} }
@@ -115,6 +121,7 @@ func Start(cfg Config) *Run {
 	apply(cfg)
 	diffQuiet = true // the front end draws the progress itself
 	r := newRun()
+	r.depth = cfg.Depth
 	go func() {
 		defer close(r.done)
 		if cfg.Member != "" { // one file out of each, not the trees
@@ -204,14 +211,18 @@ func PairNodes(pathA, pathB, member string) (a, b *carve.Node, name string, err 
 // paths, or ".." back up. It is a copy, taken under the lock the comparison
 // writes under, so it is safe to keep and compare.
 type Entry struct {
-	Name     string `json:"name"` // as listed in its level: "notes.txt", "sub/", "pkg.tar/" (it has something inside), ".."
-	Path     string `json:"path"`
-	Kind     Kind   `json:"kind"`
-	Pending  bool   `json:"pending"`           // its inside is still being compared
-	HasKids  bool   `json:"hasKids"`           // there is somewhere to go in: a directory, or a container with differences inside
-	Summary  string `json:"summary,omitempty"` // for a directory or container: what is under it
-	Text     string `json:"text,omitempty"`    // for a note: the message
-	SizeA    int64  `json:"sizeA"`             // -1 for a side with no file
+	Name    string `json:"name"` // as listed in its level: "notes.txt", "sub/", "pkg.tar/" (it has something inside), ".."
+	Path    string `json:"path"`
+	Kind    Kind   `json:"kind"`
+	Pending bool   `json:"pending"`           // its inside is still being compared
+	HasKids bool   `json:"hasKids"`           // there is somewhere to go in: a directory, or a container with differences inside
+	Summary string `json:"summary,omitempty"` // for a directory or container: what is under it
+	// Compared says, for a container, that its members were compared: no differences
+	// listed inside it means they are the same. Without it the depth ran out first, and
+	// nothing is known of its members until they are listed (Open does).
+	Compared bool   `json:"compared"`
+	Text     string `json:"text,omitempty"` // for a note: the message
+	SizeA    int64  `json:"sizeA"`          // -1 for a side with no file
 	SizeB    int64  `json:"sizeB"`
 	SizeNote string `json:"sizeNote,omitempty"` // the sizes as a row shows them: "1.0 KiB -> 2.0 KiB"
 
@@ -251,12 +262,17 @@ type Level struct {
 
 // Root is the top level: what differs between the two inputs.
 func (r *Run) Root() *Level {
-	return &Level{source: func(root *treeDiffTally) []*diffLine {
-		if root == nil {
-			return nil
-		}
-		return root.lines
-	}}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rootLevel == nil {
+		r.rootLevel = &Level{source: func(root *treeDiffTally) []*diffLine {
+			if root == nil {
+				return nil
+			}
+			return root.lines
+		}}
+	}
+	return r.rootLevel
 }
 
 // Title names the level.
@@ -364,7 +380,7 @@ func snapshotLevel(root *treeDiffTally, f *Level, up bool) []Entry {
 			name += "/"
 		}
 		e := Entry{Name: name, Path: l.path, Kind: kind, Pending: l.subT != nil, HasKids: kids,
-			SizeA: nodeSize(l.a), SizeB: nodeSize(l.b), SizeNote: sizeNote(kind, l.a, l.b), src: l, a: l.a, b: l.b}
+			SizeA: nodeSize(l.a), SizeB: nodeSize(l.b), SizeNote: sizeNote(kind, l.a, l.b), Compared: l.compared, src: l, a: l.a, b: l.b}
 		if kids { // what was found inside it, for its pane
 			e.Summary = summarise(counts)
 		}
@@ -397,6 +413,9 @@ func summarise(counts map[Kind]int) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// ErrNoSuchEntry is the answer for a name a level does not have.
+var ErrNoSuchEntry = errors.New("no such entry")
 
 // ErrNothingInside is Open's answer for an entry with nowhere to go.
 var ErrNothingInside = errors.New("nothing inside it differs")

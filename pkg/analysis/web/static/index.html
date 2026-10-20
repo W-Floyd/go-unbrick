@@ -12,9 +12,14 @@
 <header>
   <strong x-text="state.title || 'Comparing'"></strong>
   <span class="summary" x-text="state.summary"></span>
-  <span class="status" x-show="!state.finished || level.busy">
+  <span class="depth" x-show="state.finished">
+    <span class="dim" x-text="'depth ' + state.depth"></span>
+    <button class="open" :disabled="state.working" @click="deeper()" title="compare the containers the comparison stopped at, one level further">compare deeper</button>
+    <span class="dim" x-show="deepenNote" x-text="deepenNote"></span>
+  </span>
+  <span class="status" x-show="!state.finished || level.busy || state.working">
     <span class="spin"></span>
-    <span x-text="state.finished ? 'listing its members…' : (state.status ? 'comparing: ' + state.status : 'opening…')"></span>
+    <span x-text="state.finished ? (state.working ? 'comparing one level deeper…' : 'listing its members…') : (state.status ? 'comparing: ' + state.status : 'opening…')"></span>
   </span>
   <span class="err" x-show="state.err" x-text="'error: ' + state.err"></span>
 </header>
@@ -79,7 +84,8 @@
           <template x-if="cur.container">
             <div>
               <template x-if="cur.entry.summary"><p>Inside it: <span x-text="cur.entry.summary"></span></p></template>
-              <template x-if="!cur.entry.summary"><p>Nothing inside it differs: its members are all the same.</p></template>
+              <template x-if="!cur.entry.summary && (cur.entry.compared || cur.entry.kind === 'renamed')"><p>Nothing inside it differs: its members are all the same.</p></template>
+              <template x-if="!cur.entry.summary && !cur.entry.compared && cur.entry.kind !== 'renamed'"><p>Its members were not compared: the depth ran out first. List them to compare them now.</p></template>
               <button class="open" @click="open(cur.entry)" x-text="cur.entry.hasKids ? 'go in' : 'list its members'"></button>
               <template x-if="cur.container.headers">
                 <div>
@@ -202,6 +208,6 @@
     </div>
   </section>
 </main>
-<footer class="dim">j/k move · Enter/l in · h/Backspace out · 1–4 views · w wrap · d words · x more hex</footer>
+<footer class="dim">j/k move · Enter/l in · h/Backspace out · 1–4 views · w wrap · d words · D deeper · x more hex</footer>
 </body>
 </html>

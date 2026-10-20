@@ -217,3 +217,68 @@ func TestOneSideAndDirectoryEntries(t *testing.T) {
 		t.Errorf("a directory: %v", d)
 	}
 }
+
+// Two containers whose members were never compared (the depth ran out) must not
+// read as "nothing inside differs": Compared says which it is.
+func TestComparedSaysWhetherTheMembersWereLookedAt(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write(t, a, "pkg_v1.tar", mkTar(time.Unix(1_700_000_000, 0), "x", "one", "gone", "g"))
+	write(t, b, "pkg_v2.tar", mkTar(time.Unix(1_700_000_000, 0), "x", "two", "new", "n"))
+	for depth, want := range map[int]bool{1: false, 3: true} {
+		run := analysis.Start(analysis.Config{A: a, B: b, Depth: depth})
+		<-run.Done()
+		es := run.Entries(run.Root(), false)
+		if len(es) != 1 {
+			t.Fatalf("depth %d: %d entries", depth, len(es))
+		}
+		e := es[0]
+		if e.Kind != analysis.RenamedChanged || e.Compared != want {
+			t.Errorf("depth %d: kind %v compared %v, want %v", depth, e.Kind, e.Compared, want)
+		}
+		if want && e.Summary == "" {
+			t.Errorf("depth %d: compared but nothing found inside it", depth)
+		}
+		if !want && e.Summary != "" {
+			t.Errorf("depth %d: not compared but summary %q", depth, e.Summary)
+		}
+	}
+}
+
+// Going deeper while it runs: the pairs the first pass stopped at have their
+// members compared, and the run's counts follow.
+func TestDeepenComparesWhatTheDepthLeftOut(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write(t, a, "pkg_v1.tar", mkTar(time.Unix(1_700_000_000, 0), "x", "one", "gone", "g"))
+	write(t, b, "pkg_v2.tar", mkTar(time.Unix(1_700_000_000, 0), "x", "two", "new", "n"))
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 1})
+	<-run.Done()
+	if run.Depth() != 1 {
+		t.Fatalf("depth %d", run.Depth())
+	}
+	before := run.Summary()
+	n, err := run.Deepen()
+	if err != nil || n != 1 || run.Depth() != 2 {
+		t.Fatalf("deepen: %d pairs, %v, depth %d", n, err, run.Depth())
+	}
+	var e analysis.Entry
+	for i := 0; i < 200; i++ {
+		e = run.Entries(run.Root(), false)[0]
+		if e.Compared {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !e.Compared || e.Pending || !e.HasKids || !strings.Contains(e.Summary, "changed") {
+		t.Fatalf("after deepening: %+v", e)
+	}
+	if run.Summary() == before {
+		t.Errorf("the counts did not follow: %q", run.Summary())
+	}
+	if n, _ := run.Deepen(); n != 0 {
+		t.Errorf("a second deepen found %d more pairs with nothing left", n)
+	}
+	// Not while the first pass runs.
+	if _, err := analysis.NewFakeRun(nil, false).Deepen(); err != analysis.ErrStillRunning {
+		t.Errorf("deepen before it finished: %v", err)
+	}
+}

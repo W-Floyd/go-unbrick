@@ -15,7 +15,6 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -48,13 +47,13 @@ func Handler(run *analysis.Run, opts Options) http.Handler {
 	if opts.MaxLimit <= 0 {
 		opts.MaxLimit = maxLimit
 	}
-	s := &server{run: run, opts: opts, levels: map[string]*analysis.Level{}, loads: map[loadKey]*loadState{}}
-	s.root = run.Root()
-	s.root.SetTitle(opts.Title)
+	s := &server{run: run, opts: opts, loads: map[loadKey]*loadState{}}
+	run.Root().SetTitle(opts.Title)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", s.state)
 	mux.HandleFunc("/api/level", s.level)
 	mux.HandleFunc("/api/entry", s.entry)
+	mux.HandleFunc("/api/deepen", s.deepen)
 	sub, _ := fs.Sub(assets, "static")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	return mux
@@ -63,13 +62,11 @@ func Handler(run *analysis.Run, opts Options) http.Handler {
 type server struct {
 	run  *analysis.Run
 	opts Options
-	root *analysis.Level
 
-	mu     sync.Mutex
-	levels map[string]*analysis.Level // opened levels, by their path of entry names
-	pairs  []cachedPair               // the last few files read, newest last
-	loads  map[loadKey]*loadState     // reads in flight
-	load   sync.Mutex                 // one read at a time: the filesystems underneath are not safe for more
+	mu    sync.Mutex
+	pairs []cachedPair           // the last few files read, newest last
+	loads map[loadKey]*loadState // reads in flight
+	load  sync.Mutex             // one read at a time: the filesystems underneath are not safe for more
 }
 
 type cachedPair struct {
@@ -94,8 +91,10 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 		Finished bool   `json:"finished"`
 		Summary  string `json:"summary"`
 		Status   string `json:"status"`
+		Depth    int    `json:"depth"`   // container levels compared into
+		Working  bool   `json:"working"` // going deeper, after the first pass
 		Err      string `json:"err,omitempty"`
-	}{s.opts.Title, s.run.Finished(), s.run.Summary(), s.run.Status(), ""}
+	}{Title: s.opts.Title, Finished: s.run.Finished(), Summary: s.run.Summary(), Status: s.run.Status(), Depth: s.run.Depth(), Working: s.run.Working()}
 	if st.Finished {
 		st.Status = "" // the last thing it was doing
 	}
@@ -105,42 +104,7 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, st)
 }
 
-var errNoSuchEntry = errors.New("no such entry")
-
-// resolve is the level at a path of entry names from the root, opened on first
-// use and kept (a container's members level is a comparison of its own).
-func (s *server) resolve(path []string) (*analysis.Level, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cur := s.root
-	for i, name := range path {
-		key := strings.Join(path[:i+1], "\x00")
-		if l, ok := s.levels[key]; ok {
-			cur = l
-			continue
-		}
-		e, ok := find(s.run.Entries(cur, false), name)
-		if !ok {
-			return nil, errNoSuchEntry
-		}
-		l, err := s.run.Open(cur, e)
-		if err != nil {
-			return nil, err
-		}
-		s.levels[key] = l
-		cur = l
-	}
-	return cur, nil
-}
-
-func find(es []analysis.Entry, name string) (analysis.Entry, bool) {
-	for _, e := range es {
-		if e.Name == name {
-			return e, true
-		}
-	}
-	return analysis.Entry{}, false
-}
+func (s *server) resolve(path []string) (*analysis.Level, error) { return s.run.LevelAt(path) }
 
 // level lists a level as it stands: the page polls it while the comparison runs.
 func (s *server) level(w http.ResponseWriter, r *http.Request) {
@@ -171,14 +135,19 @@ type containerResp struct {
 
 func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	l, err := s.resolve(q["p"])
+	loc := analysis.ParseLocation(r.URL.RawQuery) // the page's own location, as it keeps it in its URL
+	name := loc.Entry
+	if name == "" {
+		name = q.Get("name")
+	}
+	l, err := s.resolve(loc.Path)
 	if err != nil {
 		fail(w, http.StatusNotFound, err)
 		return
 	}
-	e, ok := find(s.run.Entries(l, false), q.Get("name"))
+	e, ok := analysis.FindEntry(s.run.Entries(l, false), name)
 	if !ok {
-		fail(w, http.StatusNotFound, errNoSuchEntry)
+		fail(w, http.StatusNotFound, analysis.ErrNoSuchEntry)
 		return
 	}
 	resp := struct {
@@ -192,10 +161,8 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 		return
 	}
-	view := analysis.View(q.Get("view"))
-	switch view {
-	case analysis.ViewStrings, analysis.ViewOverlap, analysis.ViewHex:
-	default:
+	view := loc.View
+	if view == "" {
 		view = analysis.ViewAuto
 	}
 	s.load.Lock() // what reads the inputs goes one at a time
@@ -215,7 +182,7 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.ParseInt(q.Get("limit"), 10, 64); err == nil && n > 0 {
 		limit = min(n, s.opts.MaxLimit)
 	}
-	opts := analysis.Options{View: view, Words: q.Get("words") != "0", HexBudget: 4 << 10}
+	opts := analysis.Options{View: view, Words: !loc.NoWords, HexBudget: 4 << 10}
 	if q.Get("more") == "1" {
 		opts.HexBudget = 1 << 20
 	}
@@ -278,4 +245,23 @@ func (s *server) pair(e analysis.Entry, limit int64) (*analysis.Pair, *loadState
 		s.mu.Unlock()
 	}()
 	return nil, st
+}
+
+// deepen compares one more container level, in the background (POST: it changes
+// what the run holds). The page sees it come in as it polls.
+func (s *server) deepen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		fail(w, http.StatusMethodNotAllowed, errors.New("POST"))
+		return
+	}
+	n, err := s.run.Deepen()
+	if err != nil {
+		fail(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, struct {
+		Depth   int `json:"depth"`
+		Started int `json:"started"` // container pairs it set out to compare
+	}{s.run.Depth(), n})
 }

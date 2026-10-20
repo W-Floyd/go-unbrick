@@ -152,6 +152,10 @@ type diffLine struct {
 	// subT is the comparison of the inside while it is still running, so a
 	// viewer can show what it has found so far; sub replaces it when it is done.
 	subT *treeDiffTally
+	// compared says the members of a container line were compared, so that no
+	// lines inside it means they are the same; without it they were not looked at
+	// (the depth ran out).
+	compared bool
 
 	// What the line is about, for a viewer that opens it: its kind ('~' changed,
 	// '>' renamed, '≈' renamed and changed, '+' added, '-' removed, '=' same),
@@ -402,10 +406,12 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 				continue
 			}
 			t.changed++
-			t.out("%s~ %-48s %10s -> %s", indent, path, size(x), size(y)).tag('~', path, x, y)
+			ln := t.out("%s~ %-48s %10s -> %s", indent, path, size(x), size(y)).tag('~', path, x, y)
 			if x.IsContainer() && y.IsContainer() && depth > 1 {
 				if err := diffNodes(x, y, path+"/", indent+"    ", depth-1, verbose, t); err != nil {
 					t.out("%s    (%v)", indent, err)
+				} else {
+					live(func() { ln.compared = true })
 				}
 			}
 		}
