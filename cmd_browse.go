@@ -783,9 +783,26 @@ func toPNG(raw []byte) ([]byte, error) {
 // most this many base64 bytes per escape sequence, continued via m=1/m=0.
 const kittyChunkSize = 4096
 
+// kittyImageID is a fixed Kitty image id: the preview pane only ever shows
+// one image at a time, so there's nothing to distinguish between calls for.
+// Without an id, every a=T (transmit+display) call creates a brand new
+// placement rather than updating one - and View() re-renders (so re-emits
+// this) on every keystroke or spinner tick, not just when the selection
+// changes, which stacked a fresh overlapping copy on every single frame
+// (confirmed live: "duplicated and covering"). Reusing the same id so a
+// retransmit replaces the existing image isn't enough on its own - a
+// transmit's implicit placement and an old one can still coexist as two
+// placements of the same (now-identical) image - so the old placement for
+// this id is explicitly deleted first.
+const kittyImageID = 1
+
 func kittyImageSequence(pngData []byte, cols, rows int) string {
+	// a=d,d=i deletes every placement of image id i without touching other
+	// images; harmless (and cheap - no payload) when there was none.
+	del := ansi.KittyGraphics(nil, "a=d", "d=i", fmt.Sprintf("i=%d", kittyImageID))
 	payload := base64.StdEncoding.EncodeToString(pngData)
 	var b strings.Builder
+	b.WriteString(del)
 	for i := 0; i < len(payload); i += kittyChunkSize {
 		end := min(i+kittyChunkSize, len(payload))
 		more := "0"
@@ -794,7 +811,7 @@ func kittyImageSequence(pngData []byte, cols, rows int) string {
 		}
 		opts := []string{"m=" + more}
 		if i == 0 {
-			opts = []string{"a=T", "f=100", fmt.Sprintf("c=%d", cols), fmt.Sprintf("r=%d", rows), "m=" + more}
+			opts = []string{"a=T", "f=100", fmt.Sprintf("i=%d", kittyImageID), fmt.Sprintf("c=%d", cols), fmt.Sprintf("r=%d", rows), "m=" + more}
 		}
 		b.WriteString(ansi.KittyGraphics([]byte(payload[i:end]), opts...))
 	}
