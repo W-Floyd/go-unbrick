@@ -391,9 +391,39 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *browseModel) View() tea.View {
 	listW := m.width * 2 / 5
+	rightW := m.width - listW - 1
 	left := lipgloss.NewStyle().Width(listW).Render(m.list.View())
-	right := lipgloss.NewStyle().Width(m.width - listW - 1).Render(m.preview.View())
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+
+	// bubbletea's cell-buffer renderer (ultraviolet) drops any CSI (so a
+	// manually-emitted CUP) and ESC-Fp/Fs sequence (SaveCursor/RestoreCursor)
+	// found in View content - only a terminated APC/DCS/SOS/PM sequence
+	// survives, replayed against whichever cell it sits at in the text
+	// stream. So the image can't be positioned with cursor-movement escapes
+	// appended after the fact; its bytes have to sit literally at the right
+	// pane's top-left character in the content string. lipgloss.JoinHorizontal
+	// measures/pads by display width and mangles the raw APC bytes, so this
+	// case bypasses it and joins the two panes by hand.
+	var body string
+	if m.previewImage != "" {
+		leftLines := strings.Split(left, "\n")
+		pad := strings.Repeat(" ", rightW)
+		var b strings.Builder
+		for i, line := range leftLines {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
+			b.WriteByte(' ')
+			if i == 0 {
+				b.WriteString(m.previewImage)
+			}
+			b.WriteString(pad)
+		}
+		body = b.String()
+	} else {
+		right := lipgloss.NewStyle().Width(rightW).Render(m.preview.View())
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+	}
 
 	status := m.status
 	if name, ok := m.rq.inflightDisplay(); ok {
@@ -403,17 +433,6 @@ func (m *browseModel) View() tea.View {
 	}
 
 	content := body + "\n" + m.progressLine() + "\n" + cLabel(status)
-	if m.previewImage != "" {
-		// Appended after the rest, not interleaved with it: CUP is an
-		// absolute position, not relative to wherever this string's own
-		// line breaks put the cursor, so where in the stream it's emitted
-		// doesn't matter - only that it's outside anything (lipgloss,
-		// m.preview) that would measure or wrap it as text. Saved/restored
-		// around it so the real cursor ends up wherever the rest of this
-		// content already left it, not mid-image.
-		col := m.listWidth() + 2 // list width + the " " separator + 1 (CUP is 1-indexed)
-		content += ansi.SaveCursor + ansi.CUP(col, 1) + m.previewImage + ansi.RestoreCursor
-	}
 	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	// Without this, bubbletea renders inline below the shell prompt instead
