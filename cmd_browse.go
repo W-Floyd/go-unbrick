@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"image"
 	_ "image/jpeg" // registers the JPEG decoder with image.Decode; never called directly
-	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/NurramoX/streakboard/kitty"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/iterm2"
 	"github.com/spf13/cobra"
@@ -258,8 +258,9 @@ type browseModel struct {
 	skip         []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
 	showRaw      bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
 	graphics     graphicsProtocol
-	previewImage string // raw escape sequence for the currently previewed image, "" when not showing one - drawn separately in View(), never through m.preview/lipgloss (see showPreview)
-	lastKittyID  int    // most recent Kitty image id transmitted, 0 if none yet - see kittyImageSequence
+	previewImage       string // iTerm2 only: raw escape sequence for the currently previewed image, "" when not showing one - drawn separately in View(), never through m.preview/lipgloss (see showPreview)
+	previewPlaceholder string // Kitty/Ghostty only: ordinary placeholder-glyph text for the currently previewed image, "" when not showing one - see imagePreview
+	lastKittyID        uint32 // most recent Kitty image id transmitted, 0 if none yet - see imagePreview
 	status       string
 	width        int
 	height       int
@@ -426,49 +427,72 @@ func (m *browseModel) View() tea.View {
 	rightW := m.width - listW - 1
 	left := lipgloss.NewStyle().Width(listW).Render(m.list.View())
 
-	// bubbletea's cell-buffer renderer (ultraviolet) drops any CSI (so a
-	// manually-emitted CUP) and ESC-Fp/Fs sequence (SaveCursor/RestoreCursor)
-	// found in View content - only a terminated APC/DCS/SOS/PM sequence
-	// survives, replayed against whichever cell it sits at in the text
-	// stream. So the image can't be positioned with cursor-movement escapes
-	// appended after the fact; its bytes have to sit literally at the right
-	// pane's top-left character in the content string. lipgloss.JoinHorizontal
-	// measures/pads by display width and mangles the raw APC bytes, so this
-	// case bypasses it and joins the two panes by hand.
-	var body string
-	if m.previewImage != "" {
+	// m.preview (a viewport) pads itself to its configured height, so the
+	// plain-text branch's JoinHorizontal always gets exactly bodyHeight
+	// lines from both sides - but m.list.View() only returns as many lines
+	// as there are visible items, which can be far fewer than the pane
+	// height in a short directory. Ultraviolet never clears a row a frame's
+	// content doesn't mention, so confirmed live: a short list left dozens
+	// of rows below it holding whatever a previous, longer frame had drawn
+	// there. Both image paths below need this; the plain-text one doesn't,
+	// because the viewport already pads itself.
+	padLeftLines := func() []string {
 		leftLines := strings.Split(left, "\n")
-		// m.preview (a viewport) pads itself to its configured height, so
-		// the non-image branch's JoinHorizontal always gets exactly
-		// bodyHeight lines from both sides - but m.list.View() only
-		// returns as many lines as there are visible items, which can be
-		// far fewer than the pane height in a short directory. Ultraviolet
-		// never clears a row this frame's content doesn't mention, so
-		// confirmed live: a short list left dozens of rows below it
-		// holding whatever a previous, longer frame had drawn there,
-		// while the image (whose own requested height is independent of
-		// how many lines we actually write) visually spanned right over
-		// that stale content. Pad explicitly rather than trust the list's
-		// own line count to already match.
 		if bodyHeight := m.height - 2; len(leftLines) < bodyHeight {
 			blank := strings.Repeat(" ", listW)
 			for len(leftLines) < bodyHeight {
 				leftLines = append(leftLines, blank)
 			}
 		}
+		return leftLines
+	}
+
+	var body string
+	switch {
+	case m.previewPlaceholder != "":
+		// Kitty/Ghostty: m.previewPlaceholder is ordinary text (Unicode
+		// placeholder glyphs, one per cell the image covers) built by
+		// imagePreview - not a raw escape sequence. It goes through the
+		// same per-line join as the plain-text case conceptually, just
+		// without lipgloss's Width() (whose overlong-line wrapping, and
+		// general unfamiliarity with grapheme-cluster-plus-SGR content
+		// like this, isn't worth risking on it) - a manual join is enough
+		// since every placeholder line is already exactly cols columns.
+		leftLines := padLeftLines()
+		phLines := strings.Split(m.previewPlaceholder, "\n")
+		var b strings.Builder
+		for i, line := range leftLines {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(padToWidth(line, listW))
+			b.WriteByte(' ')
+			if i < len(phLines) {
+				b.WriteString(phLines[i])
+			}
+		}
+		body = b.String()
+	case m.previewImage != "":
+		// iTerm2 only (see imagePreview): a raw escape sequence that has
+		// to ride on an actual cell, since iTerm2 has no placeholder-text
+		// equivalent of Kitty's virtual placements. bubbletea's
+		// cell-buffer renderer (ultraviolet) drops any CSI (so a
+		// manually-emitted CUP) and ESC-Fp/Fs sequence
+		// (SaveCursor/RestoreCursor) found in View content - only a
+		// terminated APC/DCS/SOS/PM sequence survives, replayed against
+		// whichever cell it sits at in the text stream. So the image
+		// can't be positioned with cursor-movement escapes appended
+		// after the fact; its bytes have to sit literally at the right
+		// pane's top-left character in the content string.
+		// lipgloss.JoinHorizontal measures/pads by display width and
+		// mangles the raw escape bytes, so this bypasses it too.
+		leftLines := padLeftLines()
 		pad := strings.Repeat(" ", rightW)
 		var b strings.Builder
 		for i, line := range leftLines {
 			if i > 0 {
 				b.WriteByte('\n')
 			}
-			// lipgloss's Width() wraps an overlong line instead of
-			// truncating it, so a particular item's rendered width can
-			// occasionally land short of listW - confirmed live (stress
-			// test: rapid selection changes produced an off-column image
-			// placement once every several dozen frames). The image's
-			// column has to be exact, so line 0's width is forced here
-			// rather than trusted from the list's own rendering.
 			if i == 0 {
 				line = padToWidth(line, listW)
 			}
@@ -480,7 +504,7 @@ func (m *browseModel) View() tea.View {
 			b.WriteString(pad)
 		}
 		body = b.String()
-	} else {
+	default:
 		right := lipgloss.NewStyle().Width(rightW).Render(m.preview.View())
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 	}
@@ -667,6 +691,7 @@ func (m *browseModel) showPreview() {
 	// a stale one has to be cleared explicitly rather than just left
 	// unset by the branch that would otherwise set it.
 	m.previewImage = ""
+	m.previewPlaceholder = ""
 	e, ok := m.selected()
 	if !ok {
 		m.preview.SetContent("")
@@ -678,18 +703,16 @@ func (m *browseModel) showPreview() {
 	// below, same as any other unrecognized format.
 	//
 	// It does NOT go through m.preview (a plain text viewport) or
-	// lipgloss.JoinHorizontal in View(): confirmed live that neither
-	// treats an OSC/APC graphics sequence as the atomic zero-width unit it
-	// is - SoftWrap's line-wrapping and JoinHorizontal's side-by-side width
-	// measurement both corrupted it before it reached the terminal, on both
-	// iTerm2 and Ghostty/Kitty. m.previewImage is drawn separately, in
-	// View(), via an absolute cursor position (save/CUP/restore) wrapped
-	// around the raw sequence - outside anything that measures string width
-	// at all.
+	// lipgloss.JoinHorizontal in View() for iTerm2 (m.previewImage):
+	// confirmed live that neither treats an OSC/APC graphics sequence as
+	// the atomic zero-width unit it is - SoftWrap's line-wrapping and
+	// JoinHorizontal's side-by-side width measurement both corrupted it
+	// before it reached the terminal. For Kitty/Ghostty (m.previewPlaceholder)
+	// it's ordinary text and does go through the normal join, just not
+	// lipgloss's Width() - see View().
 	if !e.dir && e.isImage {
-		if out, ok := m.imagePreview(e); ok {
+		if m.imagePreview(e) {
 			m.preview.SetContent("")
-			m.previewImage = out
 			return
 		}
 	}
@@ -794,9 +817,9 @@ const maxImagePreviewBytes = 20 << 20
 // untested against a real Kitty/iTerm2 session - if an image doesn't
 // survive a scroll of the pane, or leaves a stale copy behind, that's the
 // first thing to look at.
-func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
+func (m *browseModel) imagePreview(e browseEntry) bool {
 	if m.graphics == graphicsNone {
-		return "", false
+		return false
 	}
 	cols := m.width - m.listWidth() - 1
 	rows := m.height - 2
@@ -813,11 +836,11 @@ func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
 		// known - layout() calls showPreview again right after SetSize, so
 		// this reaches the image within the same startup, just not before
 		// bubbletea has told us how big the screen actually is.
-		return "", false
+		return false
 	}
 	raw, truncated, err := readImageBytes(e, maxImagePreviewBytes)
 	if err != nil || truncated {
-		return "", false
+		return false
 	}
 	switch m.graphics {
 	case graphicsITerm2:
@@ -829,22 +852,69 @@ func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
 			Inline:  true,
 			Content: []byte(base64.StdEncoding.EncodeToString(raw)),
 		}
-		return ansi.ITerm2(f), true
+		m.previewImage = ansi.ITerm2(f)
+		return true
 	case graphicsKitty:
-		// f=100 is specifically "this is PNG data" in Kitty's own spec; a
-		// JPEG passed as-is is accepted by some implementations' lenient
-		// decoders and rejected by others, so it's decoded and re-encoded
-		// to PNG here rather than relied on either way.
-		png, bounds, err := toPNG(raw)
-		if err != nil {
-			return "", false
+		if cols > kitty.MaxSpan || rows > kitty.MaxSpan {
+			return false
 		}
-		debugImagePreview(e.name, len(raw), bounds, cols, rows)
+		// A JPEG passed as-is is accepted by some Kitty implementations'
+		// lenient decoders and rejected by others, so it's decoded and
+		// re-encoded to PNG (kitty.TransmitPNG does the encoding) rather
+		// than relied on either way.
+		img, _, err := image.Decode(bytes.NewReader(raw))
+		if err != nil {
+			return false
+		}
+		debugImagePreview(e.name, len(raw), img.Bounds(), cols, rows)
+		// A fixed image id (delete-then-retransmit under the same
+		// identity every time the selection changed) was tried first and
+		// mostly worked, but left an intermittent, non-deterministic
+		// "image overlays the list" that survived verifying every other
+		// input byte-for-byte correct across dozens of captures. Moved on
+		// to this library's Unicode-placeholder approach instead of
+		// chasing that further: the image position now rides on ordinary
+		// text cells (m.previewPlaceholder, see View()) that ultraviolet
+		// diffs and positions the same as any other content, rather than
+		// on the raw-escape passthrough mechanism that every other fix
+		// this session was working around the edges of. A fresh id per
+		// image is kept anyway, deleting the specific previous one -
+		// cheap, and avoids whatever a fixed id did or didn't contribute
+		// to the old symptom.
 		oldID := m.lastKittyID
 		m.lastKittyID++
-		return kittyImageSequence(png, oldID, m.lastKittyID, cols, rows), true
+		id := m.lastKittyID
+		var setup bytes.Buffer
+		if oldID != 0 {
+			setup.Write(kitty.Delete(oldID))
+		}
+		tx, err := kitty.TransmitPNG(id, img)
+		if err != nil {
+			return false
+		}
+		setup.Write(tx)
+		pl, err := kitty.Place(id, rows, cols)
+		if err != nil {
+			return false
+		}
+		setup.Write(pl)
+		// Written directly, not threaded through View()'s content string:
+		// Transmit/Place have no visual effect themselves (no display
+		// happens until the Placeholder text below is actually rendered),
+		// so unlike the placeholder text they don't need exact cell
+		// positioning - just to arrive before it. Update() runs on
+		// bubbletea's own single goroutine with no concurrent writer, so
+		// a direct write here happens strictly before the View() call
+		// this same event triggers.
+		fmt.Fprint(os.Stdout, setup.String())
+		ph, err := kitty.Placeholder(id, rows, cols)
+		if err != nil {
+			return false
+		}
+		m.previewPlaceholder = ph
+		return true
 	default:
-		return "", false
+		return false
 	}
 }
 
@@ -874,21 +944,6 @@ func readImageBytes(e browseEntry, capBytes int64) (data []byte, truncated bool,
 	return data, false, nil
 }
 
-// toPNG decodes raw as whatever registered image format it is (JPEG or PNG,
-// per looksLikeImage) and re-encodes it as PNG, for Kitty's f=100. bounds is
-// the decoded image's own pixel dimensions, for debugImagePreview.
-func toPNG(raw []byte) (data []byte, bounds image.Rectangle, err error) {
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return nil, image.Rectangle{}, err
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, image.Rectangle{}, err
-	}
-	return buf.Bytes(), img.Bounds(), nil
-}
-
 // debugImagePreview appends one diagnostic line per image render to the file
 // named by UNBRICK_BROWSE_IMGDEBUG, when set - a no-op otherwise. Added to
 // chase an intermittent "image overlays the list" bug that varies by file
@@ -907,46 +962,6 @@ func debugImagePreview(name string, rawLen int, bounds image.Rectangle, cols, ro
 	defer f.Close()
 	fmt.Fprintf(f, "%s raw=%dB decodedBounds=%v requestedCols=%d requestedRows=%d\n",
 		name, rawLen, bounds, cols, rows)
-}
-
-// kittyChunkSize is the Kitty graphics protocol's own wire-format limit: at
-// most this many base64 bytes per escape sequence, continued via m=1/m=0.
-const kittyChunkSize = 4096
-
-// kittyImageSequence transmits pngData as a new placement under newID,
-// deleting oldID (0 if there wasn't a previous one) first. A FIXED id was
-// tried first (delete-then-retransmit under the same id=1 every time a
-// selection changed) and mostly worked, but left an intermittent,
-// non-deterministic "image overlays the list" that survived verifying
-// every other input byte-for-byte correct (CUP, decoded bounds, c=/r=,
-// chunk framing) across dozens of captures - the one remaining variable
-// was reusing the same id for a rapid delete+retransmit of visually
-// different content, which is exactly the pattern most likely to hit a
-// terminal-side caching assumption tied to image identity. A fresh id per
-// image removes that variable entirely: nothing is ever "the same
-// placement" with different content underneath it.
-func kittyImageSequence(pngData []byte, oldID, newID int, cols, rows int) string {
-	var b strings.Builder
-	if oldID != 0 {
-		// a=d,d=i deletes every placement of image id i without touching
-		// other images; harmless (and cheap - no payload) when there was
-		// none, so this only runs when there's an actual previous id.
-		b.WriteString(ansi.KittyGraphics(nil, "a=d", "d=i", fmt.Sprintf("i=%d", oldID)))
-	}
-	payload := base64.StdEncoding.EncodeToString(pngData)
-	for i := 0; i < len(payload); i += kittyChunkSize {
-		end := min(i+kittyChunkSize, len(payload))
-		more := "0"
-		if end < len(payload) {
-			more = "1"
-		}
-		opts := []string{"m=" + more}
-		if i == 0 {
-			opts = []string{"a=T", "f=100", fmt.Sprintf("i=%d", newID), fmt.Sprintf("c=%d", cols), fmt.Sprintf("r=%d", rows), "m=" + more}
-		}
-		b.WriteString(ansi.KittyGraphics([]byte(payload[i:end]), opts...))
-	}
-	return b.String()
 }
 
 // textPreview reads e's content (bounded by textPreviewCap) and renders it

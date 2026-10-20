@@ -1,6 +1,6 @@
 module github.com/W-Floyd/go-unbrick
 
-go 1.26.1
+go 1.26.5
 
 // Nokia/Microsoft-era Qualcomm attestation certs carry negative serials, which
 // crypto/x509 otherwise refuses — losing the loader's whole secboot identity.
@@ -35,6 +35,7 @@ require (
 require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/NurramoX/streakboard v0.1.0 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
