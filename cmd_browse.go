@@ -412,6 +412,20 @@ func (m *browseModel) View() tea.View {
 			if i > 0 {
 				b.WriteByte('\n')
 			}
+			// lipgloss's Width() wraps an overlong line instead of
+			// truncating it, so a particular item's rendered width can
+			// occasionally land short of listW - confirmed live (stress
+			// test: rapid selection changes produced an off-column image
+			// placement once every several dozen frames). The image's
+			// column has to be exact, so line 0's width is forced here
+			// rather than trusted from the list's own rendering.
+			if i == 0 {
+				if w := ansi.StringWidth(line); w > listW {
+					line = ansi.Truncate(line, listW, "")
+				} else if w < listW {
+					line += strings.Repeat(" ", listW-w)
+				}
+			}
 			b.WriteString(line)
 			b.WriteByte(' ')
 			if i == 0 {
