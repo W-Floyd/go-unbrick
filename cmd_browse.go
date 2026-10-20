@@ -707,12 +707,27 @@ func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
 	if m.graphics == graphicsNone {
 		return "", false
 	}
+	cols := m.width - m.listWidth() - 1
+	rows := m.height - 2
+	if cols <= 0 || rows <= 0 {
+		// newBrowseModel's initial pushDirFrame/pushNodeFrame calls
+		// showPreview before tea.NewProgram(m).Run() has ever delivered a
+		// WindowSizeMsg, so m.width/m.height are still their zero-value
+		// defaults the first time this runs - confirmed live (raw pty
+		// capture): that produced a=T,c=-1,r=-2, a garbage-sized Kitty
+		// placement sent before any real layout exists, which visibly
+		// corrupted everything rendered after it even once the next
+		// showPreview (from the real WindowSizeMsg's layout()) sent the
+		// correctly-sized one. Skipping here until real dimensions are
+		// known - layout() calls showPreview again right after SetSize, so
+		// this reaches the image within the same startup, just not before
+		// bubbletea has told us how big the screen actually is.
+		return "", false
+	}
 	raw, truncated, err := readImageBytes(e, maxImagePreviewBytes)
 	if err != nil || truncated {
 		return "", false
 	}
-	cols := m.width - m.listWidth() - 1
-	rows := m.height - 2
 	switch m.graphics {
 	case graphicsITerm2:
 		f := iterm2.File{
