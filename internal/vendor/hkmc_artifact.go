@@ -21,8 +21,6 @@ func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
 		return info, true
 	case bytes.HasPrefix(data, []byte("PRNM")) && len(data) >= 0x20:
 		return ArtifactInfo{Label: "navi package (PRNM)", Detail: "built " + string(bytes.TrimRight(data[0x10:0x20], "\x00"))}, true
-	case bytes.HasPrefix(data, []byte("ANDROID@")) && len(data) >= 0x20:
-		return ArtifactInfo{Label: "Telechips LK bootloader", Detail: strings.Join(strings.Fields(string(bytes.Trim(data[0x18:0x20], "\x00"))), " ")}, true
 	case bytes.HasPrefix(data, []byte(splashMagic)):
 		info := ArtifactInfo{Label: "splash container"}
 		if imgs, err := ParseSplash(data); err == nil {

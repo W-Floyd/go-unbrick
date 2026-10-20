@@ -1949,10 +1949,6 @@ func typeLabel(name string, head []byte) string {
 		return "UBIFS"
 	case filetype.Ogg:
 		return "Ogg"
-	case filetype.QcomMBN:
-		return "Qualcomm MBN"
-	case filetype.QcomPartition:
-		return "Qualcomm partition table"
 	case filetype.Gzip:
 		return "gzip"
 	case filetype.Zip:
@@ -2240,6 +2236,9 @@ func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 			line += " — " + info.Detail
 		}
 		fmt.Println(line)
+		for _, l := range vendor.ArtifactReport(path, head) { // what the file says about itself
+			fmt.Println("  " + l)
+		}
 		return nil
 	}
 	// An empty subsidy default (.nvm) has no content to recognize.

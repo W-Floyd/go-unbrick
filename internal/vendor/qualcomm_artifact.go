@@ -2,6 +2,7 @@ package vendor
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -26,4 +27,20 @@ func fsgArtifact(data []byte) (ArtifactInfo, bool) {
 		return ArtifactInfo{}, false
 	}
 	return ArtifactInfo{Label: "modem EFS (FSG) image", Detail: fmt.Sprintf("%d board variant(s): %s", len(ids), strings.Join(ids, ", "))}, true
+}
+
+// qcomArtifact recognises Qualcomm's own images by their magic: a non-ELF boot
+// image (sbl1.mbn: the 0x844bdcd1 header) and the partition table (partition.mbn:
+// 0xaa7d1b9a). Both are little-endian words at the start of the file.
+func qcomArtifact(data []byte) (ArtifactInfo, bool) {
+	if len(data) < 4 {
+		return ArtifactInfo{}, false
+	}
+	switch binary.LittleEndian.Uint32(data[:4]) {
+	case 0x844bdcd1:
+		return ArtifactInfo{Label: "Qualcomm MBN"}, true
+	case 0xaa7d1b9a:
+		return ArtifactInfo{Label: "Qualcomm partition table"}, true
+	}
+	return ArtifactInfo{}, false
 }

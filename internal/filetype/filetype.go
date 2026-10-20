@@ -45,8 +45,6 @@ const (
 	ODEX              Kind = "dalvik-odex" // optimized DEX, pre-ART ("dey\n036")
 	DEX               Kind = "dalvik-dex"
 	Ogg               Kind = "ogg"
-	QcomMBN           Kind = "qualcomm-mbn"             // non-ELF boot image (sbl1.mbn): 0x844bdcd1 header
-	QcomPartition     Kind = "qualcomm-partition-table" // partition.mbn
 	Unknown           Kind = "unknown"
 )
 
@@ -124,10 +122,6 @@ func Detect(head []byte) Kind {
 		return QCDT
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("OggS")):
 		return Ogg
-	case len(head) >= 4 && le.Uint32(head[:4]) == 0x844bdcd1:
-		return QcomMBN
-	case len(head) >= 4 && le.Uint32(head[:4]) == 0xaa7d1b9a:
-		return QcomPartition
 	default:
 		return Unknown
 	}

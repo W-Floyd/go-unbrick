@@ -26,7 +26,13 @@ func RecognizeArtifact(cat *catalog.Catalog, name string, data []byte) (Artifact
 	if info, ok := hkmcArtifact(name, data); ok {
 		return info, true
 	}
+	if info, ok := tccArtifact(data); ok {
+		return info, true
+	}
 	if info, ok := fsgArtifact(data); ok {
+		return info, true
+	}
+	if info, ok := qcomArtifact(data); ok {
 		return info, true
 	}
 	if info, ok := mediatekArtifact(data); ok {
@@ -36,4 +42,25 @@ func RecognizeArtifact(cat *catalog.Catalog, name string, data []byte) (Artifact
 		return ArtifactInfo{Label: "Samsung PIT", Detail: fmt.Sprintf("%d partitions", len(p.Entries))}, true
 	}
 	return ArtifactInfo{}, false
+}
+
+// ArtifactReporter is an optional Driver capability: a longer report on a file
+// RecognizeArtifact identified, as lines of text (what the file says about
+// itself), for recon to print under the one-line recognition. head is the start of
+// the file; a reporter reads the rest through path if it needs it. nil when it has
+// nothing to add for this file.
+type ArtifactReporter interface {
+	ArtifactReport(path string, head []byte) []string
+}
+
+// ArtifactReport asks every registered driver for a report on the file at path.
+func ArtifactReport(path string, head []byte) []string {
+	for _, d := range Drivers() {
+		if r, ok := d.(ArtifactReporter); ok {
+			if lines := r.ArtifactReport(path, head); len(lines) > 0 {
+				return lines
+			}
+		}
+	}
+	return nil
 }

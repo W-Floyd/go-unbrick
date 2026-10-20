@@ -45,8 +45,9 @@ type AssembleOptions struct {
 // One OEM can ship devices on more than one (Motorola has both Qualcomm and
 // MediaTek phones), so a driver carries a platform tag as well as a vendor id.
 const (
-	PlatformQualcomm = "qualcomm" // EDL 9008 / Sahara / Firehose programmer
-	PlatformMediaTek = "mediatek" // BROM / Download Agent / SP Flash Tool scatter
+	PlatformQualcomm  = "qualcomm"  // EDL 9008 / Sahara / Firehose programmer
+	PlatformMediaTek  = "mediatek"  // BROM / Download Agent / SP Flash Tool scatter
+	PlatformTelechips = "telechips" // the SoC of several head units; recognition and reports only
 )
 
 // Driver implements one recovery-package format, identified by (platform, vendor).
