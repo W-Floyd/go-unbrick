@@ -62,3 +62,6 @@ table.meta { font: 12.5px ui-monospace, monospace; margin-top: 8px; } table.meta
 .row .go:hover { background: var(--line); color: var(--fg); }
 button.open { border: 1px solid var(--line); background: var(--bg); color: inherit; padding: 2px 12px; border-radius: 4px; cursor: pointer; }
 button.open:hover { background: var(--sel); }
+.reading { padding: 24px 4px; max-width: 520px; }
+.meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--mid); transition: width .3s; }

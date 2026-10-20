@@ -135,7 +135,15 @@ func entry(t *testing.T, srv *httptest.Server, name, view string, extra url.Valu
 		q[k] = v
 	}
 	var out map[string]any
-	getJSON(t, srv, "/api/entry?"+q.Encode(), &out)
+	for i := 0; i < 100; i++ { // a file is read in the background: ask again until it is
+		out = nil
+		getJSON(t, srv, "/api/entry?"+q.Encode(), &out)
+		if out["loading"] == nil {
+			return out
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("still loading: %v", out)
 	return out
 }
 

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
@@ -47,7 +48,7 @@ func Handler(run *analysis.Run, opts Options) http.Handler {
 	if opts.MaxLimit <= 0 {
 		opts.MaxLimit = maxLimit
 	}
-	s := &server{run: run, opts: opts, levels: map[string]*analysis.Level{}}
+	s := &server{run: run, opts: opts, levels: map[string]*analysis.Level{}, loads: map[loadKey]*loadState{}}
 	s.root = run.Root()
 	s.root.SetTitle(opts.Title)
 	mux := http.NewServeMux()
@@ -67,6 +68,7 @@ type server struct {
 	mu     sync.Mutex
 	levels map[string]*analysis.Level // opened levels, by their path of entry names
 	pairs  []cachedPair               // the last few files read, newest last
+	loads  map[loadKey]*loadState     // reads in flight
 	load   sync.Mutex                 // one read at a time: the filesystems underneath are not safe for more
 }
 
@@ -184,6 +186,7 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 		Title     string                `json:"title"`
 		Detail    *analysis.EntryDetail `json:"detail,omitempty"`
 		Container *containerResp        `json:"container,omitempty"`
+		Loading   *loadingResp          `json:"loading,omitempty"`
 	}{Entry: e, Title: e.Title()}
 	if !e.HasFiles() {
 		writeJSON(w, resp)
@@ -216,30 +219,63 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 	if q.Get("more") == "1" {
 		opts.HexBudget = 1 << 20
 	}
-	resp.Detail = s.pair(e, limit).Detail(e, opts)
+	p, st := s.pair(e, limit)
+	if p == nil { // still being read: say how far, and the page asks again
+		resp.Loading = &loadingResp{Read: st.read.Load(), Total: st.total}
+		writeJSON(w, resp)
+		return
+	}
+	resp.Detail = p.Detail(e, opts)
 	writeJSON(w, resp)
 }
 
-// pair is the bytes of an entry, read once and kept for the next few requests (a
-// page switching views asks again for the same file).
-func (s *server) pair(e analysis.Entry, limit int64) *analysis.Pair {
+// loadingResp is how far the read of an entry has got, in bytes of Total.
+type loadingResp struct {
+	Read  int64 `json:"read"`
+	Total int64 `json:"total"`
+}
+
+// loadState is a read in flight.
+type loadState struct {
+	read  atomic.Int64
+	total int64
+}
+
+type loadKey struct {
+	key   analysis.EntryKey
+	limit int64
+}
+
+// pair is the bytes of an entry if they have been read (kept for the next few
+// requests: a page switching views asks again for the same file). Otherwise it
+// starts the read, in the background and one at a time with the others, and
+// returns its progress; the page asks again until the pair is there.
+func (s *server) pair(e analysis.Entry, limit int64) (*analysis.Pair, *loadState) {
 	k := e.Key()
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, c := range s.pairs {
 		if c.key == k && c.limit == limit {
-			s.mu.Unlock()
-			return c.pair
+			return c.pair, nil
 		}
 	}
-	s.mu.Unlock()
-	s.load.Lock()
-	defer s.load.Unlock()
-	p := analysis.Load(e, limit)
-	s.mu.Lock()
-	s.pairs = append(s.pairs, cachedPair{k, limit, p})
-	if len(s.pairs) > cachedPairs {
-		s.pairs = s.pairs[len(s.pairs)-cachedPairs:]
+	lk := loadKey{k, limit}
+	if st, ok := s.loads[lk]; ok {
+		return nil, st
 	}
-	s.mu.Unlock()
-	return p
+	st := &loadState{total: analysis.LoadSize(e, limit)}
+	s.loads[lk] = st
+	go func() {
+		s.load.Lock()
+		p := analysis.LoadProgress(e, limit, func(n int64) { st.read.Add(n) })
+		s.load.Unlock()
+		s.mu.Lock()
+		s.pairs = append(s.pairs, cachedPair{k, limit, p})
+		if len(s.pairs) > cachedPairs {
+			s.pairs = s.pairs[len(s.pairs)-cachedPairs:]
+		}
+		delete(s.loads, lk)
+		s.mu.Unlock()
+	}()
+	return nil, st
 }

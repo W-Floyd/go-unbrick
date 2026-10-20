@@ -54,3 +54,21 @@ func TestSameFileNeedsNoRead(t *testing.T) {
 		t.Error("a separate copy was taken for the same file")
 	}
 }
+
+// Load reports its progress in bytes, up to what LoadSize says it will read.
+func TestLoadProgressCountsBytes(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a"), make([]byte, 300<<10), 0o644)
+	os.WriteFile(filepath.Join(dir, "b"), make([]byte, 100<<10), 0o644)
+	a, _, _, err := PairNodes(filepath.Join(dir, "a"), filepath.Join(dir, "b"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b, _, _ := PairNodes(filepath.Join(dir, "a"), filepath.Join(dir, "b"), "")
+	e := PairEntry("x", a, b)
+	var got int64
+	p := LoadProgress(e, 200<<10, func(n int64) { got += n })
+	if p.Err != nil || got < 200<<10 || got > LoadSize(e, 200<<10)+1 || LoadSize(e, 200<<10) != 300<<10 {
+		t.Errorf("progress %d, size %d, err %v", got, LoadSize(e, 200<<10), p.Err)
+	}
+}

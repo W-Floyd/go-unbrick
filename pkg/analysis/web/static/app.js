@@ -20,6 +20,7 @@ function app() {
     words: store.get('words', true),
     hexMore: false,
     loading: false,
+    loadInfo: null, // how far the read of the entry on screen has got: {read, total}
     _seq: 0,
     _curSig: '',
     _timer: null,
@@ -60,22 +61,40 @@ function app() {
       if (!e) { this.cur = null; this._curSig = ''; }
     },
 
-    async reload() {
+    // reload asks for the entry on screen. A file is read in the background, so the
+    // answer may be "still reading, this far": the page asks again (again = the same
+    // request, not a new one).
+    async reload(again) {
       const e = this.entries.find((e) => e.name === this.sel);
       if (!e) return;
-      const seq = ++this._seq;
+      const seq = again ?? ++this._seq;
+      if (again === undefined && this.cur && this.cur.entry.name !== e.name) this.cur = null; // not the old entry's pane under the new one
+      if (again === undefined) this.loadInfo = null;
       this.loading = true;
       try {
         const r = await this.get('api/entry?' + q([...this.path.map((p) => ['p', p]), ['name', e.name], ['view', this.view],
           ['words', this.words ? '1' : '0'], ['more', this.hexMore ? '1' : '0']]));
-        if (seq === this._seq) this.cur = r; // a slower answer for an entry the cursor left is dropped
+        if (seq !== this._seq) return; // a slower answer for an entry the cursor left is dropped
+        if (r.loading) {
+          this.loadInfo = r.loading;
+          setTimeout(() => { if (seq === this._seq) this.reload(seq); }, 350);
+          return;
+        }
+        this.loadInfo = null;
+        this.cur = r;
+        this.loading = false;
       } catch (err) {
-        if (seq === this._seq) this.cur = { entry: e, title: e.kind, detail: { err: String(err.message || err) } };
-      } finally {
-        if (seq === this._seq) this.loading = false;
+        if (seq !== this._seq) return;
+        this.loadInfo = null;
+        this.loading = false;
+        this.cur = { entry: e, title: e.kind, detail: { err: String(err.message || err) } };
       }
     },
 
+    progress() {
+      const l = this.loadInfo;
+      return l && l.total > 0 ? Math.min(100, Math.round(100 * l.read / l.total)) : 0;
+    },
     // canOpen says whether there is somewhere to go in: a directory, a container
     // with differences inside, or the container on screen (its members can be listed).
     canOpen(e) {

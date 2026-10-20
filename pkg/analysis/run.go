@@ -544,7 +544,7 @@ type Pair struct {
 	Err            error
 }
 
-func readHead(n *carve.Node, limit int64) (data []byte, size int64, trunc bool, err error) {
+func readHead(n *carve.Node, limit int64, progress func(int64)) (data []byte, size int64, trunc bool, err error) {
 	if n == nil || n.IsDirNode() {
 		return nil, -1, false, nil
 	}
@@ -553,7 +553,11 @@ func readHead(n *carve.Node, limit int64) (data []byte, size int64, trunc bool, 
 		return nil, n.Size, false, err
 	}
 	defer r.Close()
-	data, err = io.ReadAll(io.LimitReader(r, limit+1))
+	var src io.Reader = r
+	if progress != nil {
+		src = progressReader{r, progress}
+	}
+	data, err = io.ReadAll(io.LimitReader(src, limit+1))
 	if int64(len(data)) > limit {
 		data, trunc = data[:limit], true
 	}
@@ -562,11 +566,15 @@ func readHead(n *carve.Node, limit int64) (data []byte, size int64, trunc bool, 
 
 // Load reads the first limit bytes of each side of an entry. It blocks on the
 // read; call it off the viewer's goroutine.
-func Load(e Entry, limit int64) *Pair {
+func Load(e Entry, limit int64) *Pair { return LoadProgress(e, limit, nil) }
+
+// LoadProgress is Load, calling progress with the bytes of each chunk as it is
+// read, from the reading goroutine.
+func LoadProgress(e Entry, limit int64, progress func(n int64)) *Pair {
 	p := &Pair{Limit: limit}
 	var errA, errB error
-	p.a, p.SizeA, p.TruncA, errA = readHead(e.a, limit)
-	p.b, p.SizeB, p.TruncB, errB = readHead(e.b, limit)
+	p.a, p.SizeA, p.TruncA, errA = readHead(e.a, limit, progress)
+	p.b, p.SizeB, p.TruncB, errB = readHead(e.b, limit, progress)
 	if errA != nil {
 		p.Err = errA
 	} else {
@@ -756,3 +764,28 @@ func PairEntry(name string, a, b *carve.Node) Entry {
 // SetStepHook has f called as the comparison reaches each member: a test seam,
 // to hold the comparison part-way and look at what it has found.
 func SetStepHook(f func(path string)) { diffStep = f }
+
+type progressReader struct {
+	r  io.Reader
+	fn func(int64)
+}
+
+func (p progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.fn(int64(n))
+	}
+	return n, err
+}
+
+// LoadSize is the bytes Load will read of an entry at most: what progress counts
+// up to.
+func LoadSize(e Entry, limit int64) int64 {
+	n := int64(0)
+	for _, s := range []int64{e.SizeA, e.SizeB} {
+		if s > 0 {
+			n += min(s, limit)
+		}
+	}
+	return n
+}
