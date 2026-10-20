@@ -777,10 +777,11 @@ func (m *browseModel) imagePreview(e browseEntry) (string, bool) {
 		// JPEG passed as-is is accepted by some implementations' lenient
 		// decoders and rejected by others, so it's decoded and re-encoded
 		// to PNG here rather than relied on either way.
-		png, err := toPNG(raw)
+		png, bounds, err := toPNG(raw)
 		if err != nil {
 			return "", false
 		}
+		debugImagePreview(e.name, len(raw), bounds, cols, rows)
 		return kittyImageSequence(png, cols, rows), true
 	default:
 		return "", false
@@ -814,17 +815,38 @@ func readImageBytes(e browseEntry, capBytes int64) (data []byte, truncated bool,
 }
 
 // toPNG decodes raw as whatever registered image format it is (JPEG or PNG,
-// per looksLikeImage) and re-encodes it as PNG, for Kitty's f=100.
-func toPNG(raw []byte) ([]byte, error) {
+// per looksLikeImage) and re-encodes it as PNG, for Kitty's f=100. bounds is
+// the decoded image's own pixel dimensions, for debugImagePreview.
+func toPNG(raw []byte) (data []byte, bounds image.Rectangle, err error) {
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return nil, err
+		return nil, image.Rectangle{}, err
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
+		return nil, image.Rectangle{}, err
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), img.Bounds(), nil
+}
+
+// debugImagePreview appends one diagnostic line per image render to the file
+// named by UNBRICK_BROWSE_IMGDEBUG, when set - a no-op otherwise. Added to
+// chase an intermittent "image overlays the list" bug that varies by file
+// despite identical cols/rows requested, where a screenshot alone can't say
+// whether the decoded image's actual pixel bounds, not just its filename,
+// line up with what was asked for.
+func debugImagePreview(name string, rawLen int, bounds image.Rectangle, cols, rows int) {
+	path := os.Getenv("UNBRICK_BROWSE_IMGDEBUG")
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s raw=%dB decodedBounds=%v requestedCols=%d requestedRows=%d\n",
+		name, rawLen, bounds, cols, rows)
 }
 
 // kittyChunkSize is the Kitty graphics protocol's own wire-format limit: at
