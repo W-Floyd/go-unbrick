@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
 )
 
 // A removed and an added member are paired as "renamed and changed" when they
@@ -217,7 +218,7 @@ func (t *treeDiffTally) descend(g, f *diffEnt) {
 
 // differences counts everything a comparison found that is not "unchanged".
 func (t *treeDiffTally) differences() int {
-	return t.changed + t.added + t.removed + t.renamed + t.similar
+	return t.changed + t.added + t.removed + t.renamed + t.similar + t.metaOnly
 }
 
 // merge folds a nested comparison's counts into t.
@@ -228,6 +229,7 @@ func (t *treeDiffTally) merge(sub *treeDiffTally) {
 	t.same += sub.same
 	t.renamed += sub.renamed
 	t.similar += sub.similar
+	t.metaOnly += sub.metaOnly
 	t.trusted += sub.trusted
 }
 
@@ -279,6 +281,16 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 			line.compared = true
 			line.text = fmt.Sprintf("%s~ %-48s %10s -> %s  (members identical; container bytes differ)", indent, path, size(x), size(y))
 		})
+	case sub.differences() == 0 && headerDiff(x, y) != "":
+		// Every member is the same, but the containers record different times or
+		// owners: not "unchanged", and not a change to any member either.
+		meta := headerDiff(x, y)
+		t.metaOnly++
+		t.trusted += sub.trusted
+		live(func() {
+			line.subT, line.compared, line.kind, line.meta = nil, true, '≡', meta
+			line.text = fmt.Sprintf("%s≡ %-48s %10s  (members identical; %s)", indent, path, size(x), meta)
+		})
 	case sub.differences() == 0:
 		t.same++
 		t.trusted += sub.trusted
@@ -301,4 +313,31 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 		})
 	}
 	return true
+}
+
+// metaNote is ", N metadata-only" for a run's summary line, or nothing.
+func (t *treeDiffTally) metaNote() string {
+	if t.metaOnly == 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d metadata-only", t.metaOnly)
+}
+
+// headerDiff says what differs in the headers of two tars (or two zips) whose
+// members are all the same: "mtime of 47 of 52 members; uid of 2". "" when the
+// headers are identical too, or when they cannot be read cheaply: a stream that
+// has to be buffered whole to seek is not read for this.
+func headerDiff(x, y *carve.Node) string {
+	kx, ky := filetype.Detect(x.Head()), filetype.Detect(y.Head())
+	if kx != ky || (kx != filetype.Tar && kx != filetype.Zip) || !x.RandomAccess() || !y.RandomAccess() {
+		return ""
+	}
+	h := readHeaders(x, y)
+	if h.Err != "" || h.Report.Identical() {
+		return ""
+	}
+	if s := h.Report.Summary(); s != "" {
+		return s
+	}
+	return "headers differ"
 }

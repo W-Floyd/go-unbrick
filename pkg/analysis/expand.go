@@ -138,7 +138,7 @@ func (r *Run) expandLine(l *diffLine) {
 	})
 	r.mu.Lock()
 	r.summary = fmt.Sprintf("%d changed, %d added, %d removed, %d renamed, %d unchanged",
-		root.changed, root.added, root.removed, root.renamed+root.similar, root.same)
+		root.changed, root.added, root.removed, root.renamed+root.similar, root.same) + root.metaNote()
 	r.mu.Unlock()
 }
 

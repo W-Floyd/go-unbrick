@@ -148,8 +148,10 @@ disks, not `by-name` GPT entries — a different code path than
 
 In payoff order; `.ver` sub-directories and same-inode are done.
 
-- Hash cache key: device+inode, path as fallback, so hardlinked copies share an
-  entry. A real setter (`SetHashCache(path)` or a `Config` field) in place of
+- Hash cache key: (device, inode, size, mtime) where available, path as fallback, so
+  hardlinked copies in different packages share an entry. Load parses the whole
+  JSONL on first use (56 MB took ~3.5 s) and the file grows without bound: compaction
+  or an index. A real setter (`SetHashCache(path)` or a `Config` field) in place of
   `UNBRICK_HASH_CACHE` and the package global.
 - Heads of settled files: with a trusted claim, or the same inode, defer the
   head read (type sniff) until the entry's detail is opened. Matters on a spinning

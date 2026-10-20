@@ -49,12 +49,13 @@ const (
 	Same           Kind = '='
 	Dir            Kind = '/' // a directory, made from the paths of entries
 	Up             Kind = '↑' // ".." in a level that has one above
+	MetaOnly       Kind = '≡' // a pair of tars or zips whose members are all the same but whose headers differ (times, owners)
 	Note           Kind = 0   // a message, not a pair (an error from comparing)
 )
 
 var kindNames = map[Kind]string{
 	Changed: "changed", Renamed: "renamed", RenamedChanged: "renamed-changed", Added: "added",
-	Removed: "removed", Same: "unchanged", Dir: "dir", Up: "up", Note: "note",
+	Removed: "removed", Same: "unchanged", Dir: "dir", Up: "up", Note: "note", MetaOnly: "metadata-only",
 }
 
 func (k Kind) String() string { return kindNames[k] }
@@ -77,6 +78,8 @@ func (k Kind) Label() string {
 		return "only in A"
 	case Same:
 		return "unchanged"
+	case MetaOnly:
+		return "same members, headers differ"
 	}
 	return ""
 }
@@ -135,7 +138,7 @@ func Start(cfg Config) *Run {
 		case ok:
 			r.mu.Lock()
 			r.summary = fmt.Sprintf("%d changed, %d added, %d removed, %d renamed, %d unchanged",
-				t.changed, t.added, t.removed, t.renamed+t.similar, t.same)
+				t.changed, t.added, t.removed, t.renamed+t.similar, t.same) + t.metaNote()
 			r.mu.Unlock()
 		default:
 			r.setRoot(r.pairRoot(cfg.A, cfg.B, ""))
@@ -384,6 +387,9 @@ func snapshotLevel(root *treeDiffTally, f *Level, up bool) []Entry {
 		if kids { // what was found inside it, for its pane
 			e.Summary = summarise(counts)
 		}
+		if kind == MetaOnly {
+			e.Summary = l.meta
+		}
 		leaves = append(leaves, e)
 	}
 	sort.Strings(dirNames)
@@ -401,7 +407,7 @@ func snapshotLevel(root *treeDiffTally, f *Level, up bool) []Entry {
 var kindWords = []struct {
 	kind Kind
 	word string
-}{{Changed, "changed"}, {Added, "added"}, {Removed, "removed"}, {Renamed, "renamed"}, {RenamedChanged, "renamed and changed"}, {Same, "unchanged"}}
+}{{Changed, "changed"}, {Added, "added"}, {Removed, "removed"}, {Renamed, "renamed"}, {RenamedChanged, "renamed and changed"}, {Same, "unchanged"}, {MetaOnly, "metadata-only"}}
 
 // summarise reads counts of lines by kind as "3 changed, 1 added".
 func summarise(counts map[Kind]int) string {
@@ -532,7 +538,9 @@ type Headers struct {
 
 // ReadHeaders reads the headers of a pair of tars (or the directories of two
 // zips): a read per member, not the members.
-func (e Entry) ReadHeaders() *Headers {
+func (e Entry) ReadHeaders() *Headers { return readHeaders(e.a, e.b) }
+
+func readHeaders(a, b *carve.Node) *Headers {
 	read := func(n *carve.Node) ([]MetaEntry, error) {
 		ra, err := n.ReaderAt()
 		if err != nil {
@@ -543,8 +551,8 @@ func (e Entry) ReadHeaders() *Headers {
 		}
 		return TarMeta(ra, n.Size)
 	}
-	ea, errA := read(e.a)
-	eb, errB := read(e.b)
+	ea, errA := read(a)
+	eb, errB := read(b)
 	if err := errors.Join(errA, errB); err != nil {
 		return &Headers{Err: err.Error()}
 	}

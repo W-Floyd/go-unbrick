@@ -1,7 +1,7 @@
 // The page is one Alpine component over the JSON API (api/state, api/level,
 // api/entry): the same calls the terminal viewer makes of the analysis package.
 function app() {
-  const GLYPH = { changed: '~', renamed: '>', 'renamed-changed': '≈', added: '+', removed: '-', unchanged: '=', dir: '/', note: '' };
+  const GLYPH = { changed: '~', renamed: '>', 'renamed-changed': '≈', added: '+', removed: '-', unchanged: '=', dir: '/', note: '', 'metadata-only': '≡' };
   const q = (params) => params.map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },

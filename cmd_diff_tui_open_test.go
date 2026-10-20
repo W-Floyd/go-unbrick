@@ -36,7 +36,7 @@ func tarAt(t *testing.T, mtime time.Time, files ...string) []byte {
 //	top.txt                  an ordinary file, changed
 func containers(t *testing.T) *diffTUI {
 	t1, t2 := time.Unix(1_700_000_000, 0), time.Unix(1_800_000_000, 0)
-	inner := func(at time.Time) string { return string(tarAt(t, at, "x.bin", "inner-x", "y.bin", "inner-y")) }
+	inner := func(time.Time) string { return string(tarAt(t, t1, "x.bin", "inner-x", "y.bin", "inner-y")) } // the same bytes on both sides
 	members := func(at time.Time) []byte {
 		return tarAt(t, at, "a.bin", strings.Repeat("alpha-", 200), "b.bin", strings.Repeat("bravo-", 200), "inner.tar", inner(at))
 	}
@@ -186,13 +186,8 @@ func TestEnterOpensAContainerWithNothingDifferingAndListsItsMembers(t *testing.T
 		t.Fatalf("its members: %q", got)
 	}
 	for _, it := range m.lines[1:] {
-		// inner.tar is itself packed at a different time: its bytes differ, its members do not.
-		want := '='
-		if it.name == "inner.tar" {
-			want = '~'
-		}
-		if it.kind != want {
-			t.Errorf("%s is %q, want %q", it.name, it.kind, want)
+		if it.kind != '=' {
+			t.Errorf("%s is %q, want unchanged", it.name, it.kind)
 		}
 	}
 	if !strings.Contains(crumb(m), "pkg_v1.tar -> pkg_v2.tar") {

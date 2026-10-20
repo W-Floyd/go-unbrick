@@ -282,3 +282,94 @@ func TestDeepenComparesWhatTheDepthLeftOut(t *testing.T) {
 		t.Errorf("deepen before it finished: %v", err)
 	}
 }
+
+func mkTarOwned(mtime time.Time, uid int, files ...string) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for i := 0; i+1 < len(files); i += 2 {
+		tw.WriteHeader(&tar.Header{Name: files[i], Mode: 0o644, Uid: uid, Size: int64(len(files[i+1])), ModTime: mtime})
+		tw.Write([]byte(files[i+1]))
+	}
+	tw.Close()
+	return buf.Bytes()
+}
+
+// Containers whose members are all the same but whose headers differ are listed
+// as metadata-only, with what differs; identical ones are not listed at all.
+func TestMetadataOnlyContainers(t *testing.T) {
+	t1, t2 := time.Unix(1_700_000_000, 0), time.Unix(1_800_000_000, 0)
+	a, b := t.TempDir(), t.TempDir()
+	m := []string{"x", "same-x", "y", "same-y", "z", "same-z"}
+	write(t, a, "same_but_mtime.tar", mkTarOwned(t1, 0, m...))
+	write(t, b, "same_but_mtime.tar", mkTarOwned(t2, 0, m...))
+	write(t, a, "mtime_and_uid.tar", mkTarOwned(t1, 0, m...))
+	write(t, b, "mtime_and_uid.tar", mkTarOwned(t2, 1000, m...))
+	write(t, a, "identical.tar", mkTarOwned(t1, 0, m...))
+	write(t, b, "identical.tar", mkTarOwned(t1, 0, m...))
+	write(t, a, "really_changed.tar", mkTarOwned(t1, 0, m...))
+	write(t, b, "really_changed.tar", mkTarOwned(t1, 0, "x", "same-x", "y", "CHANGED", "z", "same-z"))
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 3})
+	<-run.Done()
+	got := map[string]analysis.Entry{}
+	for _, e := range run.Entries(run.Root(), false) {
+		got[strings.TrimSuffix(e.Name, "/")] = e
+	}
+	if e := got["same_but_mtime.tar"]; e.Kind != analysis.MetaOnly || e.Summary != "mtime of 3 of 3 members" || !e.Compared {
+		t.Errorf("same_but_mtime.tar: %+v", e)
+	}
+	if e := got["mtime_and_uid.tar"]; e.Kind != analysis.MetaOnly || !strings.Contains(e.Summary, "mtime of 3 of 3") || !strings.Contains(e.Summary, "uid of 3") {
+		t.Errorf("mtime_and_uid.tar: %+v", e)
+	}
+	if _, ok := got["identical.tar"]; ok {
+		t.Error("an identical tar is listed")
+	}
+	if e := got["really_changed.tar"]; e.Kind != analysis.Changed {
+		t.Errorf("really_changed.tar: %+v", e)
+	}
+	if s := run.Summary(); !strings.Contains(s, "2 metadata-only") {
+		t.Errorf("summary %q", s)
+	}
+	if b, _ := json.Marshal(got["same_but_mtime.tar"]); !strings.Contains(string(b), `"kind":"metadata-only"`) {
+		t.Errorf("json: %s", b)
+	}
+}
+
+func TestHandlerControlsForUntrustedCallers(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write(t, a, "pkg_v1.tar", mkTar(time.Unix(1_700_000_000, 0), "x", "one"))
+	write(t, b, "pkg_v2.tar", mkTar(time.Unix(1_700_000_000, 0), "x", "two"))
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 1})
+	<-run.Done()
+	post := func(h http.Handler) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/deepen", nil))
+		return rec
+	}
+	if rec := post(Handler(run, Options{AllowDeepen: func(*http.Request) bool { return false }})); rec.Code != http.StatusForbidden {
+		t.Errorf("AllowDeepen false: %d", rec.Code)
+	}
+	if rec := post(Handler(run, Options{MaxDepth: 1})); rec.Code != http.StatusForbidden {
+		t.Errorf("MaxDepth reached: %d", rec.Code)
+	}
+	// The state says whether this caller may, so the page can hide the button.
+	var st struct {
+		CanDeepen bool   `json:"canDeepen"`
+		Err       string `json:"err"`
+	}
+	rec := httptest.NewRecorder()
+	Handler(run, Options{MaxDepth: 1}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	json.NewDecoder(rec.Body).Decode(&st)
+	if st.CanDeepen {
+		t.Error("the state offers deepening past MaxDepth")
+	}
+	if rec := post(Handler(run, Options{MaxDepth: 5})); rec.Code != 200 {
+		t.Errorf("allowed: %d", rec.Code)
+	}
+	// Redact applies to the errors the handler sends.
+	rec = httptest.NewRecorder()
+	h := Handler(run, Options{Redact: func(s string) string { return strings.ReplaceAll(s, a, "<A>") }})
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/level?p=nope%2F", nil))
+	if rec.Code != 404 {
+		t.Errorf("%d", rec.Code)
+	}
+}

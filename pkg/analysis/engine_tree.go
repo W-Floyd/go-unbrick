@@ -35,6 +35,9 @@ func diffContainers(pathA, pathB string, depth int, verbose bool) (ok bool, err 
 	if t.similar > 0 {
 		fmt.Printf(", %d renamed and changed", t.similar)
 	}
+	if t.metaOnly > 0 {
+		fmt.Printf(", %d metadata-only", t.metaOnly)
+	}
 	fmt.Printf(", %d unchanged\n", t.same)
 	if t.trusted > 0 {
 		fmt.Printf("%d member(s) compared by stated hash (vendor manifest, zip directory, OTA manifest); --verify reads them\n", t.trusted)
@@ -156,6 +159,8 @@ type diffLine struct {
 	// lines inside it means they are the same; without it they were not looked at
 	// (the depth ran out).
 	compared bool
+	// meta says, for a kind '≡' line, what differs in the headers: "mtime of 47 of 52 members".
+	meta string
 
 	// What the line is about, for a viewer that opens it: its kind ('~' changed,
 	// '>' renamed, '≈' renamed and changed, '+' added, '-' removed, '=' same),
@@ -176,6 +181,7 @@ type treeDiffTally struct {
 	changed, added, removed, same, renamed int
 	trusted                                int // members settled by a manifest, unread
 	similar                                int // renamed and changed
+	metaOnly                               int // containers whose members are all the same and whose headers differ
 	depth                                  int // container levels left to compare into
 	verbose                                bool
 	lines                                  []*diffLine

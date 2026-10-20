@@ -12,7 +12,7 @@
 <header>
   <strong x-text="state.title || 'Comparing'"></strong>
   <span class="summary" x-text="state.summary"></span>
-  <span class="depth" x-show="state.finished">
+  <span class="depth" x-show="state.finished && state.canDeepen">
     <span class="dim" x-text="'depth ' + state.depth"></span>
     <button class="open" :disabled="state.working" @click="deeper()" title="compare the containers the comparison stopped at, one level further">compare deeper</button>
     <span class="dim" x-show="deepenNote" x-text="deepenNote"></span>
@@ -83,7 +83,8 @@
 
           <template x-if="cur.container">
             <div>
-              <template x-if="cur.entry.summary"><p>Inside it: <span x-text="cur.entry.summary"></span></p></template>
+              <template x-if="cur.entry.kind === 'metadata-only'"><p>Every member is the same; what the containers record about them differs: <span x-text="cur.entry.summary"></span></p></template>
+              <template x-if="cur.entry.summary && cur.entry.kind !== 'metadata-only'"><p>Inside it: <span x-text="cur.entry.summary"></span></p></template>
               <template x-if="!cur.entry.summary && (cur.entry.compared || cur.entry.kind === 'renamed')"><p>Nothing inside it differs: its members are all the same.</p></template>
               <template x-if="!cur.entry.summary && !cur.entry.compared && cur.entry.kind !== 'renamed'"><p>Its members were not compared: the depth ran out first. List them to compare them now.</p></template>
               <button class="open" @click="open(cur.entry)" x-text="cur.entry.hasKids ? 'go in' : 'list its members'"></button>

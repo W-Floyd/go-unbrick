@@ -28,15 +28,31 @@ var assets embed.FS
 type Options struct {
 	Title string
 	// Limit is the bytes read of each side of a file to show what differs (default
-	// 32 MiB); a request may ask for up to MaxLimit.
-	Limit    int64
-	MaxLimit int64 // default 256 MiB
+	// 32 MiB); a request may ask for up to MaxLimit (default 64 MiB). The last
+	// CachedPairs files read are kept in memory (default 2), so the most a handler
+	// holds is about 2 x CachedPairs x MaxLimit.
+	Limit       int64
+	MaxLimit    int64
+	CachedPairs int
+
+	// AllowDeepen decides whether a request may have the comparison go a level
+	// deeper (POST /api/deepen), which reads inside every container the first pass
+	// stopped at. Nil allows it; MaxDepth, when positive, stops it once the run has
+	// compared that many levels in. For a handler open to callers you do not trust,
+	// set one of them.
+	AllowDeepen func(*http.Request) bool
+	MaxDepth    int
+
+	// Redact is applied to every error and status string the handler sends, to
+	// take the inputs' absolute paths out of them: strings.ReplaceAll(s, root, "")
+	// or the like. Nil sends them as they are.
+	Redact func(string) string
 }
 
 const (
-	defaultLimit = 32 << 20
-	maxLimit     = 256 << 20
-	cachedPairs  = 4
+	defaultLimit       = 32 << 20
+	maxLimit           = 64 << 20
+	defaultCachedPairs = 2
 )
 
 // Handler serves run. It is safe for concurrent requests.
@@ -46,6 +62,9 @@ func Handler(run *analysis.Run, opts Options) http.Handler {
 	}
 	if opts.MaxLimit <= 0 {
 		opts.MaxLimit = maxLimit
+	}
+	if opts.CachedPairs <= 0 {
+		opts.CachedPairs = defaultCachedPairs
 	}
 	s := &server{run: run, opts: opts, loads: map[loadKey]*loadState{}}
 	run.Root().SetTitle(opts.Title)
@@ -81,25 +100,34 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func fail(w http.ResponseWriter, code int, err error) {
-	http.Error(w, err.Error(), code)
+func (s *server) redact(m string) string {
+	if s.opts.Redact != nil {
+		return s.opts.Redact(m)
+	}
+	return m
+}
+
+func (s *server) fail(w http.ResponseWriter, code int, err error) {
+	http.Error(w, s.redact(err.Error()), code)
 }
 
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	st := struct {
-		Title    string `json:"title"`
-		Finished bool   `json:"finished"`
-		Summary  string `json:"summary"`
-		Status   string `json:"status"`
-		Depth    int    `json:"depth"`   // container levels compared into
-		Working  bool   `json:"working"` // going deeper, after the first pass
-		Err      string `json:"err,omitempty"`
-	}{Title: s.opts.Title, Finished: s.run.Finished(), Summary: s.run.Summary(), Status: s.run.Status(), Depth: s.run.Depth(), Working: s.run.Working()}
+		Title     string `json:"title"`
+		Finished  bool   `json:"finished"`
+		Summary   string `json:"summary"`
+		Status    string `json:"status"`
+		Depth     int    `json:"depth"`     // container levels compared into
+		Working   bool   `json:"working"`   // going deeper, after the first pass
+		CanDeepen bool   `json:"canDeepen"` // this caller may ask to go deeper
+		Err       string `json:"err,omitempty"`
+	}{Title: s.opts.Title, Finished: s.run.Finished(), Summary: s.run.Summary(), Status: s.run.Status(), Depth: s.run.Depth(), Working: s.run.Working(), CanDeepen: s.mayDeepen(r)}
 	if st.Finished {
 		st.Status = "" // the last thing it was doing
 	}
+	st.Status = s.redact(st.Status)
 	if err := s.run.Err(); err != nil {
-		st.Err = err.Error()
+		st.Err = s.redact(err.Error())
 	}
 	writeJSON(w, st)
 }
@@ -111,7 +139,7 @@ func (s *server) level(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query()["p"]
 	l, err := s.resolve(path)
 	if err != nil {
-		fail(w, http.StatusNotFound, err)
+		s.fail(w, http.StatusNotFound, err)
 		return
 	}
 	es := s.run.Entries(l, false)
@@ -142,12 +170,12 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 	}
 	l, err := s.resolve(loc.Path)
 	if err != nil {
-		fail(w, http.StatusNotFound, err)
+		s.fail(w, http.StatusNotFound, err)
 		return
 	}
 	e, ok := analysis.FindEntry(s.run.Entries(l, false), name)
 	if !ok {
-		fail(w, http.StatusNotFound, analysis.ErrNoSuchEntry)
+		s.fail(w, http.StatusNotFound, analysis.ErrNoSuchEntry)
 		return
 	}
 	resp := struct {
@@ -238,8 +266,8 @@ func (s *server) pair(e analysis.Entry, limit int64) (*analysis.Pair, *loadState
 		s.load.Unlock()
 		s.mu.Lock()
 		s.pairs = append(s.pairs, cachedPair{k, limit, p})
-		if len(s.pairs) > cachedPairs {
-			s.pairs = s.pairs[len(s.pairs)-cachedPairs:]
+		if len(s.pairs) > s.opts.CachedPairs {
+			s.pairs = s.pairs[len(s.pairs)-s.opts.CachedPairs:]
 		}
 		delete(s.loads, lk)
 		s.mu.Unlock()
@@ -252,16 +280,28 @@ func (s *server) pair(e analysis.Entry, limit int64) (*analysis.Pair, *loadState
 func (s *server) deepen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		fail(w, http.StatusMethodNotAllowed, errors.New("POST"))
+		s.fail(w, http.StatusMethodNotAllowed, errors.New("POST"))
+		return
+	}
+	if !s.mayDeepen(r) {
+		s.fail(w, http.StatusForbidden, errors.New("going deeper is not allowed"))
 		return
 	}
 	n, err := s.run.Deepen()
 	if err != nil {
-		fail(w, http.StatusConflict, err)
+		s.fail(w, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, struct {
 		Depth   int `json:"depth"`
 		Started int `json:"started"` // container pairs it set out to compare
 	}{s.run.Depth(), n})
+}
+
+// mayDeepen says whether this request may have the comparison go a level deeper.
+func (s *server) mayDeepen(r *http.Request) bool {
+	if s.opts.AllowDeepen != nil && !s.opts.AllowDeepen(r) {
+		return false
+	}
+	return s.opts.MaxDepth <= 0 || s.run.Depth() < s.opts.MaxDepth
 }

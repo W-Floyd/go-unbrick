@@ -442,7 +442,10 @@ func (m *diffTUI) describeContainer(it diffItem) string {
 	var b strings.Builder
 	b.WriteString(styTitle.Render(it.e.Title()+"  "+it.path) + "\n")
 	b.WriteString(styDim.Render(fmt.Sprintf("A %s    B %s", humanBytes(it.e.SizeA), humanBytes(it.e.SizeB))) + "\n\n")
-	if it.summary != "" {
+	if it.kind == '≡' {
+		b.WriteString("Every member is the same; what the containers record about them differs: " + it.summary + "\n\n" +
+			styDim.Render("enter or l to list its members") + "\n")
+	} else if it.summary != "" {
 		b.WriteString("Inside it: " + it.summary + "\n\n" + styDim.Render("enter or l to go in") + "\n")
 	} else if it.e.Compared || it.kind == '>' {
 		b.WriteString("Nothing inside it differs: its members are all the same.\n\n" +
@@ -1222,7 +1225,7 @@ func kindStyle(k rune) lipgloss.Style {
 		return styAdd
 	case '-':
 		return styDel
-	case '~', '≈':
+	case '~', '≈', '≡':
 		return styMid
 	case '>', '/':
 		return styHunk
