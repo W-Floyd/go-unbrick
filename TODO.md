@@ -143,3 +143,25 @@ disks, not `by-name` GPT entries — a different code path than
   recovery.
 - **`flashfile.xml` / `servicefile.xml` parser**: Motorola stock manifest → ordered
   flash steps. Useful for ingest, but the stock harvester already handles packages.
+
+## pkg/analysis — embedding, from a library user (3 GiB nudl packages)
+
+In payoff order; `.ver` sub-directories and same-inode are done.
+
+- Hash cache key: device+inode, path as fallback, so hardlinked copies share an
+  entry. A real setter (`SetHashCache(path)` or a `Config` field) in place of
+  `UNBRICK_HASH_CACHE` and the package global.
+- Heads of settled files: with a trusted claim, or the same inode, defer the
+  head read (type sniff) until the entry's detail is opened. Matters on a spinning
+  array with thousands of files.
+- Process-wide state (`apply`, `diffQuiet`, `diffTrust`, prefetch budget,
+  `dprog`) into `Run`, so runs can be concurrent.
+- Lifecycle: `StartContext(ctx, cfg)`, `Run.Close()`. `web.Handler` keeps 4
+  pairs per run (256 MiB cap each): needs a close and a budget option.
+- Caps for untrusted callers: byte budget or deadline per run; lower default
+  `web` `MaxLimit`.
+- Paths in `Run.Err()` and `/api/state` status are absolute: a display root or
+  redaction option.
+- Weight: `pkg/analysis` pulls in sftp/ssh and every container format (~20 MB)
+  even for local dirs; build tag or interface. Needs a tagged release so
+  embedders can drop their `replace`.

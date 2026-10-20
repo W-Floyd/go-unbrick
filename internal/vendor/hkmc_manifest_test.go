@@ -25,3 +25,28 @@ func TestHKMCManifests(t *testing.T) {
 		t.Errorf("update.info claim: %+v", c)
 	}
 }
+
+// A .ver row's column 0 carries the file's sub-directory after the collection, so
+// a claim for a nested file is under it: without it no claim matches the file.
+func TestVerClaimsKeepTheSubDirectory(t *testing.T) {
+	ver := "+|1|B|kia|2019_21_G70_CAN|2|0\n" +
+		"2019_21_G70_CAN\\DAUDIOPLUS\\can\\ik\\update|f.bin|1|-5|10|0\n" +
+		"2019_21_G70_CAN|top.bin|2|7|20|0\n"
+	m := ParseVer([]byte(ver))
+	if len(m.Entries) != 2 || m.Entries[0].Dir != "DAUDIOPLUS/can/ik/update" || m.Entries[1].Dir != "" {
+		t.Fatalf("%+v", m.Entries)
+	}
+	files := map[string][]byte{"pkg/c.ver": []byte(ver)}
+	pkg := PackageAccess{Names: map[string]bool{"pkg/c.ver": true}, Read: func(n string) []byte { return files[n] }}
+	got := map[string]bool{}
+	for _, c := range (hkmc{}).Manifests(pkg) {
+		got[c.Path] = true
+	}
+	if !got["pkg/DAUDIOPLUS/can/ik/update/f.bin"] || !got["pkg/top.bin"] {
+		t.Errorf("claim paths: %v", got)
+	}
+	// With no header row the collection is what precedes the first backslash.
+	if m := ParseVer([]byte("COLL\\a\\b|x.bin|1|1|1|0\n")); len(m.Entries) != 1 || m.Entries[0].Dir != "a/b" {
+		t.Errorf("no header: %+v", m.Entries)
+	}
+}

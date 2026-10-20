@@ -38,7 +38,7 @@ func (hkmc) Manifests(pkg PackageAccess) []FileClaim {
 		case strings.HasSuffix(strings.ToLower(base), ".ver"):
 			dir := name[:len(name)-len(base)]
 			for _, e := range ParseVer(pkg.Read(name)).Entries {
-				out = append(out, FileClaim{Path: dir + e.Name, Size: e.Size, Algo: algoCRC32, Sum: fmt.Sprintf("%08x", e.CRC)})
+				out = append(out, FileClaim{Path: dir + vpath.Join(e.Dir, e.Name), Size: e.Size, Algo: algoCRC32, Sum: fmt.Sprintf("%08x", e.CRC)})
 			}
 		}
 	}
@@ -47,6 +47,7 @@ func (hkmc) Manifests(pkg PackageAccess) []FileClaim {
 
 // VerEntry is one file a .ver manifest lists.
 type VerEntry struct {
+	Dir  string // the sub-directory column 0 names after the collection, as a slash path; "" for none
 	Name string
 	CRC  uint32
 	Size int64
@@ -57,7 +58,9 @@ type VerEntry struct {
 //
 //	<collection>|<file>|<id>|<signed crc32>|<size>|<flag>
 //
-// after a header row "+|<id>|<build>|<brand>|<collection>|<n>|<flag>".
+// after a header row "+|<id>|<build>|<brand>|<collection>|<n>|<flag>". Column 0 is
+// the collection and, for a file kept in a sub-directory of it, that directory,
+// backslash-separated (2019_21_G70_CAN\DAUDIOPLUS\can\ik\update).
 type VerManifest struct {
 	Collection string // target device, e.g. 2022_EV6_USA
 	Build      string
@@ -83,9 +86,9 @@ func ParseVer(data []byte) VerManifest {
 			continue
 		}
 		if m.Collection == "" {
-			m.Collection = f[0]
+			m.Collection, _, _ = strings.Cut(f[0], `\`)
 		}
-		m.Entries = append(m.Entries, VerEntry{Name: f[1], CRC: uint32(crc), Size: size})
+		m.Entries = append(m.Entries, VerEntry{Dir: verDir(f[0], m.Collection), Name: f[1], CRC: uint32(crc), Size: size})
 	}
 	return m
 }
@@ -96,4 +99,18 @@ func (hkmc) Hasher(algo string) func(io.Reader) (string, error) {
 		return HyundaiSHA224
 	}
 	return nil
+}
+
+// verDir is the sub-directory column 0 of a .ver row names after its collection,
+// as a slash path: "COLL\DAUDIOPLUS\can" is "DAUDIOPLUS/can". The collection is
+// what the header row gave, else what precedes the first backslash.
+func verDir(col, collection string) string {
+	rest, ok := strings.CutPrefix(col, collection+`\`)
+	if !ok || collection == "" {
+		_, rest, ok = strings.Cut(col, `\`)
+	}
+	if !ok {
+		return ""
+	}
+	return strings.Trim(strings.ReplaceAll(rest, `\`, "/"), "/")
 }

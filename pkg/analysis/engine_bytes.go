@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"os"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/hashcache"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 const (
@@ -28,6 +30,9 @@ const (
 // digests of both are known and cached. A pair that differs early costs a few
 // blocks, however large.
 func sameBytes(a, b *carve.Node) (bool, error) {
+	if sameFile(a, b) {
+		return true, nil
+	}
 	if a.Size >= 0 && b.Size >= 0 && a.Size != b.Size {
 		return false, nil
 	}
@@ -41,6 +46,23 @@ func sameBytes(a, b *carve.Node) (bool, error) {
 		return false, err
 	}
 	return readTogether(a, b, ka, kb)
+}
+
+// sameFile says whether two nodes are the very same bytes on disk: one file seen
+// by two paths (a hard link, a dedup), or one range of one file. No read decides it:
+// it is what a hardlink-deduplicated archive is mostly made of.
+func sameFile(a, b *carve.Node) bool {
+	pa, offA, lenA, okA := a.Source()
+	pb, offB, lenB, okB := b.Source()
+	if !okA || !okB || offA != offB || lenA != lenB || infile.IsRemote(pa) || infile.IsRemote(pb) {
+		return false
+	}
+	if pa == pb {
+		return true
+	}
+	sa, errA := os.Stat(pa)
+	sb, errB := os.Stat(pb)
+	return errA == nil && errB == nil && os.SameFile(sa, sb)
 }
 
 // probeEnds compares the first and last block of two nodes that read at random.
