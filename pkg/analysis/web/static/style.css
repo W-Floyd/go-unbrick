@@ -58,3 +58,7 @@ table.meta { font: 12.5px ui-monospace, monospace; margin-top: 8px; } table.meta
 .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--mid); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 760px) { main { flex-direction: column; } .list { width: auto; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--line); } }
+.row .go { flex: none; border: 0; background: none; color: var(--dim); font-size: 16px; line-height: 1; padding: 0 6px; margin-right: -6px; cursor: pointer; border-radius: 4px; }
+.row .go:hover { background: var(--line); color: var(--fg); }
+button.open { border: 1px solid var(--line); background: var(--bg); color: inherit; padding: 2px 12px; border-radius: 4px; cursor: pointer; }
+button.open:hover { background: var(--sel); }

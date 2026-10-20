@@ -76,6 +76,11 @@ function app() {
       }
     },
 
+    // canOpen says whether there is somewhere to go in: a directory, a container
+    // with differences inside, or the container on screen (its members can be listed).
+    canOpen(e) {
+      return e.kind === 'dir' || e.hasKids || (!!this.cur && !!this.cur.container && this.cur.entry.name === e.name);
+    },
     select(e) { this.sel = e.name; this._curSig = ''; return this.loadLevel(); },
     async open(e) {
       if (e.kind === 'note' || (!e.hasKids && e.kind !== 'dir' && !(this.cur && this.cur.container && this.cur.entry.name === e.name))) return;

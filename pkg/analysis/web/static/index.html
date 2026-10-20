@@ -35,6 +35,7 @@
         <span class="glyph"><span x-show="e.pending" class="spin"></span><span x-show="!e.pending" x-text="glyph(e.kind)"></span></span>
         <span class="name" x-text="e.name"></span>
         <span class="note" x-text="e.kind === 'dir' ? '(' + e.summary + ')' : e.sizeNote"></span>
+        <button class="go" x-show="canOpen(e)" title="open" aria-label="open" @click.stop="select(e).then(() => open(e))">›</button>
       </div>
     </template>
     <p class="empty" x-show="!entries.length" x-text="state.finished ? 'nothing differs' : 'comparing…'"></p>
@@ -61,7 +62,7 @@
              x-text="'A ' + size(cur.entry.sizeA) + '    B ' + size(cur.entry.sizeB)"></p>
 
           <template x-if="cur.entry.kind === 'dir'">
-            <div><p x-text="cur.entry.summary"></p><p class="dim">double-click or Enter to go in</p></div>
+            <div><p x-text="cur.entry.summary"></p><button class="open" @click="open(cur.entry)">open</button></div>
           </template>
           <template x-if="cur.entry.kind === 'note'"><p x-text="cur.entry.text"></p></template>
           <template x-if="cur.entry.pending">
@@ -72,7 +73,7 @@
             <div>
               <template x-if="cur.entry.summary"><p>Inside it: <span x-text="cur.entry.summary"></span></p></template>
               <template x-if="!cur.entry.summary"><p>Nothing inside it differs: its members are all the same.</p></template>
-              <p class="dim" x-text="cur.entry.hasKids ? 'Enter to go in.' : 'Enter to list its members.'"></p>
+              <button class="open" @click="open(cur.entry)" x-text="cur.entry.hasKids ? 'go in' : 'list its members'"></button>
               <template x-if="cur.container.headers">
                 <div>
                   <h3>What each records about its members <span class="dim">(times, owners, modes: not their contents)</span></h3>
