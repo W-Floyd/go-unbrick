@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/hashcache"
@@ -20,48 +21,11 @@ import (
 // A member gone from one place and new in another with the same bytes is
 // reported as a rename (or move), wherever in the tree each sits.
 func diffContainers(pathA, pathB string, depth int, verbose bool) (ok bool, err error) {
-	dprog.start()
-	defer dprog.finish()
-	defer dprof.report()
-	endList := dprof.phase("listing directories")
-	a, err := diffRoot(pathA)
-	if err != nil {
-		return false, nil
-	}
-	b, err := diffRoot(pathB)
-	endList()
-	if err != nil {
-		return false, nil
-	}
-	if !a.IsContainer() || !b.IsContainer() {
-		return false, nil
-	}
-	dprog.clear()
-	fmt.Printf("%s vs %s\n", infile.Base(pathA), infile.Base(pathB))
-	t := treeDiffTally{depth: depth, verbose: verbose}
-	if diffTrust {
-		dprog.begin("reading manifests", "", 0)
-		end := dprof.phase("reading manifests")
-		t.claimsA, t.claimsB = manifestClaims(a), manifestClaims(b)
-		end()
-	}
-	dprog.begin("comparing", "files", 0)
-	t.pref = startPrefetch(a, b, "", &t)
-	defer t.pref.stop()
-	end := dprof.phase("comparing members")
-	err = diffNodes(a, b, "", "  ", depth, verbose, &t)
-	end()
-	if err == nil {
-		end = dprof.phase("matching renames")
-		t.pairRenames()
-		end()
-		end = dprof.phase("matching similar")
-		t.pairSimilar()
-		end()
-	}
-	dprog.finish()
-	if err != nil {
-		return true, err
+	t, ok, err := diffTree(pathA, pathB, depth, verbose, func(*treeDiffTally) {
+		fmt.Printf("%s vs %s\n", infile.Base(pathA), infile.Base(pathB))
+	})
+	if !ok || err != nil {
+		return ok, err
 	}
 	t.flush()
 	fmt.Printf("%d changed, %d added, %d removed", t.changed, t.added, t.removed)
@@ -76,6 +40,60 @@ func diffContainers(pathA, pathB string, depth int, verbose bool) (ok bool, err 
 		fmt.Printf("%d member(s) compared by stated hash (vendor manifest, zip directory, OTA manifest); --verify reads them\n", t.trusted)
 	}
 	return true, nil
+}
+
+// diffTree compares two inputs that are containers and returns the result as a
+// tree of lines, unprinted. ok is false when either is not a container. opened
+// is called once both are open and the comparison is about to begin, with the
+// tree the comparison will fill in, for a caller that wants to say what is being
+// compared before the wait, or to watch the tree grow (snapshotDiff).
+func diffTree(pathA, pathB string, depth int, verbose bool, opened func(*treeDiffTally)) (tally *treeDiffTally, ok bool, err error) {
+	dprog.start()
+	defer dprog.finish()
+	defer dprof.report()
+	endList := dprof.phase("listing directories")
+	a, err := diffRoot(pathA)
+	if err != nil {
+		return nil, false, nil
+	}
+	b, err := diffRoot(pathB)
+	endList()
+	if err != nil {
+		return nil, false, nil
+	}
+	if !a.IsContainer() || !b.IsContainer() {
+		return nil, false, nil
+	}
+	dprog.clear()
+	t := &treeDiffTally{depth: depth, verbose: verbose}
+	if opened != nil {
+		opened(t)
+	}
+	if diffTrust {
+		dprog.begin("reading manifests", "", 0)
+		end := dprof.phase("reading manifests")
+		t.claimsA, t.claimsB = manifestClaims(a), manifestClaims(b)
+		end()
+	}
+	dprog.begin("comparing", "files", 0)
+	t.pref = startPrefetch(a, b, "", t)
+	defer t.pref.stop()
+	end := dprof.phase("comparing members")
+	err = diffNodes(a, b, "", "  ", depth, verbose, t)
+	end()
+	if err == nil {
+		end = dprof.phase("matching renames")
+		t.pairRenames()
+		end()
+		end = dprof.phase("matching similar")
+		t.pairSimilar()
+		end()
+	}
+	dprog.finish()
+	if err != nil {
+		return nil, true, err
+	}
+	return t, true, nil
 }
 
 // diffRoot opens an input to compare: a directory (local or ssh://) as a tree
@@ -131,6 +149,23 @@ type diffLine struct {
 	text string
 	drop bool
 	sub  []*diffLine // what changed inside a similar pair, printed under it
+	// subT is the comparison of the inside while it is still running, so a
+	// viewer can show what it has found so far; sub replaces it when it is done.
+	subT *treeDiffTally
+
+	// What the line is about, for a viewer that opens it: its kind ('~' changed,
+	// '>' renamed, '≈' renamed and changed, '+' added, '-' removed, '=' same),
+	// the path it is known by, and the node on each side (nil on the side it is
+	// missing from).
+	kind rune
+	path string
+	a, b *carve.Node
+}
+
+// tag records what a line is about. It returns l, to chain from out.
+func (l *diffLine) tag(kind rune, path string, a, b *carve.Node) *diffLine {
+	live(func() { l.kind, l.path, l.a, l.b = kind, path, a, b })
+	return l
 }
 
 type treeDiffTally struct {
@@ -148,8 +183,25 @@ type treeDiffTally struct {
 // out queues a line; the report prints once renames are known.
 func (t *treeDiffTally) out(format string, args ...any) *diffLine {
 	l := &diffLine{text: fmt.Sprintf(format, args...)}
-	t.lines = append(t.lines, l)
+	live(func() { t.lines = append(t.lines, l) })
 	return l
+}
+
+// diffStep, when set, is called as the comparison reaches each member. A test
+// seam: it lets a test hold the comparison part-way and look at the tree.
+var diffStep func(path string)
+
+// liveMu orders every change to the tree of lines against a viewer reading it
+// while the comparison is still running (snapshotDiff). The comparison is one
+// goroutine and reads its own lines freely; what it writes, it writes under
+// this, and a reader takes it to read. Held only for the write itself, never
+// across I/O.
+var liveMu sync.Mutex
+
+func live(f func()) {
+	liveMu.Lock()
+	f()
+	liveMu.Unlock()
 }
 
 func (t *treeDiffTally) flush() { printLines(t.lines) }
@@ -183,8 +235,11 @@ func (t *treeDiffTally) pairRenames() {
 	paired := func(g, f *diffEnt) {
 		used[f] = true
 		g.done, f.done = true, true
-		g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
-		f.line.drop = true
+		g.line.tag('>', g.path+" -> "+f.path, g.node, f.node)
+		live(func() {
+			g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
+			f.line.drop = true
+		})
 		t.removed--
 		t.added--
 		t.renamed++
@@ -246,11 +301,11 @@ func (t *treeDiffTally) addOnly(n *carve.Node, path, indent string, isNew bool) 
 	e.claims = claimsFor(claims, path, n)
 	if isNew {
 		t.added++
-		e.line = t.out("%s+ %-48s %10s", indent, path, size(n))
+		e.line = t.out("%s+ %-48s %10s", indent, path, size(n)).tag('+', path, nil, n)
 		t.fresh = append(t.fresh, e)
 	} else {
 		t.removed++
-		e.line = t.out("%s- %-48s %10s", indent, path, size(n))
+		e.line = t.out("%s- %-48s %10s", indent, path, size(n)).tag('-', path, n, nil)
 		t.gone = append(t.gone, e)
 	}
 }
@@ -296,6 +351,9 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 		path := prefix + name
 		dprog.at(path, i > 0)
 		t.pref.reached(path)
+		if diffStep != nil {
+			diffStep(path)
+		}
 		switch {
 		case y == nil:
 			t.addOnly(x, path, indent, false)
@@ -339,12 +397,12 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 			if same {
 				t.same++
 				if verbose {
-					t.out("%s= %-48s %10s", indent, path, size(x))
+					t.out("%s= %-48s %10s", indent, path, size(x)).tag('=', path, x, y)
 				}
 				continue
 			}
 			t.changed++
-			t.out("%s~ %-48s %10s -> %s", indent, path, size(x), size(y))
+			t.out("%s~ %-48s %10s -> %s", indent, path, size(x), size(y)).tag('~', path, x, y)
 			if x.IsContainer() && y.IsContainer() && depth > 1 {
 				if err := diffNodes(x, y, path+"/", indent+"    ", depth-1, verbose, t); err != nil {
 					t.out("%s    (%v)", indent, err)

@@ -167,11 +167,14 @@ func (t *treeDiffTally) pairSimilar() {
 			continue
 		}
 		p.g.done, p.f.done = true, true
-		p.f.line.drop = true
 		t.removed--
 		t.added--
 		t.similar++
-		p.g.line.text = fmt.Sprintf("  ≈ %s -> %s  %s -> %s", p.g.path, p.f.path, size(p.g.node), size(p.f.node))
+		p.g.line.tag('≈', p.g.path+" -> "+p.f.path, p.g.node, p.f.node)
+		live(func() {
+			p.f.line.drop = true
+			p.g.line.text = fmt.Sprintf("  ≈ %s -> %s  %s -> %s", p.g.path, p.f.path, size(p.g.node), size(p.f.node))
+		})
 		if t.depth > 1 && p.g.node.IsContainer() && p.f.node.IsContainer() {
 			t.descend(p.g, p.f)
 		}
@@ -183,22 +186,32 @@ func (t *treeDiffTally) pairSimilar() {
 func (t *treeDiffTally) descend(g, f *diffEnt) {
 	sub := &treeDiffTally{depth: t.depth - 1, verbose: t.verbose,
 		claimsA: subClaims(g.node, ""), claimsB: subClaims(f.node, "")}
+	live(func() { g.line.subT = sub }) // visible while it runs
 	sub.pref = startPrefetch(g.node, f.node, "", sub)
 	err := diffNodes(g.node, f.node, "", "      ", t.depth-1, t.verbose, sub)
 	sub.pref.stop()
 	if err != nil {
-		g.line.sub = []*diffLine{{text: fmt.Sprintf("      (%v)", err)}}
+		live(func() {
+			g.line.subT = nil
+			g.line.sub = []*diffLine{{text: fmt.Sprintf("      (%v)", err)}}
+		})
 		return
 	}
 	sub.pairRenames()
 	sub.pairSimilar()
 	t.merge(sub)
-	g.line.sub = sub.lines
-	if sub.differences() == 0 {
+	same := sub.differences() == 0
+	if same {
 		t.similar--
 		t.renamed++
-		g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
 	}
+	live(func() {
+		g.line.subT, g.line.sub = nil, sub.lines
+		if same {
+			g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
+			g.line.kind = '>'
+		}
+	})
 }
 
 // differences counts everything a comparison found that is not "unchanged".
@@ -242,30 +255,46 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 	}
 	sub := &treeDiffTally{depth: depth - 1, verbose: verbose,
 		claimsA: subClaims(x, path+"/"), claimsB: subClaims(y, path+"/")}
+	// The line exists from the start, reading as under way, with the comparison of
+	// the inside hung from it, so a viewer shows what has been found so far. It
+	// becomes what the outcome is, or goes, when the inside is done.
+	line := t.out("%s… %-48s %10s -> %s  (comparing)", indent, path, size(x), size(y)).tag('~', path, x, y)
+	live(func() { line.subT = sub })
 	sub.pref = startPrefetch(x, y, path+"/", sub)
 	err := diffNodes(x, y, path+"/", indent+"    ", depth-1, verbose, sub)
 	sub.pref.stop()
 	if err != nil {
+		live(func() { line.subT, line.drop = nil, true })
 		return false
 	}
 	sub.pairRenames()
 	sub.pairSimilar()
-	if sub.differences() == 0 && bytesDiffer {
+	switch {
+	case sub.differences() == 0 && bytesDiffer:
 		t.changed++
 		t.trusted += sub.trusted
-		t.out("%s~ %-48s %10s -> %s  (members identical; container bytes differ)", indent, path, size(x), size(y))
-		return true
-	}
-	if sub.differences() == 0 {
+		live(func() {
+			line.subT = nil
+			line.text = fmt.Sprintf("%s~ %-48s %10s -> %s  (members identical; container bytes differ)", indent, path, size(x), size(y))
+		})
+	case sub.differences() == 0:
 		t.same++
 		t.trusted += sub.trusted
-		if verbose {
-			t.out("%s= %-48s %10s", indent, path, size(x))
-		}
-		return true
+		live(func() {
+			line.subT = nil
+			if verbose {
+				line.kind, line.text = '=', fmt.Sprintf("%s= %-48s %10s", indent, path, size(x))
+			} else {
+				line.drop = true
+			}
+		})
+	default:
+		t.changed++
+		t.merge(sub)
+		live(func() {
+			line.subT, line.sub = nil, sub.lines
+			line.text = fmt.Sprintf("%s~ %-48s %10s -> %s", indent, path, size(x), size(y))
+		})
 	}
-	t.changed++
-	t.out("%s~ %-48s %10s -> %s", indent, path, size(x), size(y)).sub = sub.lines
-	t.merge(sub)
 	return true
 }

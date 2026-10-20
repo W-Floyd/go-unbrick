@@ -32,7 +32,7 @@ var dprog diffProg
 func (p *diffProg) start() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.on = term.IsTerminal(int(os.Stderr.Fd()))
+	p.on = !diffQuiet && term.IsTerminal(int(os.Stderr.Fd()))
 	p.phase, p.unit = "listing", ""
 	p.label, p.members, p.total, p.bytes = "", 0, 0, 0
 }
@@ -127,4 +127,28 @@ func (p progReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	dprog.add(n)
 	return n, err
+}
+
+// diffQuiet keeps the status line off the terminal, for a full-screen viewer
+// that draws the same information itself (see status).
+var diffQuiet bool
+
+// status is what the comparison is doing, in a line, for a viewer to show.
+func (p *diffProg) status() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.phase == "" {
+		return ""
+	}
+	s := p.phase
+	if p.total > 0 {
+		s += fmt.Sprintf(" %d/%d %s", p.members, p.total, p.unit)
+	}
+	if p.bytes > 0 {
+		s += "  " + humanBytes(p.bytes) + " hashed"
+	}
+	if p.label != "" {
+		s += "  " + p.label
+	}
+	return s
 }

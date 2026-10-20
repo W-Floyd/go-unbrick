@@ -15,7 +15,9 @@ import (
 // raw byte count is reported too, because seeing it next to the verdict is the
 // point: it is routinely an order of magnitude larger than the real change.
 func newDiffCmd() *cobra.Command {
-	var verbose, verify, profile bool
+	var verbose, verify, profile, interactive bool
+	var member, view string
+	var context int
 	var fetchAheadMiB int64
 	var depth int
 	c := &cobra.Command{
@@ -27,6 +29,16 @@ func newDiffCmd() *cobra.Command {
 			prefetchBudget = fetchAheadMiB << 20
 			if profile {
 				startDiffProfile()
+			}
+			if _, err := viewMode(view); err != nil {
+				return err
+			}
+			diffContext = context
+			if interactive {
+				return runDiffInteractive(args[0], args[1], depth, verbose, member)
+			}
+			if member != "" { // one file out of each input
+				return runFileDiff(args[0], args[1], member, view)
 			}
 			if ok, err := diffContainers(args[0], args[1], depth, verbose); ok || err != nil {
 				return err
@@ -41,7 +53,8 @@ func newDiffCmd() *cobra.Command {
 			}
 			r, err := imgdiff.Compare(a, b)
 			if err != nil {
-				return err
+				// Not a signed image: two files of any kind, shown as what differs.
+				return runFileDiff(args[0], args[1], "", view)
 			}
 			rawPct := 0.0
 			if r.SizeA > 0 {
@@ -130,6 +143,10 @@ func newDiffCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().StringVar(&member, "path", "", "compare just the file at this path inside each input (a directory, an archive or an image, as ls and extract take a path)")
+	c.Flags().StringVar(&view, "view", modeNames[modeAuto], "for one file: diff (a line diff for text; for a binary, overlap and strings), strings, or overlap")
+	c.Flags().IntVarP(&context, "context", "U", contextLines, "for one file: unchanged lines shown around each change")
+	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "browse the differences: a line diff for text; for binaries, shared vs unique bytes and a diff of the strings in them")
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy (images); list unchanged members too (packages)")
 	c.Flags().Int64Var(&fetchAheadMiB, "fetch-ahead", prefetchBudget>>20, "ssh:// inputs: MiB of upcoming files to fetch while the current one is processed (0 = off)")
 	c.Flags().BoolVar(&profile, "profile", false, "packages: report on stderr where the time went")
