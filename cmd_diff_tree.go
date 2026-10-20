@@ -1,14 +1,15 @@
 package main
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/hashcache"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // diffContainers compares two inputs that are containers (archives, images
@@ -19,29 +20,61 @@ import (
 // A member gone from one place and new in another with the same bytes is
 // reported as a rename (or move), wherever in the tree each sits.
 func diffContainers(pathA, pathB string, depth int, verbose bool) (ok bool, err error) {
+	dprog.start()
+	defer dprog.finish()
+	defer dprof.report()
+	endList := dprof.phase("listing directories")
 	a, err := diffRoot(pathA)
 	if err != nil {
 		return false, nil
 	}
 	b, err := diffRoot(pathB)
+	endList()
 	if err != nil {
 		return false, nil
 	}
 	if !a.IsContainer() || !b.IsContainer() {
 		return false, nil
 	}
+	dprog.clear()
 	fmt.Printf("%s vs %s\n", infile.Base(pathA), infile.Base(pathB))
-	var t treeDiffTally
-	if err := diffNodes(a, b, "", "  ", depth, verbose, &t); err != nil {
+	t := treeDiffTally{depth: depth, verbose: verbose}
+	if diffTrust {
+		dprog.begin("reading manifests", "", 0)
+		end := dprof.phase("reading manifests")
+		t.claimsA, t.claimsB = manifestClaims(a), manifestClaims(b)
+		end()
+	}
+	dprog.begin("comparing", "files", 0)
+	t.pref = startPrefetch(a, b, "", &t)
+	defer t.pref.stop()
+	end := dprof.phase("comparing members")
+	err = diffNodes(a, b, "", "  ", depth, verbose, &t)
+	end()
+	if err == nil {
+		end = dprof.phase("matching renames")
+		t.pairRenames()
+		end()
+		end = dprof.phase("matching similar")
+		t.pairSimilar()
+		end()
+	}
+	dprog.finish()
+	if err != nil {
 		return true, err
 	}
-	t.pairRenames()
 	t.flush()
 	fmt.Printf("%d changed, %d added, %d removed", t.changed, t.added, t.removed)
 	if t.renamed > 0 {
 		fmt.Printf(", %d renamed", t.renamed)
 	}
+	if t.similar > 0 {
+		fmt.Printf(", %d renamed and changed", t.similar)
+	}
 	fmt.Printf(", %d unchanged\n", t.same)
+	if t.trusted > 0 {
+		fmt.Printf("%d member(s) compared by stated hash (vendor manifest, zip directory, OTA manifest); --verify reads them\n", t.trusted)
+	}
 	return true, nil
 }
 
@@ -57,6 +90,7 @@ func diffRoot(p string) (*carve.Node, error) {
 // dirNode is a directory as a carve node, hidden entries left out as in a
 // directory recon.
 func dirNode(dir string) (*carve.Node, error) {
+	dprog.at(dir, false)
 	des, err := infile.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -71,7 +105,9 @@ func dirNode(dir string) (*carve.Node, error) {
 		if d.IsDir() {
 			k, err = dirNode(full)
 		} else {
-			k, err = carve.Open(full)
+			// carveRoot, not carve.Open: it registers the vendor and
+			// encrypted-member formats and loads --secrets.
+			k, err = carveRoot(full)
 		}
 		if err != nil {
 			return nil, err
@@ -84,20 +120,29 @@ func dirNode(dir string) (*carve.Node, error) {
 // diffEnt is a member present on one side only, kept until every level has
 // been compared so a rename can be matched across directories.
 type diffEnt struct {
-	path string
-	node *carve.Node
-	line *diffLine
+	path   string
+	node   *carve.Node
+	line   *diffLine
+	claims []vendor.FileClaim // stated hashes for its content, trusted ones
+	done   bool               // paired as a rename or a similar member
 }
 
 type diffLine struct {
 	text string
 	drop bool
+	sub  []*diffLine // what changed inside a similar pair, printed under it
 }
 
 type treeDiffTally struct {
 	changed, added, removed, same, renamed int
+	trusted                                int // members settled by a manifest, unread
+	similar                                int // renamed and changed
+	depth                                  int // container levels left to compare into
+	verbose                                bool
 	lines                                  []*diffLine
 	gone, fresh                            []*diffEnt
+	claimsA, claimsB                       claimSet
+	pref                                   *prefetcher // fetching ahead of this comparison's members
 }
 
 // out queues a line; the report prints once renames are known.
@@ -107,10 +152,13 @@ func (t *treeDiffTally) out(format string, args ...any) *diffLine {
 	return l
 }
 
-func (t *treeDiffTally) flush() {
-	for _, l := range t.lines {
+func (t *treeDiffTally) flush() { printLines(t.lines) }
+
+func printLines(ls []*diffLine) {
+	for _, l := range ls {
 		if !l.drop {
 			fmt.Println(l.text)
+			printLines(l.sub)
 		}
 	}
 }
@@ -124,24 +172,60 @@ func (t *treeDiffTally) pairRenames() {
 			bySize[f.node.Size] = append(bySize[f.node.Size], f)
 		}
 	}
+	byClaim := map[string][]*diffEnt{}
+	for _, f := range t.fresh {
+		for _, c := range f.claims {
+			k := c.Algo + ":" + c.Sum
+			byClaim[k] = append(byClaim[k], f)
+		}
+	}
 	used := map[*diffEnt]bool{}
-	for _, g := range t.gone {
+	paired := func(g, f *diffEnt) {
+		used[f] = true
+		g.done, f.done = true, true
+		g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
+		f.line.drop = true
+		t.removed--
+		t.added--
+		t.renamed++
+	}
+	dprog.begin("matching renames", "removed files", len(t.gone))
+	for i, g := range t.gone {
+		dprog.at(g.path, i > 0)
+		matched := false
+		// Both sides' stated hashes name the content: no need to read either.
+		for _, c := range g.claims {
+			for _, f := range byClaim[c.Algo+":"+c.Sum] {
+				if !used[f] {
+					paired(g, f)
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if matched {
+			continue
+		}
 		for _, f := range bySize[g.node.Size] {
 			if g.node.Size < 0 || used[f] {
+				continue
+			}
+			// Containers are matched by what is inside (pairSimilar), not by
+			// hashing the whole of each.
+			if t.depth > 1 && g.node.IsContainer() && f.node.IsContainer() {
 				continue
 			}
 			if same, err := sameContent(g.node, f.node); err != nil || !same {
 				continue
 			}
-			used[f] = true
-			g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
-			f.line.drop = true
-			t.removed--
-			t.added--
-			t.renamed++
+			paired(g, f)
 			break
 		}
 	}
+	dprog.at("", len(t.gone) > 0)
 }
 
 // addOnly records a member present on one side only. A directory is listed as
@@ -155,6 +239,11 @@ func (t *treeDiffTally) addOnly(n *carve.Node, path, indent string, isNew bool) 
 		return
 	}
 	e := &diffEnt{path: path, node: n}
+	claims := t.claimsA
+	if isNew {
+		claims = t.claimsB
+	}
+	e.claims = claimsFor(claims, path, n)
 	if isNew {
 		t.added++
 		e.line = t.out("%s+ %-48s %10s", indent, path, size(n))
@@ -199,15 +288,21 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 	}
 	sort.Strings(sorted)
 
-	for _, name := range sorted {
+	dprog.found(len(sorted))
+	// Each member is counted done when the next begins, or after the last.
+	defer func() { dprog.at("", len(sorted) > 0) }()
+	for i, name := range sorted {
 		x, y := byA[name], byB[name]
 		path := prefix + name
+		dprog.at(path, i > 0)
+		t.pref.reached(path)
 		switch {
 		case y == nil:
 			t.addOnly(x, path, indent, false)
 		case x == nil:
 			t.addOnly(y, path, indent, true)
 		default:
+			var err error
 			xd, yd := x.IsDirNode(), y.IsDirNode()
 			if xd && yd {
 				if err := diffNodes(x, y, path+"/", indent, depth, verbose, t); err != nil {
@@ -220,7 +315,23 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 				t.addOnly(y, path, indent, true)
 				continue
 			}
-			same, err := sameContent(x, y)
+			// Two containers are compared by what is inside, not by hashing
+			// the whole of each: a vendor manifest naming both is the one
+			// shortcut that reads less than that.
+			settled, equal := t.claimState(x, y, path)
+			// Settled-equal first: it spares looking at what either one is.
+			if !(settled && equal) && depth > 1 && x.IsContainer() && y.IsContainer() {
+				end := dprof.member("inside " + path)
+				done := t.compareInside(x, y, path, indent, depth, verbose, settled)
+				end()
+				if done {
+					continue
+				}
+			}
+			var same bool
+			end := dprof.member("compare " + path)
+			same, err = t.compare(x, y, path)
+			end()
 			if err != nil {
 				t.out("%s? %-48s (%v)", indent, path, err)
 				continue
@@ -251,32 +362,109 @@ func size(n *carve.Node) string {
 	return humanBytes(n.Size)
 }
 
-// sameContent reports whether two members hold the same bytes: sizes first,
-// and a hash only when they agree.
-func sameContent(a, b *carve.Node) (bool, error) {
-	if a.Size >= 0 && b.Size >= 0 && a.Size != b.Size {
+// sameContent reports whether two members hold the same bytes, reading as
+// little as it can (see sameBytes).
+func sameContent(a, b *carve.Node) (bool, error) { return sameBytes(a, b) }
+
+// compare says whether two members at path hold the same bytes, reading as
+// little as it can: sizes first; then, if a vendor manifest names either
+// side's hash, that digest — both sides' claims need no read at all, and one
+// side's means hashing only the other with the manifest's algorithm; else
+// SHA-256 of both. Every digest goes through the cache.
+func (t *treeDiffTally) compare(x, y *carve.Node, path string) (bool, error) {
+	if x.Size >= 0 && y.Size >= 0 && x.Size != y.Size {
 		return false, nil
 	}
-	ha, err := digest(a)
+	if !diffTrust {
+		return sameContent(x, y)
+	}
+	lx, ly := claimsFor(t.claimsA, path, x), claimsFor(t.claimsB, path, y)
+	for _, c := range lx {
+		hashcache.Put(cacheKey(x, c.Algo), x.Size, c.Sum, true)
+	}
+	for _, c := range ly {
+		hashcache.Put(cacheKey(y, c.Algo), y.Size, c.Sum, true)
+	}
+	// Both sides state a hash in a common algorithm: nothing to read.
+	if settled, equal := commonClaims(lx, ly); settled {
+		t.trusted++
+		return equal, nil
+	}
+	// One side states one: hash the other with the same algorithm.
+	var from []vendor.FileClaim
+	for _, cs := range [][]vendor.FileClaim{lx, ly} {
+		for _, c := range cs {
+			if vendor.HasherFor(c.Algo) != nil {
+				from = append(from, c)
+			}
+		}
+	}
+	if len(from) == 0 {
+		return sameContent(x, y)
+	}
+	algo := from[0].Algo
+	sum := func(n *carve.Node, cs []vendor.FileClaim) (string, error) {
+		for _, c := range cs {
+			if c.Algo == algo {
+				return c.Sum, nil
+			}
+		}
+		return digestAs(n, algo)
+	}
+	sx, err := sum(x, lx)
 	if err != nil {
 		return false, err
 	}
-	hb, err := digest(b)
+	sy, err := sum(y, ly)
 	if err != nil {
 		return false, err
 	}
-	return ha == hb, nil
+	t.trusted++
+	return sx == sy, nil
 }
 
-func digest(n *carve.Node) (string, error) {
+func cacheKey(n *carve.Node, algo string) string {
+	if n.ID() == "" {
+		return ""
+	}
+	return n.ID() + "\x00" + algo
+}
+
+func digest(n *carve.Node) (string, error) { return digestAs(n, "sha256") }
+
+// digestAs is n's digest under algo (see vendor.HasherFor), from the hash
+// cache when this very content was digested on an earlier run, else read and
+// recorded. A hash a manifest once claimed counts only while manifests are trusted.
+func digestAs(n *carve.Node, algo string) (string, error) {
+	key := cacheKey(n, algo)
+	if sum, ok := hashcache.Get(key, n.Size, diffTrust); ok {
+		return sum, nil
+	}
+	hash := vendor.HasherFor(algo)
+	if hash == nil {
+		return "", fmt.Errorf("no hash for %s", algo)
+	}
 	r, err := n.Reader()
 	if err != nil {
 		return "", err
 	}
 	defer r.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, r); err != nil {
+	cr := &countReader{r: progReader{r}}
+	sum, err := hash(cr)
+	if err != nil {
 		return "", err
 	}
-	return strings.ToLower(fmt.Sprintf("%x", h.Sum(nil))), nil
+	hashcache.Put(key, cr.n, sum, false)
+	return strings.ToLower(sum), nil
+}
+
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	c.n += int64(n)
+	return n, err
 }

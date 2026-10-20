@@ -15,13 +15,19 @@ import (
 // raw byte count is reported too, because seeing it next to the verdict is the
 // point: it is routinely an order of magnitude larger than the real change.
 func newDiffCmd() *cobra.Command {
-	var verbose bool
+	var verbose, verify, profile bool
+	var fetchAheadMiB int64
 	var depth int
 	c := &cobra.Command{
 		Use:   "diff <a> <b>",
 		Short: "compare two signed images, separating re-signing from real change; or two packages or directories (local or ssh://), member by member, with renames and moves matched by content",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			diffTrust = !verify
+			prefetchBudget = fetchAheadMiB << 20
+			if profile {
+				startDiffProfile()
+			}
 			if ok, err := diffContainers(args[0], args[1], depth, verbose); ok || err != nil {
 				return err
 			}
@@ -125,6 +131,10 @@ func newDiffCmd() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy (images); list unchanged members too (packages)")
+	c.Flags().Int64Var(&fetchAheadMiB, "fetch-ahead", prefetchBudget>>20, "ssh:// inputs: MiB of upcoming files to fetch while the current one is processed (0 = off)")
+	c.Flags().BoolVar(&profile, "profile", false, "packages: report on stderr where the time went")
+	_ = c.Flags().MarkHidden("profile")
+	c.Flags().BoolVar(&verify, "verify", false, "packages: read every file instead of trusting vendor manifests (.ver, update.info, TarList) for their hashes")
 	c.Flags().IntVar(&depth, "depth", 3, "packages: how many container levels to compare into")
 	addSecrets(c)
 	return c
