@@ -109,7 +109,14 @@ func loadSecrets(dir string) error {
 	}
 	reconSecrets = nil
 	for _, k := range keys {
-		for _, iv := range ivs {
+		// A key is tried first with the IV that is named like it: the same build's
+		// key and IV share the start of their file names. (Which IV is right shows
+		// only in the first block of what is decrypted; see bestSecret.)
+		byName := append([]aesSecret(nil), ivs...)
+		sort.SliceStable(byName, func(i, j int) bool {
+			return nameAffinity(k.name, byName[i].name) > nameAffinity(k.name, byName[j].name)
+		})
+		for _, iv := range byName {
 			reconSecrets = append(reconSecrets, aesSecret{name: k.name, key: k.key, iv: iv.iv})
 		}
 	}
@@ -121,6 +128,55 @@ func loadSecrets(dir string) error {
 			aesSecret{name: k.name + " (prefixed IV)", key: k.key, mode: "prefix"})
 	}
 	return nil
+}
+
+// nameAffinity is how much of a key's file name and an IV's file name they have
+// in common, up to a word boundary: "2022_2024-usa-ev6_image_dat_key" and
+// "2022_2024-usa-ev6_iv" share "2022_2024-usa-ev6_", but neither shares more than
+// "2022" with "2022-can-ioniq5-v011.007_iv", which is not a word.
+func nameAffinity(a, b string) int {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	for n > 0 && !strings.ContainsRune("_-.", rune(a[n-1])) {
+		n--
+	}
+	return n
+}
+
+// bestSecret picks, for the key s proved, the IV that decrypts the first block
+// properly. Only that block depends on the IV in CBC, so the structure that
+// proved the key says nothing about it, and with several IVs loaded the first
+// would otherwise win whether it is right or not. The first block is right when
+// it is a known format's magic, or the zeros an image of a filesystem begins
+// with; of IVs that do equally well, the earlier (the better-named) stays.
+func bestSecret(s aesSecret, blk cipher.Block, head []byte) aesSecret {
+	if s.mode != "" {
+		return s
+	}
+	best, bestScore := s, -1
+	for _, c := range reconSecrets {
+		if c.mode != "" || !bytes.Equal(c.key, s.key) {
+			continue
+		}
+		plain := c.decryptHead(blk, head)
+		if len(plain) < aes.BlockSize {
+			continue
+		}
+		score := 0
+		if filetype.Detect(plain) != filetype.Unknown || bytes.HasPrefix(plain, []byte("ANDROID@")) || bytes.HasPrefix(plain, []byte("splash\x00")) {
+			score++
+		}
+		if bytes.Equal(plain[:aes.BlockSize], make([]byte, aes.BlockSize)) {
+			score++
+		}
+		if score > bestScore {
+			best, bestScore = c, score
+		}
+	}
+	return best
 }
 
 // findSecrets returns a secrets directory beside a collection: <dir>/secrets
@@ -261,6 +317,7 @@ func decryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (*cbcReaderAt, s
 			continue
 		}
 		if plain := s.decryptHead(blk, head); plain != nil && proven(plain) {
+			s = bestSecret(s, blk, head)
 			c := &cbcReaderAt{ra: ra, blk: blk, iv: s.iv, size: size &^ (aes.BlockSize - 1), ecb: s.mode == "ecb"}
 			if s.mode == "prefix" {
 				c.base, c.size = aes.BlockSize, c.size-aes.BlockSize
