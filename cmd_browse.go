@@ -85,6 +85,21 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 			if err != nil {
 				return err
 			}
+			// Our own image placement is always id kittyImageID, deleted
+			// and replaced on every render - but a previous run (killed,
+			// crashed, or just exited normally without us ever clearing
+			// on the way out) can leave a DIFFERENT placement, at
+			// whatever geometry that session had, sitting on the
+			// terminal indefinitely: Kitty placements outlive the
+			// program that drew them. Confirmed live: this is what an
+			// "image overlays the list, unpredictably, on files whose
+			// own decode/position both check out fine" bug actually was
+			// - a stale placement from an earlier invocation, not
+			// anything about the current one. Delete everything before
+			// drawing anything, and again on the way out, rather than
+			// trusting that whatever's already on screen is ours.
+			fmt.Fprint(os.Stdout, ansi.KittyGraphics(nil, "a=d", "d=A"))
+			defer fmt.Fprint(os.Stdout, ansi.KittyGraphics(nil, "a=d", "d=A"))
 			_, err = tea.NewProgram(m).Run()
 			return err
 		},
