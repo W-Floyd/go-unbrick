@@ -42,6 +42,7 @@ type Node struct {
 	Name string
 	Size int64 // -1 when unknown until read
 
+	mu     sync.Mutex // guards at, Size and head, which are filled in on first use
 	at     io.ReaderAt
 	stream func() (io.ReadCloser, error)
 	path   string // the input itself, for the root
@@ -98,7 +99,7 @@ func FromStream(name string, size int64, open func() (io.ReadCloser, error)) *No
 }
 
 // RandomAccess reports whether n reads at random without buffering it whole.
-func (n *Node) RandomAccess() bool { return n.at != nil }
+func (n *Node) RandomAccess() bool { at, _ := n.random(); return at != nil }
 
 // Partial says why n's children may not be all of them, once expanded; ""
 // when they are.
@@ -164,10 +165,30 @@ func (n *Node) Path() string { return n.path }
 
 // Reader reads the node from its start.
 func (n *Node) Reader() (io.ReadCloser, error) {
-	if n.at != nil {
-		return io.NopCloser(io.NewSectionReader(n.at, 0, n.Size)), nil
+	if at, size := n.random(); at != nil {
+		return io.NopCloser(io.NewSectionReader(at, 0, size)), nil
 	}
 	return n.stream()
+}
+
+// random is n's random-access source and size, if it has one yet. A node is
+// read from more than one goroutine (a viewer reads what a comparison is
+// working on), and ReaderAt fills these in on first use, so they are read and
+// written under mu.
+func (n *Node) random() (io.ReaderAt, int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.at, n.Size
+}
+
+// setRandom records the random-access source a streamed node was buffered into.
+func (n *Node) setRandom(at io.ReaderAt, size int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.at = at
+	if n.Size != size {
+		n.Size = size
+	}
 }
 
 // ReaderAt reads the node at random, buffering one that can only be streamed.
@@ -176,8 +197,8 @@ func (n *Node) Reader() (io.ReadCloser, error) {
 // and a filesystem inside it needs random access. Streaming it fetches that
 // member's bytes only, not the archive's.
 func (n *Node) ReaderAt() (io.ReaderAt, error) {
-	if n.at != nil {
-		return n.at, nil
+	if at, _ := n.random(); at != nil {
+		return at, nil
 	}
 	if n.Size > MaxBuffer && infile.FullDownload {
 		progress("unpacking %s (%d MiB) to a temporary file in %s", n.Name, n.Size>>20, os.TempDir())
@@ -190,15 +211,16 @@ func (n *Node) ReaderAt() (io.ReaderAt, error) {
 			f.Close()
 			return nil, err
 		}
-		n.at, n.Size = f, fi.Size()
-		return n.at, nil
+		n.setRandom(f, fi.Size())
+		return f, nil
 	}
 	b, err := n.Bytes()
 	if err != nil {
 		return nil, err
 	}
-	n.at, n.Size = bytes.NewReader(b), int64(len(b))
-	return n.at, nil
+	br := bytes.NewReader(b)
+	n.setRandom(br, int64(len(b)))
+	return br, nil
 }
 
 // Bytes reads the whole node, up to MaxBuffer.
@@ -206,10 +228,12 @@ func (n *Node) Bytes() ([]byte, error) {
 	if n.Size > MaxBuffer {
 		return nil, fmt.Errorf("%s is %d bytes, more than carve.MaxBuffer to hold in memory", n.Name, n.Size)
 	}
-	if br, ok := n.at.(*bytes.Reader); ok && br.Size() == n.Size {
-		b := make([]byte, n.Size)
-		_, err := br.ReadAt(b, 0)
-		return b, err
+	if at, size := n.random(); at != nil {
+		if br, ok := at.(*bytes.Reader); ok && br.Size() == size {
+			b := make([]byte, size)
+			_, err := br.ReadAt(b, 0)
+			return b, err
+		}
 	}
 	rc, err := n.Reader()
 	if err != nil {
@@ -228,18 +252,25 @@ func (n *Node) Bytes() ([]byte, error) {
 
 // Head is up to the first 64 KiB of the node.
 func (n *Node) Head() []byte {
-	if n.head != nil {
-		return n.head
+	n.mu.Lock()
+	h := n.head
+	n.mu.Unlock()
+	if h != nil {
+		return h
 	}
 	buf := make([]byte, headLen)
 	k := 0
-	if n.at != nil {
-		k, _ = n.at.ReadAt(buf, 0)
+	if at, _ := n.random(); at != nil {
+		k, _ = at.ReadAt(buf, 0)
 	} else if rc, err := n.stream(); err == nil {
 		k, _ = io.ReadFull(rc, buf)
 		rc.Close()
 	}
-	n.head = buf[:k]
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.head == nil { // another reader may have got there first
+		n.head = buf[:k]
+	}
 	return n.head
 }
 
@@ -377,3 +408,19 @@ func (n *Node) IsContainer() bool {
 
 // IsDirNode reports whether n came from Dir.
 func (n *Node) IsDirNode() bool { return n.kind == "directory" }
+
+// IsContainerCached is IsContainer for a caller that must not wait on a read: known
+// is false until n's head has been read (by anything), and container then means
+// nothing.
+func (n *Node) IsContainerCached() (container, known bool) {
+	if n.kind == "directory" {
+		return true, true
+	}
+	n.mu.Lock()
+	h := n.head
+	n.mu.Unlock()
+	if h == nil {
+		return false, false
+	}
+	return n.IsContainer(), true
+}

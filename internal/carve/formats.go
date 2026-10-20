@@ -146,7 +146,9 @@ func expandUBIFS(n *Node) ([]*Node, error) {
 // walkFS lists a filesystem's regular files, reading each by path on demand,
 // and adds each PIL split (an .mdt with its .bNN segments) joined into the ELF
 // it was split from as "<name>.mdt.joined", as expandFirmwareFS does.
-func walkFS(img fs.FS) ([]*Node, error) {
+func walkFS(inner fs.FS) ([]*Node, error) {
+	// Every node made here reads through this one lock: see lockedFS.
+	img := lockFS(inner)
 	var out []*Node
 	err := fs.WalkDir(img, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
@@ -156,10 +158,10 @@ func walkFS(img fs.FS) ([]*Node, error) {
 		if err != nil {
 			return nil
 		}
-		if ra, ok := img.(interface{ OpenAt(string) io.ReaderAt }); ok {
+		if img.oa != nil {
 			// A filesystem that reads files at random hands them out that way, so
 			// a zip's directory is read without the rest of it.
-			out = append(out, FromReaderAt(p, ra.OpenAt(p), info.Size()))
+			out = append(out, FromReaderAt(p, img.openAt(p), info.Size()))
 		} else {
 			out = append(out, FromStream(p, info.Size(), func() (io.ReadCloser, error) { return img.Open(p) }))
 		}
@@ -749,8 +751,8 @@ func (l *lazyOverlay) ReadAt(p []byte, off int64) (int, error) {
 		files := make([]io.ReaderAt, len(l.chunks))
 		var todo []int
 		for i, c := range l.chunks {
-			if c.at != nil {
-				files[i] = c.at
+			if at, _ := c.random(); at != nil {
+				files[i] = at
 			} else {
 				todo = append(todo, i)
 			}
