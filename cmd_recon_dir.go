@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
@@ -35,7 +36,7 @@ type verManifest struct {
 }
 
 func parseVer(path string) (*verManifest, bool) {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
@@ -66,7 +67,7 @@ func parseVer(path string) (*verManifest, bool) {
 }
 
 func fileCRC(path string) (uint32, error) {
-	f, err := os.Open(path)
+	f, err := infile.Open(path)
 	if err != nil {
 		return 0, err
 	}
@@ -126,7 +127,7 @@ func reportCollection(dir string, paths []string, verify bool) (keep []string) {
 				status = cBad("missing")
 				problems++
 			default:
-				if fi, err := os.Stat(p); err != nil || fi.Size() != e.Size {
+				if fi, err := infile.Stat(p); err != nil || fi.Size() != e.Size {
 					status = cBad(fmt.Sprintf("size %d, want %d", fiSize(fi), e.Size))
 					problems++
 				} else if verify {
@@ -293,7 +294,7 @@ func histogramLine(kinds map[string]int) string {
 // not plain SHA-224 — see vendor.HyundaiSHA224) are checked only under
 // --verify, which reads each listed file in full.
 func reportTarList(path string, byName map[string]string, verify bool) {
-	data, err := os.ReadFile(path)
+	data, err := infile.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -327,7 +328,7 @@ func reportTarList(path string, byName map[string]string, verify bool) {
 }
 
 func tarListFileHash(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := infile.Open(path)
 	if err != nil {
 		return "", err
 	}
@@ -372,7 +373,7 @@ func reconParts(label string, parts []string) (failed []string) {
 	members, warns := 0, 0
 	kinds := map[string]int{}
 	for _, p := range parts {
-		if fi, err := os.Stat(p); err == nil {
+		if fi, err := infile.Stat(p); err == nil {
 			size += fi.Size()
 		}
 		out, err := captureStdout(func() error { return runFileRecon(p) })
@@ -442,7 +443,7 @@ func applySkips(paths, skips []string) []string {
 		if ps := dropped[s]; len(ps) > 0 {
 			var size int64
 			for _, p := range ps {
-				if fi, err := os.Stat(p); err == nil {
+				if fi, err := infile.Stat(p); err == nil {
 					size += fi.Size()
 				}
 			}

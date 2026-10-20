@@ -19,8 +19,12 @@ import (
 	"time"
 )
 
-// IsRemote reports whether p names an http(s) URL rather than a local path.
+// IsRemote reports whether p names an http(s) or ssh:// URL rather than a local path.
 func IsRemote(p string) bool {
+	return isHTTP(p) || IsSSH(p)
+}
+
+func isHTTP(p string) bool {
 	return strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://")
 }
 
@@ -60,6 +64,9 @@ func (f *File) Close() error {
 // Open opens p for reading. A remote File is backed by the shared per-URL cache,
 // so opening the same URL repeatedly costs one validation request per process.
 func Open(p string) (*File, error) {
+	if IsSSH(p) {
+		return openSSH(p)
+	}
 	if IsRemote(p) {
 		r, err := openRemote(p)
 		if err != nil {
@@ -79,8 +86,11 @@ func Open(p string) (*File, error) {
 	return &File{SectionReader: io.NewSectionReader(f, 0, fi.Size()), name: p, closer: f}, nil
 }
 
-// Stat is os.Stat; a URL is never a directory.
+// Stat is os.Stat; an http URL is never a directory.
 func Stat(p string) (fs.FileInfo, error) {
+	if IsSSH(p) {
+		return statSSH(p)
+	}
 	if !IsRemote(p) {
 		return os.Stat(p)
 	}

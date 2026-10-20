@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kevinburke/ssh_config"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -40,9 +42,12 @@ func (t *nativeTransport) close() error     { return t.conn.Close() }
 
 // dialNative connects and authenticates.
 func dialNative(target string, o Options, budget time.Duration) (route, error) {
-	user, host, port := splitTarget(target, o)
+	user, host, port, alias := splitTarget(target, o)
 	if user == "" {
 		return nil, fmt.Errorf("no login user for %s: give it as user@host, or with --user", target)
+	}
+	if o.Identity == "" {
+		o.Identity = configIdentity(alias)
 	}
 	hostKey, err := hostKeyCallback(o)
 	if err != nil {
@@ -103,7 +108,7 @@ func (t *nativeTransport) run(ctx context.Context, script string) ([]byte, error
 
 // splitTarget pulls the login, host and port out of "user@host:port", with the
 // options and the local username filling what it does not say.
-func splitTarget(target string, o Options) (user, host, port string) {
+func splitTarget(target string, o Options) (user, host, port, alias string) {
 	host = target
 	if u, rest, ok := strings.Cut(target, "@"); ok {
 		user, host = u, rest
@@ -118,10 +123,50 @@ func splitTarget(target string, o Options) (user, host, port string) {
 	if o.Port != "" {
 		port = o.Port
 	}
+	// What ssh itself would fall back on: ~/.ssh/config for the name as typed,
+	// then the local login name and port 22.
+	alias = host
+	if user == "" {
+		user = sshConfig(alias, "User")
+	}
+	if port == "" {
+		port = sshConfig(alias, "Port")
+	}
+	if hn := sshConfig(alias, "HostName"); hn != "" {
+		host = hn
+	}
+	if user == "" {
+		if u, err := osuser.Current(); err == nil {
+			user = u.Username
+		}
+	}
 	if port == "" {
 		port = "22"
 	}
-	return user, host, port
+	return user, host, port, alias
+}
+
+// sshConfig reads one keyword for host from the user's and the system's ssh
+// config; "" when unset or unreadable.
+func sshConfig(host, key string) string {
+	v, _ := ssh_config.GetStrict(host, key)
+	return v
+}
+
+// configIdentity is the first IdentityFile the ssh config names for host that
+// exists, "~" expanded.
+func configIdentity(host string) string {
+	for _, f := range ssh_config.GetAll(host, "IdentityFile") {
+		if strings.HasPrefix(f, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				f = filepath.Join(home, f[2:])
+			}
+		}
+		if _, err := os.Stat(f); err == nil {
+			return f
+		}
+	}
+	return ""
 }
 
 // authMethods is the order a person expects: keys first — the agent, then the
@@ -393,4 +438,18 @@ func (b *safeBuffer) Bytes() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+// DialSSH opens an authenticated ssh connection for callers that want the
+// connection itself (SFTP), with the same auth order and host-key policy as a
+// device recon.
+func DialSSH(target string, o Options) (*ssh.Client, error) {
+	if o.Dial == 0 {
+		o.Dial = DialTimeout
+	}
+	r, err := dialNative(target, o, o.Dial)
+	if err != nil {
+		return nil, err
+	}
+	return r.(*nativeTransport).conn, nil
 }

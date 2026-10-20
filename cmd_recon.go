@@ -60,7 +60,7 @@ func newReconCmd() *cobra.Command {
 	var carve, why, with, secrets string
 	var verify, learn bool
 	c := &cobra.Command{
-		Use:   "recon <file | directory | http(s) url>",
+		Use:   "recon <file | directory | http(s) url | ssh://[user@]host[:port]/path>",
 		Short: "identify any file (stock zip, image, container, config) and report what it is",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -70,12 +70,8 @@ func newReconCmd() *cobra.Command {
 			reconVerify = verify
 			reconLearn = learn
 			reconWith = with
-			isDir := false
-			if !infile.IsRemote(args[0]) {
-				fi, err := os.Stat(args[0])
-				isDir = err == nil && fi.IsDir()
-			}
-			if secrets == "" && isDir {
+			isDir := infile.IsDir(args[0])
+			if secrets == "" && isDir && !infile.IsRemote(args[0]) {
 				secrets = findSecrets(args[0])
 			}
 			if secrets != "" {
@@ -84,14 +80,12 @@ func newReconCmd() *cobra.Command {
 				}
 				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", len(reconSecrets), secrets)
 			}
-			if !infile.IsRemote(args[0]) {
-				if isDir {
-					if with != "" {
-						fmt.Fprintf(os.Stderr, "note: --with is ignored in directory mode; each file resolves its own companion\n")
-						reconWith = ""
-					}
-					return runDirRecon(args[0])
+			if isDir {
+				if with != "" {
+					fmt.Fprintf(os.Stderr, "note: --with is ignored in directory mode; each file resolves its own companion\n")
+					reconWith = ""
 				}
+				return runDirRecon(args[0])
 			}
 			return runFileRecon(args[0])
 		},
@@ -778,23 +772,29 @@ const maxCascadeRead = 200 << 20
 // and directories (leading dot — .git, .DS_Store, etc.) are skipped.
 func runDirRecon(dir string) error {
 	var paths []string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if name != "." && strings.HasPrefix(name, ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
+	var err error
+	if infile.IsSSH(dir) {
+		paths, err = infile.WalkSSH(dir)
+		dir = strings.TrimRight(dir, "/")
+	} else {
+		err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
+			name := d.Name()
+			if name != "." && strings.HasPrefix(name, ".") {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			paths = append(paths, p)
 			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		paths = append(paths, p)
-		return nil
-	})
+		})
+	}
 	if err != nil {
 		return fmt.Errorf("walking %s: %w", dir, err)
 	}

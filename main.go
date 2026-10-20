@@ -11,9 +11,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/W-Floyd/go-unbrick/internal/catalog"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/linuxdev"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
@@ -67,7 +69,12 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Bool("debug-http", false, "log every range request made for an http(s) input")
 	_ = v.BindPFlag("http-cache", root.PersistentFlags().Lookup("http-cache"))
 	_ = v.BindPFlag("debug-http", root.PersistentFlags().Lookup("debug-http"))
+	var sshOpts linuxdev.Options
+	root.PersistentFlags().StringVar(&sshOpts.Identity, "ssh-identity", "", "private key for ssh:// inputs (default: the agent, then ~/.ssh/id_*)")
+	root.PersistentFlags().StringVar(&sshOpts.HostKeys, "ssh-host-keys", linuxdev.HostKeysStrict, "host-key policy for ssh:// inputs: strict, accept-new, off")
+	root.PersistentFlags().StringVar(&sshOpts.KnownHosts, "ssh-known-hosts", "", "known_hosts file for ssh:// inputs (default ~/.ssh/known_hosts)")
 	cobra.OnInitialize(func() {
+		infile.SSHDial = func(target string) (*ssh.Client, error) { return linuxdev.DialSSH(target, sshOpts) }
 		infile.CacheDir = v.GetString("http-cache")
 		infile.Mirrors = vendor.Mirrors
 		if v.GetBool("debug-http") {

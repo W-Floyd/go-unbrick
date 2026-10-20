@@ -32,6 +32,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // browse is the one TUI in go-unbrick: everything else (ls, tree, extract,
@@ -325,8 +326,7 @@ func newBrowseModel(input string, skip []string) (*browseModel, error) {
 	// as-you-go without the input echoed.
 	m.list.SetShowFilter(false)
 
-	fi, err := os.Stat(input)
-	if err == nil && fi.IsDir() {
+	if infile.IsDir(input) {
 		if err := m.pushDirFrame(input); err != nil {
 			return nil, err
 		}
@@ -1016,7 +1016,7 @@ func readImageBytes(e browseEntry, capBytes int64) (data []byte, truncated bool,
 	var r io.ReadCloser
 	switch {
 	case e.osPath != "":
-		r, err = os.Open(e.osPath)
+		r, err = infile.Open(e.osPath)
 	case e.node != nil:
 		r, err = e.node.Reader()
 	default:
@@ -1139,7 +1139,7 @@ func (m *browseModel) enqueueAll(items []list.Item) {
 
 // pushDirFrame lists an OS directory's entries as the new top frame.
 func (m *browseModel) pushDirFrame(dir string) error {
-	des, err := os.ReadDir(dir)
+	des, err := infile.ReadDir(dir)
 	if err != nil {
 		return err
 	}
@@ -1147,7 +1147,7 @@ func (m *browseModel) pushDirFrame(dir string) error {
 	var filePaths []string
 	for _, d := range des {
 		if !d.IsDir() {
-			filePaths = append(filePaths, filepath.Join(dir, d.Name()))
+			filePaths = append(filePaths, infile.Join(dir, d.Name()))
 		}
 	}
 	// applySkips prints a "Skipped navi: N file(s), ..." line straight to
@@ -1165,7 +1165,7 @@ func (m *browseModel) pushDirFrame(dir string) error {
 		if d.Name() != "." && strings.HasPrefix(d.Name(), ".") {
 			continue
 		}
-		full := filepath.Join(dir, d.Name())
+		full := infile.Join(dir, d.Name())
 		if d.IsDir() {
 			items = append(items, browseEntry{name: d.Name(), size: -1, dir: true, osPath: full})
 			continue
@@ -1573,7 +1573,7 @@ func readForPreview(e browseEntry) (content []byte, truncated bool, err error) {
 	var r io.ReadCloser
 	switch {
 	case e.osPath != "":
-		r, err = os.Open(e.osPath)
+		r, err = infile.Open(e.osPath)
 	case e.node != nil:
 		r, err = e.node.Reader()
 	default:
@@ -1622,7 +1622,7 @@ func highlightText(name string, content []byte) string {
 // fileHeadLabel reads just enough of a plain OS file to type-label it, the
 // way recon and ls already do — cheap even for a multi-GB file.
 func fileHeadLabel(path string) (label string, isText, isImage bool) {
-	f, err := os.Open(path)
+	f, err := infile.Open(path)
 	if err != nil {
 		return "unknown", false, false
 	}

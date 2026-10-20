@@ -286,3 +286,23 @@ func sortByName(kids []*Node) []*Node {
 	sort.SliceStable(kids, func(i, j int) bool { return kids[i].Name < kids[j].Name })
 	return kids
 }
+
+// Dir makes a node that is a fixed set of children, such as a directory on
+// disk, rather than a format expanded from bytes.
+func Dir(name string, kids []*Node) *Node {
+	n := &Node{Name: name, Size: -1, kind: "directory", kids: sortByName(kids)}
+	n.once.Do(func() {})
+	return n
+}
+
+// IsContainer reports whether n has children: a Dir, or bytes some format claims.
+func (n *Node) IsContainer() bool {
+	if n.kind == "directory" {
+		return true
+	}
+	_, ok := Format(n)
+	return ok
+}
+
+// IsDirNode reports whether n came from Dir.
+func (n *Node) IsDirNode() bool { return n.kind == "directory" }

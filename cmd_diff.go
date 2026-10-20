@@ -2,12 +2,11 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/imgdiff"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // ---- diff ----
@@ -20,17 +19,17 @@ func newDiffCmd() *cobra.Command {
 	var depth int
 	c := &cobra.Command{
 		Use:   "diff <a> <b>",
-		Short: "compare two signed images, separating re-signing from real change; or two packages, member by member",
+		Short: "compare two signed images, separating re-signing from real change; or two packages or directories (local or ssh://), member by member, with renames and moves matched by content",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if ok, err := diffContainers(args[0], args[1], depth, verbose); ok || err != nil {
 				return err
 			}
-			a, err := os.ReadFile(args[0])
+			a, err := infile.ReadFile(args[0])
 			if err != nil {
 				return err
 			}
-			b, err := os.ReadFile(args[1])
+			b, err := infile.ReadFile(args[1])
 			if err != nil {
 				return err
 			}
@@ -42,7 +41,7 @@ func newDiffCmd() *cobra.Command {
 			if r.SizeA > 0 {
 				rawPct = 100 * float64(r.RawDiffering) / float64(r.SizeA)
 			}
-			fmt.Printf("%s vs %s\n", filepath.Base(args[0]), filepath.Base(args[1]))
+			fmt.Printf("%s vs %s\n", infile.Base(args[0]), infile.Base(args[1]))
 			fmt.Printf("  verdict: %s\n", r.Verdict)
 			if r.Note != "" {
 				fmt.Printf("  %s\n", r.Note)

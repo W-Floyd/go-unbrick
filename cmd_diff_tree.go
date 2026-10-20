@@ -4,47 +4,173 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
 
 // diffContainers compares two inputs that are containers (archives, images
-// with children) member by member, descending into members that are containers
-// on both sides. ok is false when either input is not a container, so the
-// caller falls back to the signed-image comparison.
+// with children, directories) member by member, descending into members that
+// are containers on both sides. ok is false when either input is not a
+// container, so the caller falls back to the signed-image comparison.
+//
+// A member gone from one place and new in another with the same bytes is
+// reported as a rename (or move), wherever in the tree each sits.
 func diffContainers(pathA, pathB string, depth int, verbose bool) (ok bool, err error) {
-	a, err := carveRoot(pathA)
+	a, err := diffRoot(pathA)
 	if err != nil {
 		return false, nil
 	}
-	b, err := carveRoot(pathB)
+	b, err := diffRoot(pathB)
 	if err != nil {
 		return false, nil
 	}
-	if _, isA := carve.Format(a); !isA {
+	if !a.IsContainer() || !b.IsContainer() {
 		return false, nil
 	}
-	if _, isB := carve.Format(b); !isB {
-		return false, nil
-	}
-	fmt.Printf("%s vs %s\n", filepath.Base(pathA), filepath.Base(pathB))
+	fmt.Printf("%s vs %s\n", infile.Base(pathA), infile.Base(pathB))
 	var t treeDiffTally
-	if err := diffNodes(a, b, "  ", depth, verbose, &t); err != nil {
+	if err := diffNodes(a, b, "", "  ", depth, verbose, &t); err != nil {
 		return true, err
 	}
-	fmt.Printf("%d changed, %d added, %d removed, %d unchanged\n", t.changed, t.added, t.removed, t.same)
+	t.pairRenames()
+	t.flush()
+	fmt.Printf("%d changed, %d added, %d removed", t.changed, t.added, t.removed)
+	if t.renamed > 0 {
+		fmt.Printf(", %d renamed", t.renamed)
+	}
+	fmt.Printf(", %d unchanged\n", t.same)
 	return true, nil
 }
 
-type treeDiffTally struct{ changed, added, removed, same int }
+// diffRoot opens an input to compare: a directory (local or ssh://) as a tree
+// of its files, anything else through carve.
+func diffRoot(p string) (*carve.Node, error) {
+	if infile.IsDir(p) {
+		return dirNode(p)
+	}
+	return carveRoot(p)
+}
+
+// dirNode is a directory as a carve node, hidden entries left out as in a
+// directory recon.
+func dirNode(dir string) (*carve.Node, error) {
+	des, err := infile.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var kids []*carve.Node
+	for _, d := range des {
+		if strings.HasPrefix(d.Name(), ".") {
+			continue
+		}
+		full := infile.Join(dir, d.Name())
+		var k *carve.Node
+		if d.IsDir() {
+			k, err = dirNode(full)
+		} else {
+			k, err = carve.Open(full)
+		}
+		if err != nil {
+			return nil, err
+		}
+		kids = append(kids, k)
+	}
+	return carve.Dir(infile.Base(dir), kids), nil
+}
+
+// diffEnt is a member present on one side only, kept until every level has
+// been compared so a rename can be matched across directories.
+type diffEnt struct {
+	path string
+	node *carve.Node
+	line *diffLine
+}
+
+type diffLine struct {
+	text string
+	drop bool
+}
+
+type treeDiffTally struct {
+	changed, added, removed, same, renamed int
+	lines                                  []*diffLine
+	gone, fresh                            []*diffEnt
+}
+
+// out queues a line; the report prints once renames are known.
+func (t *treeDiffTally) out(format string, args ...any) *diffLine {
+	l := &diffLine{text: fmt.Sprintf(format, args...)}
+	t.lines = append(t.lines, l)
+	return l
+}
+
+func (t *treeDiffTally) flush() {
+	for _, l := range t.lines {
+		if !l.drop {
+			fmt.Println(l.text)
+		}
+	}
+}
+
+// pairRenames matches each removed member to an added one holding the same
+// bytes. Sizes narrow the candidates, so only plausible pairs are hashed.
+func (t *treeDiffTally) pairRenames() {
+	bySize := map[int64][]*diffEnt{}
+	for _, f := range t.fresh {
+		if f.node.Size >= 0 {
+			bySize[f.node.Size] = append(bySize[f.node.Size], f)
+		}
+	}
+	used := map[*diffEnt]bool{}
+	for _, g := range t.gone {
+		for _, f := range bySize[g.node.Size] {
+			if g.node.Size < 0 || used[f] {
+				continue
+			}
+			if same, err := sameContent(g.node, f.node); err != nil || !same {
+				continue
+			}
+			used[f] = true
+			g.line.text = fmt.Sprintf("  > %s -> %s  %s", g.path, f.path, size(g.node))
+			f.line.drop = true
+			t.removed--
+			t.added--
+			t.renamed++
+			break
+		}
+	}
+}
+
+// addOnly records a member present on one side only. A directory is listed as
+// the files in it, so each can be matched to a rename elsewhere.
+func (t *treeDiffTally) addOnly(n *carve.Node, path, indent string, isNew bool) {
+	if n.IsDirNode() {
+		_, kids, _ := n.Children()
+		for _, k := range kids {
+			t.addOnly(k, path+"/"+k.Name, indent, isNew)
+		}
+		return
+	}
+	e := &diffEnt{path: path, node: n}
+	if isNew {
+		t.added++
+		e.line = t.out("%s+ %-48s %10s", indent, path, size(n))
+		t.fresh = append(t.fresh, e)
+	} else {
+		t.removed++
+		e.line = t.out("%s- %-48s %10s", indent, path, size(n))
+		t.gone = append(t.gone, e)
+	}
+}
 
 // diffNodes lists how b's children differ from a's: gone, new, or changed (a
 // different size, or the same size with different bytes). Unchanged members
-// are counted and, with verbose, listed.
-func diffNodes(a, b *carve.Node, indent string, depth int, verbose bool, t *treeDiffTally) error {
+// are counted and, with verbose, listed. prefix is the path of a and b from
+// the root, so a rename names where a member was and is.
+func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool, t *treeDiffTally) error {
 	_, ak, err := a.Children()
 	if err != nil {
 		return err
@@ -75,33 +201,42 @@ func diffNodes(a, b *carve.Node, indent string, depth int, verbose bool, t *tree
 
 	for _, name := range sorted {
 		x, y := byA[name], byB[name]
+		path := prefix + name
 		switch {
 		case y == nil:
-			t.removed++
-			fmt.Printf("%s- %-48s %10s\n", indent, name, size(x))
+			t.addOnly(x, path, indent, false)
 		case x == nil:
-			t.added++
-			fmt.Printf("%s+ %-48s %10s\n", indent, name, size(y))
+			t.addOnly(y, path, indent, true)
 		default:
+			xd, yd := x.IsDirNode(), y.IsDirNode()
+			if xd && yd {
+				if err := diffNodes(x, y, path+"/", indent, depth, verbose, t); err != nil {
+					t.out("%s? %-48s (%v)", indent, path, err)
+				}
+				continue
+			}
+			if xd != yd {
+				t.addOnly(x, path, indent, false)
+				t.addOnly(y, path, indent, true)
+				continue
+			}
 			same, err := sameContent(x, y)
 			if err != nil {
-				fmt.Printf("%s? %-48s (%v)\n", indent, name, err)
+				t.out("%s? %-48s (%v)", indent, path, err)
 				continue
 			}
 			if same {
 				t.same++
 				if verbose {
-					fmt.Printf("%s= %-48s %10s\n", indent, name, size(x))
+					t.out("%s= %-48s %10s", indent, path, size(x))
 				}
 				continue
 			}
 			t.changed++
-			fmt.Printf("%s~ %-48s %10s -> %s\n", indent, name, size(x), size(y))
-			_, xc := carve.Format(x)
-			_, yc := carve.Format(y)
-			if xc && yc && depth > 1 {
-				if err := diffNodes(x, y, indent+"    ", depth-1, verbose, t); err != nil {
-					fmt.Printf("%s    (%v)\n", indent, err)
+			t.out("%s~ %-48s %10s -> %s", indent, path, size(x), size(y))
+			if x.IsContainer() && y.IsContainer() && depth > 1 {
+				if err := diffNodes(x, y, path+"/", indent+"    ", depth-1, verbose, t); err != nil {
+					t.out("%s    (%v)", indent, err)
 				}
 			}
 		}

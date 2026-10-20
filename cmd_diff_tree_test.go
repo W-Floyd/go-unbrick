@@ -58,3 +58,42 @@ func TestDiffContainersFallsBackForNonContainers(t *testing.T) {
 		t.Error("treated a plain file as a container")
 	}
 }
+
+func TestDiffContainersRenames(t *testing.T) {
+	a := writeTar(t, "a.tar", map[string]string{"old.bin": "payload-1", "keep.txt": "k", "x.txt": "gone"})
+	b := writeTar(t, "b.tar", map[string]string{"new.bin": "payload-1", "keep.txt": "k", "y.txt": "fresh"})
+	out, err := captureStdout(func() error { _, err := diffContainers(a, b, 3, false); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"> old.bin -> new.bin", "- x.txt", "+ y.txt", "1 added, 1 removed, 1 renamed, 1 unchanged"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "+ new.bin") || strings.Contains(out, "- old.bin") {
+		t.Errorf("rename also listed as add/remove:\n%s", out)
+	}
+}
+
+func TestDiffDirectoriesMoves(t *testing.T) {
+	write := func(root string, files map[string]string) string {
+		for n, c := range files {
+			p := filepath.Join(root, n)
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			os.WriteFile(p, []byte(c), 0o644)
+		}
+		return root
+	}
+	a := write(t.TempDir(), map[string]string{"d1/m.img": "image-bytes", "same": "s", "edit": "1", "d1/only": "o"})
+	b := write(t.TempDir(), map[string]string{"d2/n.img": "image-bytes", "same": "s", "edit": "22"})
+	out, err := captureStdout(func() error { _, err := diffContainers(a, b, 3, false); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"> d1/m.img -> d2/n.img", "- d1/only", "~ edit", "1 changed, 0 added, 1 removed, 1 renamed, 1 unchanged"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

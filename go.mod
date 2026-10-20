@@ -10,6 +10,7 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
+	github.com/NurramoX/streakboard v0.1.0
 	github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76
 	github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf
 	github.com/alecthomas/chroma/v2 v2.27.0
@@ -18,8 +19,10 @@ require (
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/electricbubble/gadb v0.1.0
 	github.com/go-git/go-git/v5 v5.19.3
+	github.com/kevinburke/ssh_config v1.2.0
 	github.com/klauspost/compress v1.20.0
 	github.com/pierrec/lz4/v4 v4.1.30
+	github.com/pkg/sftp v1.13.11
 	github.com/schollz/progressbar/v3 v3.19.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
@@ -35,7 +38,6 @@ require (
 require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/NurramoX/streakboard v0.1.0 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
@@ -54,7 +56,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
-	github.com/kevinburke/ssh_config v1.2.0 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
