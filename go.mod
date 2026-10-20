@@ -24,6 +24,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.30
 	github.com/pkg/sftp v1.13.11
 	github.com/schollz/progressbar/v3 v3.19.1
+	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/ulikunitz/xz v0.5.16
@@ -62,7 +63,6 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/pjbgf/sha1cd v0.7.0 // indirect
 	github.com/sahilm/fuzzy v0.1.3 // indirect
-	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
