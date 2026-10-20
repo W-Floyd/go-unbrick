@@ -290,3 +290,28 @@ func TestLabelForARenamedContainer(t *testing.T) {
 		t.Errorf("label for a renamed file: %q", got)
 	}
 }
+
+// Looking at a container pair the first pass stopped at has it compared there: the
+// viewer tells the comparison where it is looking, and the level fills in.
+func TestSelectingAContainerComparesItsMembers(t *testing.T) {
+	t1 := time.Unix(1_700_000_000, 0)
+	pkg := func(content string) []byte {
+		return tarAt(t, t1, "inner.tar", string(tarAt(t, t1, "x.bin", content)), "keep.txt", "same")
+	}
+	a, b := t.TempDir(), t.TempDir()
+	writeTree(t, a, map[string][]byte{"pkg_v1.tar": pkg("old")})
+	writeTree(t, b, map[string][]byte{"pkg_v2.tar": pkg("new!")})
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 1, AutoDeepen: 1})
+	defer run.Close()
+	<-run.Done()
+	m := newDiffTUI("t", run)
+	open(m, 120, 30)
+	if len(m.lines) != 1 {
+		t.Fatalf("the level: %s", names(m.lines))
+	}
+	drive(m, m.refresh()) // looking at it: the comparison goes into it
+	waitListed(t, m)
+	if it, ok := m.selected(); !ok || !it.e.Compared || !it.kids || !strings.Contains(it.summary, "changed") {
+		t.Errorf("after looking at it: %+v", it)
+	}
+}

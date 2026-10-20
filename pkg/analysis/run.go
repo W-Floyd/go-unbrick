@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
@@ -32,6 +33,16 @@ type Config struct {
 	Member string
 	// Verify reads every member instead of trusting a vendor manifest's stated hash.
 	Verify bool
+	// Workers is how many container pairs go deeper at once (default 2): foreground
+	// work, what a front end is looking at, may use all of them; the background uses
+	// all but one, so a front end asking for something finds a place free. On a
+	// spinning disk, 1 stops them competing.
+	Workers int
+	// AutoDeepen is how many levels beyond Depth the background goes on its own, each
+	// path as far as that and no further, nearest what the front end is looking at
+	// first, whenever a worker is spare. 0 turns it off, and with it going deeper as a
+	// front end focuses (Run.Focus); negative has no limit.
+	AutoDeepen int
 	// FetchAhead is the bytes of ssh:// data fetched ahead of the comparison: 0 keeps
 	// the default (512 MiB), negative turns it off.
 	FetchAhead int64
@@ -92,13 +103,36 @@ type Run struct {
 	err     error
 	done    chan struct{} // closed when the comparison has finished, successfully or not
 
-	depth     int        // container levels compared into: Config.Depth, and Deepen's
-	xmu       sync.Mutex // one expansion at a time (the disks underneath are not safe for more)
-	rootLevel *Level
-	lc        levelCache[*Level] // opened by LevelAt
+	depth int // container levels compared into: Config.Depth, and Deepen's
+	// Going deeper (expand.go): worker places, how far the background goes, the line a
+	// front end is looking at.
+	workers      int
+	auto         int
+	sem          chan struct{}
+	fgWait       atomic.Int32
+	wake         chan struct{}
+	closed       chan struct{}
+	closing      atomic.Bool
+	focus        *diffLine
+	notContainer map[*diffLine]bool
+	rootLevel    *Level
+	lc           levelCache[*Level] // opened by LevelAt
 }
 
-func newRun() *Run { return &Run{done: make(chan struct{})} }
+func newRun() *Run {
+	r := &Run{done: make(chan struct{}), wake: make(chan struct{}, 1), closed: make(chan struct{})}
+	r.setWorkers(defaultWorkers)
+	return r
+}
+
+// defaultWorkers is how many pairs go deeper at once: one for what a front end asks
+// for, one for the background to use while it is idle.
+const defaultWorkers = 2
+
+func (r *Run) setWorkers(n int) {
+	r.workers = max(n, 1)
+	r.sem = make(chan struct{}, r.workers)
+}
 
 func (r *Run) setRoot(t *treeDiffTally) {
 	r.mu.Lock()
@@ -124,6 +158,13 @@ func Start(cfg Config) *Run {
 	diffQuiet = true // the front end draws the progress itself
 	r := newRun()
 	r.depth = cfg.Depth
+	if cfg.Workers > 0 {
+		r.setWorkers(cfg.Workers)
+	}
+	r.auto = cfg.AutoDeepen
+	if r.auto != 0 {
+		r.startCrawl()
+	}
 	go func() {
 		defer close(r.done)
 		if cfg.Member != "" { // one file out of each, not the trees

@@ -33,13 +33,13 @@ func newDiffCmd() *cobra.Command {
 	var member, view, webAddr string
 	var context int
 	var fetchAheadMiB int64
-	var depth int
+	var depth, workers, autoDepth int
 	c := &cobra.Command{
 		Use:   "diff <a> <b>",
 		Short: "compare two signed images, separating re-signing from real change; or two packages or directories (local or ssh://), member by member, with renames and moves matched by content",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := analysis.Config{A: args[0], B: args[1], Depth: depth, Verbose: verbose, Member: member, Verify: verify, FetchAhead: fetchAheadMiB << 20}
+			cfg := analysis.Config{A: args[0], B: args[1], Depth: depth, Verbose: verbose, Member: member, Verify: verify, FetchAhead: fetchAheadMiB << 20, Workers: workers, AutoDeepen: autoDepth}
 			if fetchAheadMiB == 0 {
 				cfg.FetchAhead = -1
 			}
@@ -173,6 +173,8 @@ func newDiffCmd() *cobra.Command {
 	_ = c.Flags().MarkHidden("profile")
 	c.Flags().BoolVar(&verify, "verify", false, "packages: read every file instead of trusting vendor manifests (.ver, update.info, TarList) for their hashes")
 	c.Flags().IntVar(&depth, "depth", 3, "packages: how many container levels to compare into")
+	c.Flags().IntVar(&autoDepth, "auto-depth", 2, "interactive and web: levels beyond --depth to compare on their own, per path, nearest what you are looking at first, when a worker is spare (0 = only when asked, with D; negative = no limit)")
+	c.Flags().IntVar(&workers, "workers", 2, "interactive and web: container pairs compared deeper at once (what you look at may use all; the background all but one); 1 on a spinning disk")
 	addSecrets(c)
 	return c
 }

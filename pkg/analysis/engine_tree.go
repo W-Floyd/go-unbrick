@@ -159,6 +159,9 @@ type diffLine struct {
 	// lines inside it means they are the same; without it they were not looked at
 	// (the depth ran out).
 	compared bool
+	// level is how many levels of going deeper (see Run.Deepen) lie between the line and
+	// the first pass: 0 for what the first pass found.
+	level int
 	// meta says, for a kind '≡' line, what differs in the headers: "mtime of 47 of 52 members".
 	meta string
 

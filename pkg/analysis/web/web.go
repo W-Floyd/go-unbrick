@@ -193,6 +193,12 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusNotFound, analysis.ErrNoSuchEntry)
 		return
 	}
+	// Looking at an entry is what has the comparison go deeper there (Config.AutoDeepen),
+	// ahead of the background; a no-op when that is off. It reads the entry's heads,
+	// which is one read at a time like the rest.
+	s.load.Lock()
+	s.run.Focus(e)
+	s.load.Unlock()
 	resp := struct {
 		Entry     analysis.Entry        `json:"entry"`
 		Title     string                `json:"title"`

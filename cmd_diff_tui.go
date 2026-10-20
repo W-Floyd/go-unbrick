@@ -834,9 +834,27 @@ func (m *diffTUI) syncLevel() tea.Cmd {
 	return m.refresh()
 }
 
-// refresh shows what is known for the selected line and starts what is not:
-// reading its two sides, then analysing them for the current view.
+// refresh shows what is known for the selected line and starts what is not, and
+// tells the comparison where we are looking, so it goes deeper there first.
 func (m *diffTUI) refresh() tea.Cmd {
+	cmd := m.refreshPane()
+	if it, ok := m.selected(); ok && m.run.AutoDeepen() != 0 && m.run.Finished() {
+		focus := func() tea.Msg {
+			m.run.Focus(it.e) // reads the entry's heads: off the viewer's goroutine
+			return focusedMsg{}
+		}
+		return tea.Batch(cmd, focus)
+	}
+	return cmd
+}
+
+// focusedMsg says the comparison was told where we are looking: something may have
+// started going deeper, so the snapshot clock must run.
+type focusedMsg struct{}
+
+// refreshPane is refresh without the focus: reading the two sides, then analysing
+// them for the current view.
+func (m *diffTUI) refreshPane() tea.Cmd {
 	it, ok := m.selected()
 	m.pane.GotoTop()
 	switch {
@@ -1012,6 +1030,8 @@ func (m *diffTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spinning = false // nothing in view is in progress: the clock stops
 		return m, nil
+	case focusedMsg:
+		return m, m.ensureTick()
 	case tickMsg:
 		// Whether the level was still being listed is read before the snapshot, as
 		// with the comparison: a snapshot taken after that point is all of it.

@@ -406,3 +406,36 @@ func TestOneSidedImageAndDownload(t *testing.T) {
 		t.Errorf("raw of a pair: %s", r.Status)
 	}
 }
+
+// Asking for an entry is looking at it: with AutoDeepen the comparison goes
+// into a pair the first pass stopped at, with no deepen request.
+func TestEntryRequestFocusesAndTheComparisonGoesDeeper(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	t1 := time.Unix(1_700_000_000, 0)
+	write(t, a, "pkg_v1.tar", mkTar(t1, "x", "one", "gone", "g"))
+	write(t, b, "pkg_v2.tar", mkTar(t1, "x", "two", "new", "n"))
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 1, AutoDeepen: 1})
+	defer run.Close()
+	<-run.Done()
+	srv := httptest.NewServer(Handler(run, Options{}))
+	defer srv.Close()
+	// (The background may get there first: spare workers go on their own. What is
+	// asserted is that the pair does get compared, and that asking for it works.)
+	name := run.Entries(run.Root(), false)[0].Name
+	for _, n := range []string{name, strings.TrimSuffix(name, "/"), name + "/"} { // it may have become enterable meanwhile
+		if r, err := http.Get(srv.URL + "/api/entry?name=" + url.QueryEscape(n)); err == nil {
+			r.Body.Close()
+		}
+	}
+	var e analysis.Entry
+	for i := 0; i < 200; i++ {
+		e = run.Entries(run.Root(), false)[0]
+		if e.Compared && !e.Pending {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !e.Compared || !e.HasKids {
+		t.Errorf("not compared after being looked at: %+v", e)
+	}
+}
