@@ -404,6 +404,22 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// padToWidth forces s to exactly w display columns: truncated if over
+// (lipgloss's own Width() wraps instead of truncating, which is wrong for a
+// single line that has to land at an exact terminal column or width), padded
+// with trailing spaces if under (nothing downstream pads a bare string -
+// that's what left ultraviolet's cell diff with stale trailing characters
+// from a longer previous render, since it only rewrites cells a frame's
+// content actually addresses).
+func padToWidth(s string, w int) string {
+	if sw := ansi.StringWidth(s); sw > w {
+		return ansi.Truncate(s, w, "")
+	} else if sw < w {
+		return s + strings.Repeat(" ", w-sw)
+	}
+	return s
+}
+
 func (m *browseModel) View() tea.View {
 	listW := m.width * 2 / 5
 	rightW := m.width - listW - 1
@@ -453,11 +469,7 @@ func (m *browseModel) View() tea.View {
 			// column has to be exact, so line 0's width is forced here
 			// rather than trusted from the list's own rendering.
 			if i == 0 {
-				if w := ansi.StringWidth(line); w > listW {
-					line = ansi.Truncate(line, listW, "")
-				} else if w < listW {
-					line += strings.Repeat(" ", listW-w)
-				}
+				line = padToWidth(line, listW)
 			}
 			b.WriteString(line)
 			b.WriteByte(' ')
@@ -479,7 +491,19 @@ func (m *browseModel) View() tea.View {
 		status = strings.Join(m.breadcrumb(), " / ")
 	}
 
-	content := body + "\n" + m.progressLine() + "\n" + cLabel(status)
+	// Padded to the full terminal width rather than left as whatever length
+	// their own text happens to be: both vary between frames (digit counts
+	// in the progress fractions, breadcrumb/status text length), and
+	// ultraviolet only rewrites cells a frame's content actually addresses -
+	// a shorter line doesn't erase what a longer one left in the cells past
+	// its own end. Confirmed live via a raw pty capture: a progress line's
+	// tail from an earlier, longer render stuck around, concatenated with
+	// the new one, read back as "...this page ... overall page ... " with a
+	// second progress bar's characters trailing off it. This was the
+	// general-purpose version of every "stale content left on screen"
+	// symptom chased through this file - not specific to images, lists, or
+	// any particular code path, just two footer lines nothing ever padded.
+	content := body + "\n" + padToWidth(m.progressLine(), m.width) + "\n" + padToWidth(cLabel(status), m.width)
 	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	// Without this, bubbletea renders inline below the shell prompt instead
