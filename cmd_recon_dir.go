@@ -15,24 +15,12 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
-// verEntry is one file a .ver manifest lists: the firmware downloader writes
-// one beside the parts, as pipe-separated rows
-//
-//	<collection>|<file>|<id>|<signed crc32>|<size>|<flag>
-//
-// after a header row "+|<id>|<build>|<brand>|<collection>|<n>|<flag>".
-type verEntry struct {
-	Name string
-	CRC  uint32
-	Size int64
-}
+type verEntry = vendor.VerEntry
 
-// verManifest is the parsed .ver of a downloaded firmware collection.
+// verManifest is a .ver of a downloaded firmware collection (see vendor.ParseVer).
 type verManifest struct {
-	Path       string
-	Collection string // target device, e.g. 2022_EV6_USA
-	Build      string
-	Entries    []verEntry
+	vendor.VerManifest
+	Path string
 }
 
 func parseVer(path string) (*verManifest, bool) {
@@ -40,29 +28,7 @@ func parseVer(path string) (*verManifest, bool) {
 	if err != nil {
 		return nil, false
 	}
-	m := &verManifest{Path: path}
-	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) < 5 {
-			continue
-		}
-		if f[0] == "+" {
-			m.Build = f[2]
-			if len(f) > 4 {
-				m.Collection = f[4]
-			}
-			continue
-		}
-		crc, err1 := strconv.ParseInt(f[3], 10, 64)
-		size, err2 := strconv.ParseInt(f[4], 10, 64)
-		if err1 != nil || err2 != nil || f[1] == "" {
-			continue
-		}
-		if m.Collection == "" {
-			m.Collection = f[0]
-		}
-		m.Entries = append(m.Entries, verEntry{Name: f[1], CRC: uint32(crc), Size: size})
-	}
+	m := &verManifest{VerManifest: vendor.ParseVer(data), Path: path}
 	return m, len(m.Entries) > 0
 }
 
