@@ -421,6 +421,24 @@ func (m *browseModel) View() tea.View {
 	var body string
 	if m.previewImage != "" {
 		leftLines := strings.Split(left, "\n")
+		// m.preview (a viewport) pads itself to its configured height, so
+		// the non-image branch's JoinHorizontal always gets exactly
+		// bodyHeight lines from both sides - but m.list.View() only
+		// returns as many lines as there are visible items, which can be
+		// far fewer than the pane height in a short directory. Ultraviolet
+		// never clears a row this frame's content doesn't mention, so
+		// confirmed live: a short list left dozens of rows below it
+		// holding whatever a previous, longer frame had drawn there,
+		// while the image (whose own requested height is independent of
+		// how many lines we actually write) visually spanned right over
+		// that stale content. Pad explicitly rather than trust the list's
+		// own line count to already match.
+		if bodyHeight := m.height - 2; len(leftLines) < bodyHeight {
+			blank := strings.Repeat(" ", listW)
+			for len(leftLines) < bodyHeight {
+				leftLines = append(leftLines, blank)
+			}
+		}
 		pad := strings.Repeat(" ", rightW)
 		var b strings.Builder
 		for i, line := range leftLines {
