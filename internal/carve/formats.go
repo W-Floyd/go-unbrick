@@ -232,6 +232,7 @@ func expandInput(n *Node) ([]*Node, error) {
 		if e.HasSrc {
 			k.src = &source{path: n.path, off: e.SrcOff, length: e.SrcLen}
 		}
+		k.Modified = e.Modified
 		out = append(out, k)
 	}
 	return joinSuperChunks(out), nil
@@ -253,10 +254,17 @@ func expandZip(n *Node) ([]*Node, error) {
 		}
 		crc := fmt.Sprintf("%08x", f.CRC32)
 		size := int64(f.UncompressedSize64)
+		// An encrypted member is opened with the vendor's password, when it has one.
+		if k := decryptedZipMember(n, f, ra); k != nil {
+			out = append(out, k)
+			continue
+		}
 		// Where a member's data starts is in its local header, a read of its own:
 		// done when the member is read, not once per member of every zip listed.
 		if f.Method == zip.Store {
-			out = append(out, withClaim(FromReaderAt(f.Name, &zipStored{f: f, ra: ra, size: size}, size), "crc32", crc, size))
+			k := withClaim(FromReaderAt(f.Name, &zipStored{f: f, ra: ra, size: size}, size), "crc32", crc, size)
+			k.Modified = f.Modified
+			out = append(out, k)
 			continue
 		}
 		open := func() (io.ReadCloser, error) { return f.Open() }
@@ -270,6 +278,7 @@ func expandZip(n *Node) ([]*Node, error) {
 				return &srcfile.Deflated{R: ra, Start: off, End: off + int64(f.CompressedSize64)}
 			}
 		}
+		k.Modified = f.Modified
 		out = append(out, withClaim(k, "crc32", crc, size))
 	}
 	return joinSuperChunks(out), nil

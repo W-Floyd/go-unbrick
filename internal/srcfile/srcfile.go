@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 )
@@ -96,6 +97,7 @@ type entry struct {
 	// (compressed, for a deflated zip member), when hasSrc.
 	srcOff, srcLen int64
 	hasSrc         bool
+	modified       time.Time // when the archive records the member last changed; zero if not
 }
 
 // Deflated locates a member stored as a raw deflate stream, for a reader
@@ -123,7 +125,7 @@ func openArchive(path string) (*archive, error) {
 			if f.FileInfo().IsDir() {
 				continue
 			}
-			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open, crc: f.CRC32, hasCRC: true}
+			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open, crc: f.CRC32, hasCRC: true, modified: f.Modified}
 			if off, err := f.DataOffset(); err == nil {
 				e.srcOff, e.srcLen, e.hasSrc = off, int64(f.CompressedSize64), true
 				switch f.Method {
@@ -176,7 +178,7 @@ func openTar(path string) (*archive, error) {
 		}
 		sr := io.NewSectionReader(f, off, hdr.Size)
 		a.entries = append(a.entries, entry{name: filepath.ToSlash(filepath.Clean(hdr.Name)), size: uint64(hdr.Size), at: sr,
-			srcOff: off, srcLen: hdr.Size, hasSrc: true, // "./x" would never match a cleaned lookup path
+			srcOff: off, srcLen: hdr.Size, hasSrc: true, modified: hdr.ModTime, // "./x" would never match a cleaned lookup path
 			open: func() (io.ReadCloser, error) { return io.NopCloser(io.NewSectionReader(sr, 0, sr.Size())), nil }})
 	}
 }
@@ -263,6 +265,8 @@ type Entry struct {
 	// (compressed, for a deflated zip member), when HasSrc.
 	SrcOff, SrcLen int64
 	HasSrc         bool
+	// Modified is when the archive records the member last changed; zero if not.
+	Modified time.Time
 }
 
 // Entries lists path's members for reading, which stays possible until close.
@@ -278,7 +282,7 @@ func Entries(path string) ([]Entry, io.Closer, error) {
 	out := make([]Entry, 0, len(a.entries))
 	for _, e := range a.entries {
 		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at, Deflate: e.defl, CRC32: e.crc, HasCRC: e.hasCRC,
-			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc})
+			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc, Modified: e.modified})
 	}
 	return out, closerFunc(a.close), nil
 }

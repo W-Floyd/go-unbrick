@@ -58,6 +58,11 @@ type Node struct {
 	kids    []*Node
 	err     error
 	head    []byte
+
+	parent *Node // the container n is a member of, once that has listed its members (guarded by mu)
+
+	// Modified is when the container records n was last changed, if it records one.
+	Modified time.Time
 }
 
 // Open returns the root node for an input path or URL.
@@ -117,6 +122,14 @@ func (n *Node) deflated() *srcfile.Deflated {
 		n.deflFn = nil
 	}
 	return n.defl
+}
+
+// Parent is the container n is a member of, or nil for an input or for a node made
+// apart from one. It is set when the container lists its members.
+func (n *Node) Parent() *Node {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.parent
 }
 
 // Source says where n's bytes sit in a file read by path: the whole input for a
@@ -339,6 +352,13 @@ func (n *Node) Children() (kind string, kids []*Node, err error) {
 		n.kids, n.err = e.Expand(n)
 		if OnExpand != nil {
 			OnExpand(e.Kind, n.Name, time.Since(start))
+		}
+		for _, k := range n.kids {
+			k.mu.Lock()
+			if k.parent == nil {
+				k.parent = n
+			}
+			k.mu.Unlock()
 		}
 		if n.id != "" {
 			for _, k := range n.kids {

@@ -23,6 +23,7 @@ var carveOnce sync.Once
 func carveRoot(input string) (*carve.Node, error) {
 	carveOnce.Do(func() {
 		carve.Register(vendor.CarveExpanders()...)
+		carve.ZipPasswords = vendor.ZipPasswords
 		carve.Register(encryptedExpander())
 	})
 	if len(reconSecrets) == 0 {
