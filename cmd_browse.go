@@ -98,8 +98,16 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 			// anything about the current one. Delete everything before
 			// drawing anything, and again on the way out, rather than
 			// trusting that whatever's already on screen is ours.
-			fmt.Fprint(os.Stdout, ansi.KittyGraphics(nil, "a=d", "d=A"))
-			defer fmt.Fprint(os.Stdout, ansi.KittyGraphics(nil, "a=d", "d=A"))
+			//
+			// m.termOut, not os.Stdout: recon's background worker swaps
+			// the global os.Stdout variable to capture a job's printed
+			// output (cmd_recon_dir.go's captureStdout), and that worker
+			// can already be running by the time this deferred write
+			// happens on the way out. m.termOut is captured once in
+			// newBrowseModel, before recon's worker goroutine exists to
+			// race it - see its comment.
+			fmt.Fprint(m.termOut, ansi.KittyGraphics(nil, "a=d", "d=A"))
+			defer fmt.Fprint(m.termOut, ansi.KittyGraphics(nil, "a=d", "d=A"))
 			_, err = tea.NewProgram(m).Run()
 			return err
 		},
@@ -262,6 +270,21 @@ type browseModel struct {
 	previewPlaceholder string // Kitty/Ghostty only: ordinary placeholder-glyph text for the currently previewed image, "" when not showing one - see startImageLoad
 	lastKittyID        uint32 // most recent Kitty image id transmitted, 0 if none yet - see startImageLoad
 	imgReady           chan imageLoadMsg
+	// termOut is the real terminal, captured once here rather than read as
+	// os.Stdout at write time: recon's background worker swaps that global
+	// variable to capture a job's printed output (cmd_recon_dir.go's
+	// captureStdout), and any of our own code that read os.Stdout directly
+	// at the wrong moment would silently write into recon's pipe instead of
+	// the terminal - confirmed with -race (a real, not theoretical, data
+	// race on os.Stdout) after it explained an otherwise inexplicable "the
+	// image never appears, but nothing errors" symptom: the Transmit/Place
+	// setup bytes went into recon's capture pipe, never reaching the
+	// terminal, while m.previewPlaceholder still got set - placeholder
+	// glyphs with no registered image behind them render as nothing.
+	// newBrowseModel runs before tea.NewProgram(m).Run() ever starts the
+	// recon queue's worker goroutine (Init does that, not newBrowseModel),
+	// so os.Stdout is still reliably the real terminal here.
+	termOut *os.File
 	status             string
 	width              int
 	height             int
@@ -274,7 +297,8 @@ func newBrowseModel(input string, skip []string) (*browseModel, error) {
 		spin:     spinner.New(),
 		imgReady: make(chan imageLoadMsg, 4),
 		rq:       newReconQueue(),
-		skip:    skip,
+		skip:     skip,
+		termOut:  os.Stdout,
 	}
 	// Without this a long line just vanishes past the pane's width - no
 	// scrollbar, no indicator it's cut off, and no keybinding here for
@@ -379,7 +403,7 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// bubbletea's own single goroutine, same as every other
 					// Update call) guarantees relative to the View() this
 					// same message triggers.
-					fmt.Fprint(os.Stdout, string(msg.setup))
+					fmt.Fprint(m.termOut, string(msg.setup))
 					m.previewPlaceholder = msg.placeholder
 				}
 			}
@@ -907,7 +931,15 @@ func (m *browseModel) startImageLoad(e browseEntry) bool {
 		newID = m.lastKittyID
 	}
 	ch := m.imgReady
-	go func() { ch <- loadImage(e, key, graphics, oldID, newID, cols, rows) }()
+	// Paused for the duration of the read+decode+encode below, not just the
+	// read: recon's own job on the same container is the contention, and all
+	// of this (not just readImageBytes) can block behind a lock held across
+	// a slow decompression read.
+	m.rq.pause()
+	go func() {
+		defer m.rq.resume()
+		ch <- loadImage(e, key, graphics, oldID, newID, cols, rows)
+	}()
 	return true
 }
 
@@ -1302,6 +1334,7 @@ type reconQueue struct {
 	seen         map[string]bool // every key ever enqueued, whether done, pending, or in flight - stats()'s total
 	ready        chan reconReadyMsg
 	startOnce    sync.Once
+	pauseCount   int // see pause/resume
 }
 
 // newReconQueue only allocates - start() launches the worker. A job's work
@@ -1338,11 +1371,12 @@ func (q *reconQueue) run() {
 	}
 }
 
-// next blocks until a job is pending, then claims it.
+// next blocks until a job is pending and the queue isn't paused, then claims
+// it.
 func (q *reconQueue) next() reconJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for q.pending.Len() == 0 {
+	for q.pending.Len() == 0 || q.pauseCount > 0 {
 		q.cond.Wait()
 	}
 	front := q.pending.Front()
@@ -1351,6 +1385,31 @@ func (q *reconQueue) next() reconJob {
 	delete(q.byKey, job.key)
 	q.inflightKey, q.inflightName = job.key, job.name
 	return job
+}
+
+// pause keeps the worker from claiming its next job until every matching
+// resume call has happened - a counter, not a bool, since more than one
+// image load can be in flight at once (rapid navigation) and the worker
+// shouldn't resume until all of them are done. Used while loading an image
+// preview: reading a carve.Node shares whatever decompression/container
+// machinery a recon job on the same container is also using, and starting a
+// new multi-second recon job right as an image load begins is exactly the
+// contention that made "took ages" worse than it needed to be. This can't
+// interrupt a job already in flight when the image load starts - only stop a
+// new one from being picked up - but that's still the common case (recon
+// catching up between jobs far more often than it's mid-job).
+func (q *reconQueue) pause() {
+	q.mu.Lock()
+	q.pauseCount++
+	q.mu.Unlock()
+}
+
+// resume reverses one pause call; see its comment.
+func (q *reconQueue) resume() {
+	q.mu.Lock()
+	q.pauseCount--
+	q.mu.Unlock()
+	q.cond.Broadcast()
 }
 
 // enqueue appends job once per key, ever - a frame revisited later (ascend
