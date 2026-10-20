@@ -250,28 +250,30 @@ type browseFrame struct {
 }
 
 type browseModel struct {
-	frames       []browseFrame
-	list         list.Model
-	preview      viewport.Model
-	spin         spinner.Model
-	rq           *reconQueue
-	skip         []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
-	showRaw      bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
-	graphics     graphicsProtocol
+	frames             []browseFrame
+	list               list.Model
+	preview            viewport.Model
+	spin               spinner.Model
+	rq                 *reconQueue
+	skip               []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
+	showRaw            bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
+	graphics           graphicsProtocol
 	previewImage       string // iTerm2 only: raw escape sequence for the currently previewed image, "" when not showing one - drawn separately in View(), never through m.preview/lipgloss (see showPreview)
-	previewPlaceholder string // Kitty/Ghostty only: ordinary placeholder-glyph text for the currently previewed image, "" when not showing one - see imagePreview
-	lastKittyID        uint32 // most recent Kitty image id transmitted, 0 if none yet - see imagePreview
-	status       string
-	width        int
-	height       int
+	previewPlaceholder string // Kitty/Ghostty only: ordinary placeholder-glyph text for the currently previewed image, "" when not showing one - see startImageLoad
+	lastKittyID        uint32 // most recent Kitty image id transmitted, 0 if none yet - see startImageLoad
+	imgReady           chan imageLoadMsg
+	status             string
+	width              int
+	height             int
 }
 
 func newBrowseModel(input string, skip []string) (*browseModel, error) {
 	m := &browseModel{
-		list:    list.New(nil, browseDelegate{}, 0, 0),
-		preview: viewport.New(),
-		spin:    spinner.New(),
-		rq:      newReconQueue(),
+		list:     list.New(nil, browseDelegate{}, 0, 0),
+		preview:  viewport.New(),
+		spin:     spinner.New(),
+		imgReady: make(chan imageLoadMsg, 4),
+		rq:       newReconQueue(),
 		skip:    skip,
 	}
 	// Without this a long line just vanishes past the pane's width - no
@@ -323,8 +325,13 @@ func waitReady(ch <-chan reconReadyMsg) tea.Cmd {
 	return func() tea.Msg { return <-ch }
 }
 
+// waitImage mirrors waitReady for imgReady - see its comment.
+func waitImage(ch <-chan imageLoadMsg) tea.Cmd {
+	return func() tea.Msg { return <-ch }
+}
+
 func (m *browseModel) Init() tea.Cmd {
-	return tea.Batch(waitReady(m.rq.ready), m.spin.Tick, func() tea.Msg {
+	return tea.Batch(waitReady(m.rq.ready), waitImage(m.imgReady), m.spin.Tick, func() tea.Msg {
 		m.rq.start()
 		return nil
 	})
@@ -352,6 +359,32 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, waitReady(m.rq.ready)
+	case imageLoadMsg:
+		// Dropped, bytes and all, if the selection moved on before this
+		// landed - key is only ever set from startImageLoad/loadImage, not
+		// user input, so there's no way to mistake a legitimately-retried
+		// load for a stale one here.
+		if sel, ok := m.selected(); ok {
+			if k, ok := reconKey(sel); ok && k == msg.key {
+				switch {
+				case !msg.ok:
+					m.preview.SetContent(m.fallbackPreview(sel))
+				case msg.raw != "":
+					m.previewImage = msg.raw
+				default:
+					// Setup (Transmit+Place) has no visual effect until the
+					// Placeholder text below is actually rendered, so unlike
+					// that text it doesn't need exact cell positioning - just
+					// to arrive before it, which a direct write here (on
+					// bubbletea's own single goroutine, same as every other
+					// Update call) guarantees relative to the View() this
+					// same message triggers.
+					fmt.Fprint(os.Stdout, string(msg.setup))
+					m.previewPlaceholder = msg.placeholder
+				}
+			}
+		}
+		return m, waitImage(m.imgReady)
 	case tea.KeyPressMsg:
 		// While actively typing a filter query, every key belongs to it -
 		// including ones that are otherwise our own bindings below (an 'x',
@@ -687,9 +720,10 @@ func (m *browseModel) showPreview() {
 	m.status = ""
 	// Cleared up front, not just in the branches that don't use it: every
 	// return path below is "not showing an image", and View() draws
-	// m.previewImage on top of whatever's there whenever it's non-empty, so
-	// a stale one has to be cleared explicitly rather than just left
-	// unset by the branch that would otherwise set it.
+	// m.previewImage/m.previewPlaceholder on top of whatever's there
+	// whenever either is non-empty, so a stale one has to be cleared
+	// explicitly rather than just left unset by the branch that would
+	// otherwise set it.
 	m.previewImage = ""
 	m.previewPlaceholder = ""
 	e, ok := m.selected()
@@ -698,43 +732,49 @@ func (m *browseModel) showPreview() {
 		return
 	}
 	// An image renders inline via the terminal's own graphics protocol, if
-	// one was detected - if not (or the read/decode failed), imagePreview
-	// says so and this falls through to the plain size/type/recon preview
-	// below, same as any other unrecognized format.
+	// one was detected - if not, startImageLoad says so immediately and
+	// this falls through to the plain size/type/recon preview below, same
+	// as any other unrecognized format. If it does start, the actual read
+	// and decode happen on a background goroutine (see startImageLoad's
+	// comment on why) and land later as an imageLoadMsg in Update, which
+	// calls fallbackPreview itself on failure - so a failed load's
+	// fallback isn't duplicated here.
 	//
-	// It does NOT go through m.preview (a plain text viewport) or
-	// lipgloss.JoinHorizontal in View() for iTerm2 (m.previewImage):
-	// confirmed live that neither treats an OSC/APC graphics sequence as
-	// the atomic zero-width unit it is - SoftWrap's line-wrapping and
-	// JoinHorizontal's side-by-side width measurement both corrupted it
-	// before it reached the terminal. For Kitty/Ghostty (m.previewPlaceholder)
-	// it's ordinary text and does go through the normal join, just not
-	// lipgloss's Width() - see View().
+	// m.previewImage (iTerm2) does NOT go through m.preview (a plain text
+	// viewport) or lipgloss.JoinHorizontal in View(): confirmed live that
+	// neither treats an OSC/APC graphics sequence as the atomic zero-width
+	// unit it is - SoftWrap's line-wrapping and JoinHorizontal's
+	// side-by-side width measurement both corrupted it before it reached
+	// the terminal. m.previewPlaceholder (Kitty/Ghostty) is ordinary text
+	// and does go through the normal join, just not lipgloss's Width() -
+	// see View().
 	if !e.dir && e.isImage {
-		if m.imagePreview(e) {
-			m.preview.SetContent("")
+		if m.startImageLoad(e) {
+			m.preview.SetContent(cHdr(e.name) + "\n\nloading image...")
 			return
 		}
 	}
-	// A text file (isText is a direct content check - filetype.Text on its
-	// own head bytes, not e.label, which is recon's often-less-specific
-	// guess: a file this heuristic already calls readable can still earn an
-	// "unknown" label from typeLabel's other, stricter checks) always
-	// previews as itself immediately, rather than waiting on or being
-	// evicted by a cached recon result. It's still reconned in the
-	// background like everything else (enqueueAll doesn't check isText),
-	// and textPreview appends that once it lands rather than replacing the
-	// content with it - "text can match and be read" means both, not either.
+	m.preview.SetContent(m.fallbackPreview(e))
+}
+
+// fallbackPreview is shown for anything not handled above: a text file
+// (isText) previews as itself immediately, rather than waiting on or being
+// evicted by a cached recon result - it's still reconned in the background
+// like everything else (enqueueAll doesn't check isText), and textPreview
+// appends that once it lands rather than replacing the content with it -
+// "text can match and be read" means both, not either. Otherwise the cached
+// recon report if the background queue has already reached it, or cheap,
+// always-available info (size, type label) plus a note that it's running -
+// highlighting it already put it at the front of the queue.
+func (m *browseModel) fallbackPreview(e browseEntry) string {
 	if !e.dir && e.isText {
 		if out, ok := m.textPreview(e); ok {
-			m.preview.SetContent(out)
-			return
+			return out
 		}
 	}
 	if key, ok := reconKey(e); ok {
 		if out, ok := m.rq.get(key); ok {
-			m.preview.SetContent(out)
-			return
+			return out
 		}
 	}
 	var b strings.Builder
@@ -754,7 +794,7 @@ func (m *browseModel) showPreview() {
 		}
 		fmt.Fprintln(&b, "reconning in the background (spooled to a temp file); x extracts")
 	}
-	m.preview.SetContent(b.String())
+	return b.String()
 }
 
 // graphicsProtocol is which inline-image escape-sequence dialect, if any,
@@ -803,21 +843,31 @@ func detectGraphics() graphicsProtocol {
 // shouldn't get fully buffered into memory on the strength of that alone.
 const maxImagePreviewBytes = 20 << 20
 
-// imagePreview renders e inline via the detected graphics protocol. ok is
-// false whenever that's not possible - no protocol detected, the read
-// failed or hit maxImagePreviewBytes, or (Kitty only) the image didn't
-// decode as a real JPEG/PNG despite looksLikeImage's magic-byte check -
-// callers fall back to the plain text/recon preview, which already has its
-// own "x to extract" escape hatch for actually getting the file.
+// imageLoadMsg carries the result of a background image load (see
+// startImageLoad/loadImage), tagged with the entry's reconKey so Update can
+// drop a result that arrives after the selection has already moved on,
+// rather than misapplying it to whatever's now highlighted.
+type imageLoadMsg struct {
+	key         string
+	ok          bool
+	raw         string // iTerm2: the full escape sequence
+	setup       []byte // Kitty: Delete(oldID)+TransmitPNG(id)+Place(id), written to the terminal when applied
+	placeholder string // Kitty: ordinary placeholder-glyph text, see View()
+}
+
+// startImageLoad kicks off e's image load on a background goroutine if e
+// looks like an image this terminal can preview inline; ok is false when
+// there's nothing to load (no graphics protocol detected, dimensions not
+// known yet, or the image is too large to address with Kitty's placeholder
+// diacritics). The result arrives later as an imageLoadMsg.
 //
-// This draws straight into the terminal at the cursor position the escape
-// sequence is written at, same as every other graphics-protocol
-// implementation; running it through viewport.Model (a plain text buffer
-// that repositions the cursor and reprints lines on every scroll) is
-// untested against a real Kitty/iTerm2 session - if an image doesn't
-// survive a scroll of the pane, or leaves a stale copy behind, that's the
-// first thing to look at.
-func (m *browseModel) imagePreview(e browseEntry) bool {
+// The read + JPEG decode + PNG re-encode + base64 used to run synchronously
+// here, inside Update - fine most of the time, but a carve.Node read shares
+// whatever decompression/container machinery the background recon queue is
+// also using, and a slow read stalled Update (so every keypress, not just
+// this preview) until it finished. Only the cheap, fast checks happen
+// synchronously now; the slow part is loadImage, on its own goroutine.
+func (m *browseModel) startImageLoad(e browseEntry) bool {
 	if m.graphics == graphicsNone {
 		return false
 	}
@@ -838,11 +888,38 @@ func (m *browseModel) imagePreview(e browseEntry) bool {
 		// bubbletea has told us how big the screen actually is.
 		return false
 	}
-	raw, truncated, err := readImageBytes(e, maxImagePreviewBytes)
-	if err != nil || truncated {
+	key, ok := reconKey(e)
+	if !ok {
 		return false
 	}
-	switch m.graphics {
+	graphics := m.graphics
+	var oldID, newID uint32
+	if graphics == graphicsKitty {
+		if cols > kitty.MaxSpan || rows > kitty.MaxSpan {
+			return false
+		}
+		// Allocated synchronously, not inside the goroutine: Update runs
+		// on one goroutine with no concurrent caller, so this is race-free
+		// here in a way it wouldn't be if two in-flight loads both touched
+		// m.lastKittyID from their own goroutines.
+		oldID = m.lastKittyID
+		m.lastKittyID++
+		newID = m.lastKittyID
+	}
+	ch := m.imgReady
+	go func() { ch <- loadImage(e, key, graphics, oldID, newID, cols, rows) }()
+	return true
+}
+
+// loadImage does the actual read/decode/encode work for startImageLoad, on
+// its own goroutine - e, cols, rows, and the ids are all copied in by value
+// when the goroutine is spawned, so this touches no browseModel state.
+func loadImage(e browseEntry, key string, graphics graphicsProtocol, oldID, newID uint32, cols, rows int) imageLoadMsg {
+	raw, truncated, err := readImageBytes(e, maxImagePreviewBytes)
+	if err != nil || truncated {
+		return imageLoadMsg{key: key}
+	}
+	switch graphics {
 	case graphicsITerm2:
 		f := iterm2.File{
 			Name:    e.name,
@@ -852,19 +929,15 @@ func (m *browseModel) imagePreview(e browseEntry) bool {
 			Inline:  true,
 			Content: []byte(base64.StdEncoding.EncodeToString(raw)),
 		}
-		m.previewImage = ansi.ITerm2(f)
-		return true
+		return imageLoadMsg{key: key, ok: true, raw: ansi.ITerm2(f)}
 	case graphicsKitty:
-		if cols > kitty.MaxSpan || rows > kitty.MaxSpan {
-			return false
-		}
 		// A JPEG passed as-is is accepted by some Kitty implementations'
 		// lenient decoders and rejected by others, so it's decoded and
 		// re-encoded to PNG (kitty.TransmitPNG does the encoding) rather
 		// than relied on either way.
 		img, _, err := image.Decode(bytes.NewReader(raw))
 		if err != nil {
-			return false
+			return imageLoadMsg{key: key}
 		}
 		debugImagePreview(e.name, len(raw), img.Bounds(), cols, rows)
 		// A fixed image id (delete-then-retransmit under the same
@@ -881,40 +954,27 @@ func (m *browseModel) imagePreview(e browseEntry) bool {
 		// image is kept anyway, deleting the specific previous one -
 		// cheap, and avoids whatever a fixed id did or didn't contribute
 		// to the old symptom.
-		oldID := m.lastKittyID
-		m.lastKittyID++
-		id := m.lastKittyID
 		var setup bytes.Buffer
 		if oldID != 0 {
 			setup.Write(kitty.Delete(oldID))
 		}
-		tx, err := kitty.TransmitPNG(id, img)
+		tx, err := kitty.TransmitPNG(newID, img)
 		if err != nil {
-			return false
+			return imageLoadMsg{key: key}
 		}
 		setup.Write(tx)
-		pl, err := kitty.Place(id, rows, cols)
+		pl, err := kitty.Place(newID, rows, cols)
 		if err != nil {
-			return false
+			return imageLoadMsg{key: key}
 		}
 		setup.Write(pl)
-		// Written directly, not threaded through View()'s content string:
-		// Transmit/Place have no visual effect themselves (no display
-		// happens until the Placeholder text below is actually rendered),
-		// so unlike the placeholder text they don't need exact cell
-		// positioning - just to arrive before it. Update() runs on
-		// bubbletea's own single goroutine with no concurrent writer, so
-		// a direct write here happens strictly before the View() call
-		// this same event triggers.
-		fmt.Fprint(os.Stdout, setup.String())
-		ph, err := kitty.Placeholder(id, rows, cols)
+		ph, err := kitty.Placeholder(newID, rows, cols)
 		if err != nil {
-			return false
+			return imageLoadMsg{key: key}
 		}
-		m.previewPlaceholder = ph
-		return true
+		return imageLoadMsg{key: key, ok: true, setup: setup.Bytes(), placeholder: ph}
 	default:
-		return false
+		return imageLoadMsg{key: key}
 	}
 }
 
