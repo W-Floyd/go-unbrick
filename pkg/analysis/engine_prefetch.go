@@ -1,4 +1,4 @@
-package main
+package analysis
 
 import (
 	"sort"
@@ -12,7 +12,7 @@ import (
 // prefetchBudget is how many bytes of upcoming ssh:// data are fetched ahead of
 // the comparison, summed over every container being compared, so the network is
 // already working on the next members while this one is hashed. 0 turns it off.
-var prefetchBudget int64 = 512 << 20
+var prefetchBudget int64 = DefaultFetchAhead
 
 // warmWindow is how much of a member too big to fetch whole is started early;
 // the rest follows as the comparison reads it (read-ahead).

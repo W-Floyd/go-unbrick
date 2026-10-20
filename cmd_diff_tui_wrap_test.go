@@ -76,11 +76,7 @@ func TestInteractiveWrapsLongLinesAndTogglesWithW(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	writeTree(t, a, map[string][]byte{"wide.txt": []byte("short\n" + long + "one\nend\n")})
 	writeTree(t, b, map[string][]byte{"wide.txt": []byte("short\n" + long + "TWO\nend\n")})
-	tally, _, err := diffTree(a, b, 3, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, 100, 30)
 	drive(m, m.refresh())
 
@@ -154,11 +150,7 @@ func TestInteractiveSaysWhetherOnlyStringsDiffer(t *testing.T) {
 		"both.bin":   mk("1.0.1", func(b []byte) { b[500] ^= 0xff }),                                // string and a byte
 		"nonstr.bin": mk("1.0.0", func(b []byte) { b[700] ^= 0xff; b[9000] ^= 0x7e; b[9001] ^= 1 }), // bytes only
 	})
-	tally, _, err := diffTree(a, b, 3, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, 140, 40)
 	show := func(name string) string {
 		t.Helper()
@@ -196,8 +188,7 @@ func TestInteractiveSaysWhetherOnlyStringsDiffer(t *testing.T) {
 	a2, b2 := t.TempDir(), t.TempDir()
 	writeTree(t, a2, map[string][]byte{"t.txt": []byte("one\n")})
 	writeTree(t, b2, map[string][]byte{"t.txt": []byte("two\n")})
-	tally2, _, _ := diffTree(a2, b2, 3, false, nil)
-	m2 := newDiffTUI("t", finished(tally2))
+	m2 := newDiffTUI("t", compared(t, a2, b2))
 	open(m2, 140, 40)
 	drive(m2, m2.refresh())
 	if got := plain(m2.rendered[m2.rk(m2.lines[0])]); strings.Contains(got, "strings") && strings.Contains(got, "Only strings") {

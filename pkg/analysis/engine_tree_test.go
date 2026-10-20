@@ -1,4 +1,4 @@
-package main
+package analysis
 
 import (
 	"archive/tar"
@@ -152,7 +152,7 @@ func TestDiffTrustsManifests(t *testing.T) {
 func TestDigestCachedAcrossRuns(t *testing.T) {
 	hashcache.Reset()
 	p := writeTar(t, "a.tar", map[string]string{"m.bin": "hello"})
-	root, err := carveRoot(p)
+	root, err := OpenRoot(p)
 	if err != nil {
 		t.Fatal(err)
 	}

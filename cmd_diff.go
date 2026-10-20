@@ -7,7 +7,13 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/imgdiff"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
+
+func init() {
+	analysis.OpenRoot = carveRoot
+	analysis.TypeLabel = typeLabel
+}
 
 // ---- diff ----
 
@@ -25,22 +31,24 @@ func newDiffCmd() *cobra.Command {
 		Short: "compare two signed images, separating re-signing from real change; or two packages or directories (local or ssh://), member by member, with renames and moves matched by content",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			diffTrust = !verify
-			prefetchBudget = fetchAheadMiB << 20
+			cfg := analysis.Config{A: args[0], B: args[1], Depth: depth, Verbose: verbose, Member: member, Verify: verify, FetchAhead: fetchAheadMiB << 20}
+			if fetchAheadMiB == 0 {
+				cfg.FetchAhead = -1
+			}
 			if profile {
-				startDiffProfile()
+				analysis.StartProfile()
 			}
 			if _, err := viewMode(view); err != nil {
 				return err
 			}
 			diffContext = context
 			if interactive {
-				return runDiffInteractive(args[0], args[1], depth, verbose, member)
+				return runDiffInteractive(cfg)
 			}
 			if member != "" { // one file out of each input
 				return runFileDiff(args[0], args[1], member, view)
 			}
-			if ok, err := diffContainers(args[0], args[1], depth, verbose); ok || err != nil {
+			if ok, err := analysis.Print(cfg); ok || err != nil {
 				return err
 			}
 			a, err := infile.ReadFile(args[0])
@@ -148,7 +156,7 @@ func newDiffCmd() *cobra.Command {
 	c.Flags().IntVarP(&context, "context", "U", contextLines, "for one file: unchanged lines shown around each change")
 	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "browse the differences: a line diff for text; for binaries, shared vs unique bytes and a diff of the strings in them")
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy (images); list unchanged members too (packages)")
-	c.Flags().Int64Var(&fetchAheadMiB, "fetch-ahead", prefetchBudget>>20, "ssh:// inputs: MiB of upcoming files to fetch while the current one is processed (0 = off)")
+	c.Flags().Int64Var(&fetchAheadMiB, "fetch-ahead", analysis.DefaultFetchAhead>>20, "ssh:// inputs: MiB of upcoming files to fetch while the current one is processed (0 = off)")
 	c.Flags().BoolVar(&profile, "profile", false, "packages: report on stderr where the time went")
 	_ = c.Flags().MarkHidden("profile")
 	c.Flags().BoolVar(&verify, "verify", false, "packages: read every file instead of trusting vendor manifests (.ver, update.info, TarList) for their hashes")

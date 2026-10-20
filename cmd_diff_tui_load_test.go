@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func numbered(i int) (string, string) {
 func TestFastSwitchingReadsOneAtATimeAndEndsOnTheLastEntry(t *testing.T) {
 	m := manyFiles(t, 20, 100, 30, numbered)
 	m.rendered = map[renderKey]string{} // forget the first entry's, to start clean
-	m.data = map[itemKey]*pairData{}
+	m.data = map[itemKey]*analysis.Pair{}
 	m.order, m.loading = nil, map[itemKey]bool{}
 
 	// Ten key presses, none of whose commands has run yet: as when keys arrive
@@ -60,7 +61,7 @@ func TestFastSwitchingReadsOneAtATimeAndEndsOnTheLastEntry(t *testing.T) {
 	if len(m.data) < 1 || len(m.data) > 2 { // the first may be a probe of its head, not a read
 		var names []string
 		for k := range m.data {
-			names = append(names, k.path)
+			names = append(names, fmt.Sprint(k))
 		}
 		t.Errorf("%d files were read, want 1 or 2 (where the cursor stopped, and perhaps the first): %v", len(m.data), names)
 	}
@@ -93,7 +94,7 @@ func TestOnlyAFewFilesStayInMemory(t *testing.T) {
 func TestAStaleReadDoesNotReplaceThePane(t *testing.T) {
 	m := manyFiles(t, 5, 100, 30, numbered)
 	m.rendered = map[renderKey]string{}
-	m.data = map[itemKey]*pairData{}
+	m.data = map[itemKey]*analysis.Pair{}
 	m.order, m.loading = nil, map[itemKey]bool{}
 
 	_, first := m.key("j") // starts reading entry 1

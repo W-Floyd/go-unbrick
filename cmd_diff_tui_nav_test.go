@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 	"os"
 	"strings"
 	"testing"
@@ -32,11 +33,7 @@ func nested(t *testing.T) *diffTUI {
 		"sub/deep/x.txt": []byte("two\n"), "same.txt": []byte("same\n"),
 		"pkg.tar": bs(map[string]string{"x.bin": "new!", "same.bin": "same"}),
 	})
-	tally, ok, err := diffTree(a, b, 3, false, nil)
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, 120, 30)
 	return m
 }
@@ -203,8 +200,7 @@ func TestAscendingRestoresTheCursorAndTheScroll(t *testing.T) {
 	// A container at the end of a long level, so reaching it scrolls.
 	writeTree(t, a, map[string][]byte{"d/zzz.tar": tar("old")})
 	writeTree(t, b, map[string][]byte{"d/zzz.tar": tar("new!")})
-	tally, _, _ := diffTree(a, b, 3, false, nil)
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, 100, 14)
 
 	key(m, "enter") // into d/
@@ -285,7 +281,9 @@ func TestAViewOfADirectoryHasABreadcrumbRowAndFits(t *testing.T) {
 		t.Errorf("the keys row: %q", rows[29])
 	}
 	// A deep path is cut at its start, keeping where we are.
-	m.frames = append(m.frames, navFrame{title: strings.Repeat("deeper/", 30) + "here"})
+	deeper := new(analysis.Level)
+	deeper.SetTitle(strings.Repeat("deeper/", 30) + "here")
+	m.frames = append(m.frames, navFrame{level: deeper})
 	if c := crumb(m); !strings.HasSuffix(c, "here") || !strings.HasPrefix(c, "…") {
 		t.Errorf("a long breadcrumb: %q", c)
 	}

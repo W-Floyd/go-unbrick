@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -36,11 +37,14 @@ func key(m *diffTUI, k string) {
 	drive(m, cmd)
 }
 
-// finished is a comparison that has already run to the end.
-func finished(t *treeDiffTally) *liveRun {
-	r := newLiveRun()
-	r.setRoot(t)
-	close(r.done)
+// compared is a comparison of two directories that has already run to the end.
+func compared(t *testing.T, a, b string) *analysis.Run {
+	t.Helper()
+	r := analysis.Start(analysis.Config{A: a, B: b, Depth: 3})
+	<-r.Done()
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return r
 }
 
@@ -93,11 +97,7 @@ func TestInteractiveDiffShowsWhatDiffers(t *testing.T) {
 		"new.bin":   {0x7f, 'E', 'L', 'F', 0, 1, 2, 3, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd', 0},
 		"same.txt":  []byte("unchanged\n"),
 	})
-	tally, ok, err := diffTree(a, b, 3, false, nil)
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	m := newDiffTUI("test", finished(tally))
+	m := newDiffTUI("test", compared(t, a, b))
 	open(m, 140, 40)
 
 	byPath := map[string]int{}
@@ -175,11 +175,7 @@ func TestInteractiveNavigationAndModes(t *testing.T) {
 		writeTree(t, a, map[string][]byte{n: []byte("one\n")})
 		writeTree(t, b, map[string][]byte{n: []byte("two\n")})
 	}
-	tally, _, err := diffTree(a, b, 3, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, 100, 30)
 	if len(m.lines) != 3 || m.cur != 0 {
 		t.Fatalf("%d lines, cursor %d", len(m.lines), m.cur)
@@ -246,88 +242,6 @@ func names(items []diffItem) string {
 	return strings.Join(n, " | ")
 }
 
-// A level lists its directories (made from the paths) first, then its lines in
-// the order found; a container with something inside, or still being compared,
-// can be gone into; dropped lines are not there; a rename is one name, not a path.
-func TestSnapshotLevel(t *testing.T) {
-	inner := &treeDiffTally{lines: []*diffLine{{kind: '~', path: "pkg.tar/m.bin"}}}
-	running := &diffLine{kind: '~', path: "pkg.tar", subT: inner} // its inside is being compared
-	done := &diffLine{kind: '~', path: "cont.zip", sub: []*diffLine{{kind: '+', path: "cont.zip/in.bin"}}}
-	root := &treeDiffTally{lines: []*diffLine{
-		{kind: '~', path: "top.txt"},
-		{kind: '+', path: "sub/new.txt"},
-		{kind: '~', path: "sub/deep/x.txt"},
-		{kind: '-', path: "sub/old.txt"},
-		{kind: '~', path: "gone.txt", drop: true},
-		running,
-		done,
-		{kind: '>', path: "old/a -> new/a"},
-		{text: "      (oops)"},
-	}}
-	m := newDiffTUI("t", newLiveRun())
-	top := m.frames[0]
-
-	got := snapshotLevel(root, top, false)
-	if want := "sub/ | top.txt | pkg.tar/ | cont.zip/ | old/a -> new/a | (oops)"; names(got) != want {
-		t.Errorf("root level:\n got %s\nwant %s", names(got), want)
-	}
-	byName := map[string]diffItem{}
-	for _, it := range got {
-		byName[it.name] = it
-	}
-	if it := byName["sub/"]; it.kind != '/' || !it.kids || it.summary != "1 changed, 1 added, 1 removed" {
-		t.Errorf("sub/: %+v", it)
-	}
-	if it := byName["pkg.tar/"]; !it.pending || !it.kids {
-		t.Errorf("pkg.tar/ should be pending and enterable: %+v", it)
-	}
-	if it := byName["cont.zip/"]; it.pending || !it.kids {
-		t.Errorf("cont.zip/ should be enterable and not pending: %+v", it)
-	}
-	if it := byName["top.txt"]; it.kids || it.pending {
-		t.Errorf("top.txt has nothing inside: %+v", it)
-	}
-	// A pending row keeps its marker in the snapshot; the viewer draws a spinner there.
-	if got := byName["pkg.tar/"].text; got != "~ pkg.tar/" {
-		t.Errorf("pending row: %q", got)
-	}
-
-	// ".." heads every level but the first.
-	if up := snapshotLevel(root, top, true); up[0].name != ".." || up[0].kind != '↑' || len(up) != len(got)+1 {
-		t.Errorf("with up: %s", names(up))
-	}
-
-	// Into a directory: its own names, and the directories below it.
-	sub := navFrame{source: top.source, dir: "sub/"}
-	if want := "deep/ | new.txt | old.txt"; names(snapshotLevel(root, sub, false)) != want {
-		t.Errorf("sub/: %s, want %s", names(snapshotLevel(root, sub, false)), want)
-	}
-	deep := navFrame{source: top.source, dir: "sub/deep/"}
-	if got := snapshotLevel(root, deep, false); names(got) != "x.txt" || got[0].kind != '~' {
-		t.Errorf("sub/deep/: %s", names(got))
-	}
-
-	// Into a container: what was found inside it, live while it is still running.
-	in := navFrame{strip: "pkg.tar", source: func(*treeDiffTally) []*diffLine { return lineKids(running) }}
-	if names(snapshotLevel(root, in, false)) != "m.bin" {
-		t.Errorf("pkg.tar: %s", names(snapshotLevel(root, in, false)))
-	}
-	liveMu.Lock()
-	inner.lines = append(inner.lines, &diffLine{kind: '+', path: "pkg.tar/n.bin"}) // found since
-	liveMu.Unlock()
-	if names(snapshotLevel(root, in, false)) != "m.bin | n.bin" {
-		t.Errorf("pkg.tar after more was found: %s", names(snapshotLevel(root, in, false)))
-	}
-	live(func() { running.subT, running.sub = nil, inner.lines }) // finished: same frame, now from sub
-	if names(snapshotLevel(root, in, false)) != "m.bin | n.bin" {
-		t.Errorf("pkg.tar once finished: %s", names(snapshotLevel(root, in, false)))
-	}
-
-	if got := snapshotLevel(nil, top, false); len(got) != 0 {
-		t.Errorf("before there is anything: %s", names(got))
-	}
-}
-
 // The viewer opens before the comparison is done, shows what has been found so
 // far including inside a container still being compared, keeps the cursor where
 // it was as more arrives, and has the whole result once it finishes.
@@ -351,19 +265,15 @@ func TestInteractiveOpensBeforeTheComparisonFinishes(t *testing.T) {
 	// Hold the comparison when it reaches a member inside the tar, until released.
 	reached, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	diffStep = func(path string) {
+	analysis.SetStepHook(func(path string) {
 		if path == "pkg.tar/y.txt" {
 			once.Do(func() { close(reached) })
 			<-release
 		}
-	}
-	t.Cleanup(func() { diffStep = nil })
+	})
+	t.Cleanup(func() { analysis.SetStepHook(nil) })
 
-	run := newLiveRun()
-	go func() {
-		defer close(run.done)
-		diffTree(a, b, 3, false, run.setRoot)
-	}()
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 3})
 	<-reached // part-way: a1, a2 are done; pkg.tar is open, x.txt found
 
 	m := newDiffTUI("t", run)
@@ -403,7 +313,7 @@ func TestInteractiveOpensBeforeTheComparisonFinishes(t *testing.T) {
 	// reads as running.
 	m.move(1) // on x.txt
 	close(release)
-	<-run.done
+	<-run.Done()
 	drive(m, m.syncLines())
 	if !m.complete {
 		t.Error("not complete after the comparison finished")
@@ -447,16 +357,11 @@ func TestInteractiveSnapshotsWhileComparing(t *testing.T) {
 		}
 		writeTree(t, b, map[string][]byte{name: other})
 	}
-	run := newLiveRun()
-	go func() {
-		defer close(run.done)
-		diffTree(a, b, 3, false, run.setRoot)
-	}()
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 3})
 	m := newDiffTUI("t", run)
 	open(m, 120, 30)
-	for !run.finished() {
-		root, _, _ := run.get()
-		snapshotLevel(root, m.frame(), false)
+	for !run.Finished() {
+		run.Entries(m.frame().level, false)
 		m.View()
 	}
 	drive(m, m.syncLines())

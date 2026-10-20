@@ -1,14 +1,9 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -17,8 +12,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 
-	"github.com/W-Floyd/go-unbrick/internal/carve"
-	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
@@ -57,15 +50,14 @@ const (
 	hexMoreBytes = 1 << 20 // ... in the hex view after x
 )
 
-// diffItem is one line of the diff as the viewer holds it: a copy, taken under
-// the lock, of what the comparison had found by then.
+// diffItem is one row of the list as the viewer holds it: an entry of the level,
+// as the comparison had it when the snapshot was taken.
 type diffItem struct {
-	src     *diffLine // identity only: never read from here, the comparison still writes it; nil for a directory or ".."
-	name    string    // as listed in its level: "notes.txt", "sub/", "pkg.tar/" (it has something inside), ".."
-	text    string    // the row
-	kind    rune      // the line's: ~ > ≈ + - =; '/' for a directory; '↑' for ".."
+	e       analysis.Entry
+	name    string // as listed in its level: "notes.txt", "sub/", "pkg.tar/" (it has something inside), ".."
+	text    string // the row
+	kind    rune   // the entry's: ~ > ≈ + - =; '/' for a directory; '↑' for ".."
 	path    string
-	a, b    *carve.Node
 	pending bool   // its inside is still being compared
 	kids    bool   // there is somewhere to go in: a directory, or a container with differences inside
 	summary string // for a directory: what is under it
@@ -74,54 +66,28 @@ type diffItem struct {
 // itemKey is what an item is, so a line that has become something else (an
 // added file found to be a rename, a container whose comparison finished) is
 // read again.
-type itemKey struct {
-	src     *diffLine
-	kind    rune
-	path    string
-	a, b    *carve.Node
-	pending bool
-}
+type itemKey = analysis.EntryKey
 
-func (it diffItem) key() itemKey { return itemKey{it.src, it.kind, it.path, it.a, it.b, it.pending} }
+func (it diffItem) key() itemKey { return it.e.Key() }
+
+// itemOf is an entry as the list shows it.
+func itemOf(e analysis.Entry) diffItem {
+	it := diffItem{e: e, name: e.Name, kind: rune(e.Kind), path: e.Path, pending: e.Pending, kids: e.HasKids, summary: e.Summary}
+	if e.Kind == analysis.Note {
+		it.text = e.Text
+		return it
+	}
+	it.text = rowText(it)
+	return it
+}
 
 // navFrame is one level being looked at, as in browse: the entries of a
 // directory or of a container, to go into and come back out of.
 type navFrame struct {
-	title string
-	// source is this level's lines, as the comparison has them now. Called under
-	// liveMu; the root is the comparison's own tree.
-	source func(root *treeDiffTally) []*diffLine
-	// strip is the path the level's lines carry in front of their own names (a
-	// container's path, for what was found inside it); dir narrows the level to
-	// one directory of it ("" or ending in /).
-	strip, dir string
+	level *analysis.Level
 	// Kept while a deeper level is on top, to put the cursor back where it was.
 	cur, top int
 	sel      string
-	// busy, for a level that is built as it is looked at, says it is still being.
-	busy func() bool
-}
-
-// lineKids is what was found inside a line's container: as it goes, while the
-// comparison of the inside is running, and when it has finished.
-func lineKids(l *diffLine) []*diffLine {
-	if l.subT != nil {
-		return l.subT.lines
-	}
-	return l.sub
-}
-
-// sizeNote is the sizes a row shows: both for a change, the one there is otherwise.
-func sizeNote(kind rune, a, b *carve.Node) string {
-	switch {
-	case kind == '+' && b != nil:
-		return size(b)
-	case (kind == '-' || kind == '>' || kind == '=') && a != nil:
-		return size(a)
-	case a != nil && b != nil:
-		return size(a) + " -> " + size(b)
-	}
-	return ""
 }
 
 // rowText is how an item reads in the list.
@@ -133,150 +99,10 @@ func rowText(it diffItem) string {
 		return "  " + it.name + "  (" + it.summary + ")"
 	}
 	s := string(it.kind) + " " + it.name
-	if n := sizeNote(it.kind, it.a, it.b); n != "" {
+	if n := it.e.SizeNote; n != "" {
 		s += "  " + n
 	}
 	return s // a pending row's marker is drawn as a spinner (diffTUI.rowText)
-}
-
-// snapshotLevel lists the entries of one level as they stand now, copied under
-// the lock the comparison writes under: directories first (made from the paths,
-// as many levels deep as the paths go), then the lines, in the order found, with
-// ".." first when there is a level above. Safe to call while the comparison runs.
-func snapshotLevel(root *treeDiffTally, f navFrame, up bool) []diffItem {
-	liveMu.Lock()
-	defer liveMu.Unlock()
-	var src []*diffLine
-	if f.source != nil {
-		src = f.source(root)
-	}
-	var leaves []diffItem
-	type agg struct {
-		counts  map[rune]int
-		pending bool
-	}
-	dirs := map[string]*agg{}
-	var dirNames []string
-	for _, l := range src {
-		if l.drop {
-			continue
-		}
-		if l.path == "" { // a note, not a pair: an error from comparing, say
-			if f.dir == "" {
-				it := diffItem{name: strings.TrimSpace(l.text), text: strings.TrimRight(l.text, " ")}
-				leaves = append(leaves, it)
-			}
-			continue
-		}
-		within := l.path
-		renamed := l.kind == '>' || l.kind == '≈' // "old -> new": a name, not a path to split
-		if !renamed && f.strip != "" && strings.HasPrefix(within, f.strip+"/") {
-			within = within[len(f.strip)+1:]
-		}
-		if !strings.HasPrefix(within, f.dir) {
-			continue
-		}
-		rel := within[len(f.dir):]
-		if i := strings.IndexByte(rel, '/'); i > 0 && !renamed {
-			name := rel[:i+1]
-			a := dirs[name]
-			if a == nil {
-				a = &agg{counts: map[rune]int{}}
-				dirs[name] = a
-				dirNames = append(dirNames, name)
-			}
-			a.counts[l.kind]++
-			a.pending = a.pending || l.subT != nil
-			continue
-		}
-		// Something inside it to go into: lines that are still there (a comparison
-		// that found nothing different leaves its dropped lines behind), or a
-		// comparison still running.
-		counts := map[rune]int{}
-		for _, k := range lineKids(l) {
-			if !k.drop && k.path != "" {
-				counts[k.kind]++
-			}
-		}
-		kids := l.subT != nil || len(counts) > 0
-		name := rel
-		if kids {
-			name += "/"
-		}
-		it := diffItem{src: l, name: name, kind: l.kind, path: l.path, a: l.a, b: l.b, pending: l.subT != nil, kids: kids}
-		if kids { // what was found inside it, for its pane
-			it.summary = summarise(counts)
-		}
-		it.text = rowText(it)
-		leaves = append(leaves, it)
-	}
-	sort.Strings(dirNames)
-	var out []diffItem
-	if up {
-		out = append(out, diffItem{name: "..", kind: '↑', text: rowText(diffItem{kind: '↑'})})
-	}
-	for _, name := range dirNames {
-		a := dirs[name]
-		it := diffItem{name: name, kind: '/', path: f.dir + name, kids: true, pending: a.pending, summary: summarise(a.counts)}
-		it.text = rowText(it)
-		out = append(out, it)
-	}
-	return append(out, leaves...)
-}
-
-// kindWords are what a count of each kind of line is a count of.
-var kindWords = []struct {
-	kind rune
-	word string
-}{{'~', "changed"}, {'+', "added"}, {'-', "removed"}, {'>', "renamed"}, {'≈', "renamed and changed"}, {'=', "unchanged"}}
-
-// summarise reads counts of lines by kind as "3 changed, 1 added".
-func summarise(counts map[rune]int) string {
-	var parts []string
-	for _, w := range kindWords {
-		if n := counts[w.kind]; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", n, w.word))
-		}
-	}
-	return strings.Join(parts, ", ")
-}
-
-// pairData is the bytes of the two sides of a line, as far as they were read.
-type pairData struct {
-	a, b           []byte
-	sizeA, sizeB   int64 // whole sizes; -1 for a side with no file
-	truncA, truncB bool  // more of the file than was read
-	limit          int64
-	err            error
-}
-
-func readHead(n *carve.Node, limit int64) (data []byte, size int64, trunc bool, err error) {
-	if n == nil || n.IsDirNode() {
-		return nil, -1, false, nil
-	}
-	r, err := n.Reader()
-	if err != nil {
-		return nil, n.Size, false, err
-	}
-	defer r.Close()
-	data, err = io.ReadAll(io.LimitReader(r, limit+1))
-	if int64(len(data)) > limit {
-		data, trunc = data[:limit], true
-	}
-	return data, n.Size, trunc, err
-}
-
-func loadPair(a, b *carve.Node, limit int64) *pairData {
-	d := &pairData{limit: limit}
-	var errA, errB error
-	d.a, d.sizeA, d.truncA, errA = readHead(a, limit)
-	d.b, d.sizeB, d.truncB, errB = readHead(b, limit)
-	if errA != nil {
-		d.err = errA
-	} else {
-		d.err = errB
-	}
-	return d
 }
 
 var (
@@ -538,13 +364,13 @@ func renderOverlap(o analysis.Overlap, truncA, truncB bool) string {
 }
 
 // sideNote says when only part of a file was read.
-func sideNote(d *pairData) string {
+func sideNote(d *analysis.EntryDetail) string {
 	var parts []string
-	if d.truncA {
-		parts = append(parts, fmt.Sprintf("A: first %s of %s", humanBytes(int64(len(d.a))), humanBytes(d.sizeA)))
+	if d.A.Truncated {
+		parts = append(parts, fmt.Sprintf("A: first %s of %s", humanBytes(int64(d.A.Read)), humanBytes(d.A.Size)))
 	}
-	if d.truncB {
-		parts = append(parts, fmt.Sprintf("B: first %s of %s", humanBytes(int64(len(d.b))), humanBytes(d.sizeB)))
+	if d.B.Truncated {
+		parts = append(parts, fmt.Sprintf("B: first %s of %s", humanBytes(int64(d.B.Read)), humanBytes(d.B.Size)))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -552,49 +378,19 @@ func sideNote(d *pairData) string {
 	return styMid.Render("only part was read ("+strings.Join(parts, "; ")+"); f reads more") + "\n"
 }
 
-// labelFor is a line's kind in words, for the pane's title. A renamed container
-// was found identical by comparing its members, not its bytes, which may differ
-// (a tar's headers carry times), so "content identical" would be too much.
-func labelFor(it diffItem) string {
-	if it.kind == '>' && isContainerNode(it.a) {
-		return "renamed, nothing inside it differs"
-	}
-	return kindLabel(it.kind)
-}
-
-// headerFormat says whether a pair of containers keep a record per member that
-// can be compared: a pair of tars, or of zips.
-func headerFormat(it diffItem) bool {
-	ka, kb := filetype.Detect(it.a.Head()), filetype.Detect(it.b.Head())
-	return ka == kb && (ka == filetype.Tar || ka == filetype.Zip)
-}
-
 // maxMetaLines bounds the differences listed for one pair of containers.
 const maxMetaLines = 24
 
-// metaSection reads the headers of a pair of tars (or the directories of two
-// zips) and says what differs: which details, in how many members, and the first
-// few. It reads a header per member, not the members.
-func metaSection(it diffItem) string {
-	read := func(n *carve.Node) ([]analysis.MetaEntry, error) {
-		ra, err := n.ReaderAt()
-		if err != nil {
-			return nil, err
-		}
-		if filetype.Detect(n.Head()) == filetype.Zip {
-			return analysis.ZipMeta(ra, n.Size)
-		}
-		return analysis.TarMeta(ra, n.Size)
-	}
+// renderHeaders says what differs in the headers of a pair of tars (or the
+// directories of two zips): which details, in how many members, and the first few.
+func renderHeaders(h *analysis.Headers) string {
 	var b strings.Builder
 	b.WriteString("\n" + styTitle.Render("What each records about its members") + styDim.Render("  (times, owners, modes: not their contents)") + "\n\n")
-	ea, errA := read(it.a)
-	eb, errB := read(it.b)
-	if err := errors.Join(errA, errB); err != nil {
-		b.WriteString(styDel.Render("could not read the headers: "+err.Error()) + "\n")
+	if h.Err != "" {
+		b.WriteString(styDel.Render("could not read the headers: "+h.Err) + "\n")
 		return b.String()
 	}
-	r := analysis.CompareMeta(ea, eb)
+	r := h.Report
 	if r.Identical() {
 		b.WriteString(fmt.Sprintf("All %d members' headers are identical too: the containers differ only in what lies between\nthem (padding, a trailer).\n", r.Members))
 		return b.String()
@@ -627,41 +423,14 @@ func (m *diffTUI) loadMeta(it diffItem) tea.Cmd {
 	}
 	m.metaBusy = true
 	k := it.key()
-	return func() tea.Msg { return metaMsg{k, metaSection(it)} }
-}
-
-// containerPair says whether an entry is two containers, which are compared by
-// their members: reading their raw bytes would show nothing of use.
-// It never reads: a node whose head has not been read yet is not a container
-// here, and needsProbe says so.
-func containerPair(it diffItem) bool {
-	if it.a == nil || it.b == nil {
-		return false
-	}
-	ca, _ := it.a.IsContainerCached()
-	cb, _ := it.b.IsContainerCached()
-	return ca && cb
-}
-
-// needsProbe says whether telling if an entry is a container would read: the
-// viewer's goroutine must not, with the comparison filling the link.
-func needsProbe(it diffItem) bool {
-	for _, n := range []*carve.Node{it.a, it.b} {
-		if n != nil {
-			if _, known := n.IsContainerCached(); !known {
-				return true
-			}
-		}
-	}
-	return false
+	return func() tea.Msg { return metaMsg{k, renderHeaders(it.e.ReadHeaders())} }
 }
 
 // probe reads the heads of an entry's sides, off the viewer's goroutine.
 func probe(it diffItem) tea.Cmd {
 	k := it.key()
 	return func() tea.Msg {
-		isContainerNode(it.a)
-		isContainerNode(it.b)
+		it.e.Probe()
 		return probedMsg{k}
 	}
 }
@@ -671,8 +440,8 @@ func probe(it diffItem) tea.Cmd {
 // bytes.
 func (m *diffTUI) describeContainer(it diffItem) string {
 	var b strings.Builder
-	b.WriteString(styTitle.Render(labelFor(it)+"  "+it.path) + "\n")
-	b.WriteString(styDim.Render(fmt.Sprintf("A %s    B %s", size(it.a), size(it.b))) + "\n\n")
+	b.WriteString(styTitle.Render(it.e.Title()+"  "+it.path) + "\n")
+	b.WriteString(styDim.Render(fmt.Sprintf("A %s    B %s", humanBytes(it.e.SizeA), humanBytes(it.e.SizeB))) + "\n\n")
 	if it.summary != "" {
 		b.WriteString("Inside it: " + it.summary + "\n\n" + styDim.Render("enter or l to go in") + "\n")
 	} else {
@@ -683,49 +452,9 @@ func (m *diffTUI) describeContainer(it diffItem) string {
 	return b.String()
 }
 
-// kindLabel is what a line's kind means, for the pane's title.
-func kindLabel(k rune) string {
-	switch k {
-	case '~':
-		return "changed"
-	case '>':
-		return "renamed, content identical"
-	case '≈':
-		return "renamed and changed"
-	case '+':
-		return "only in B"
-	case '-':
-		return "only in A"
-	case '=':
-		return "unchanged"
-	}
-	return ""
-}
-
-func isContainerNode(n *carve.Node) bool { return n != nil && n.IsContainer() }
-
 // renderDetail is the right pane for an item in view mode: what differs between
 // the two sides, from the bytes read.
-func renderDetail(it diffItem, d *pairData, mode, width int, wrap, hexMore, words bool) string {
-	var b strings.Builder
-	b.WriteString(styTitle.Render(labelFor(it)+"  "+it.path) + "\n")
-	if it.a != nil && it.b != nil {
-		fmt.Fprintf(&b, styDim.Render("A %s    B %s")+"\n", humanBytes(d.sizeA), humanBytes(d.sizeB))
-	}
-	b.WriteString("\n")
-	if d.err != nil {
-		b.WriteString(styDel.Render("reading: "+d.err.Error()) + "\n")
-		return b.String()
-	}
-	b.WriteString(sideNote(d))
-	switch {
-	case it.kind == '=' || (it.kind == '>' && it.a != nil && it.b != nil && !isContainerNode(it.a) && mode == modeAuto):
-		b.WriteString("identical content\n")
-		return b.String()
-	case it.a == nil || it.b == nil:
-		return b.String() + renderOneSide(it, d, width, wrap)
-	}
-	cont := isContainerNode(it.a) && isContainerNode(it.b)
+func renderDetail(it diffItem, p *analysis.Pair, mode, width int, wrap, hexMore, words bool) string {
 	opts := analysis.Options{Context: diffContext, StringsMin: stringsMin, Words: words, HexBudget: hexBytes}
 	if diffContext == 0 {
 		opts.Context = analysis.NoContext
@@ -740,18 +469,33 @@ func renderDetail(it diffItem, d *pairData, mode, width int, wrap, hexMore, word
 		opts.View = analysis.ViewHex
 	case modeStrings:
 		opts.View = analysis.ViewStrings
-	default:
-		if cont {
-			opts.View = analysis.ViewOverlap // a container's members are listed beside; its bytes only overlap
-		}
 	}
-	det := analysis.Analyse(d.a, d.b, d.sizeA, d.sizeB, opts)
-	if det.Verdict != nil && !isContainerNode(it.a) {
+	d := p.Detail(it.e, opts)
+	var b strings.Builder
+	b.WriteString(styTitle.Render(d.Title+"  "+it.path) + "\n")
+	if it.e.SizeA >= 0 && it.e.SizeB >= 0 {
+		fmt.Fprintf(&b, styDim.Render("A %s    B %s")+"\n", humanBytes(d.A.Size), humanBytes(d.B.Size))
+	}
+	b.WriteString("\n")
+	if d.Err != "" {
+		b.WriteString(styDel.Render("reading: "+d.Err) + "\n")
+		return b.String()
+	}
+	b.WriteString(sideNote(d))
+	switch {
+	case d.Identical:
+		b.WriteString("identical content\n")
+		return b.String()
+	case d.OneSide != nil:
+		return b.String() + renderOneSide(d.OneSide, width, wrap)
+	}
+	det := d.Bytes
+	if det.Verdict != nil {
 		b.WriteString(verdictLine(det) + "\n")
 	}
 	switch {
 	case mode == modeOverlap:
-		b.WriteString(renderOverlap(*det.Overlap, d.truncA, d.truncB))
+		b.WriteString(renderOverlap(*det.Overlap, d.A.Truncated, d.B.Truncated))
 	case mode == modeHex:
 		b.WriteString(renderHex(det.Hex, true, width))
 	case mode == modeStrings:
@@ -763,9 +507,9 @@ func renderDetail(it diffItem, d *pairData, mode, width int, wrap, hexMore, word
 		if det.Strings.Truncated {
 			b.WriteString(styDim.Render("… cut off") + "\n")
 		}
-	case cont:
+	case d.Container:
 		b.WriteString("a container: what differs inside it is listed beneath it on the left.\n\n")
-		b.WriteString(renderOverlap(*det.Overlap, d.truncA, d.truncB))
+		b.WriteString(renderOverlap(*det.Overlap, d.A.Truncated, d.B.Truncated))
 	case det.Text:
 		st := det.Diff.Stats
 		b.WriteString(styTitle.Render(fmt.Sprintf("%d removed, %d added, %d unchanged lines", st.Removed, st.Added, st.Same)) + "\n\n")
@@ -777,7 +521,7 @@ func renderDetail(it diffItem, d *pairData, mode, width int, wrap, hexMore, word
 			b.WriteString(styDim.Render("… cut off") + "\n")
 		}
 	default:
-		b.WriteString(renderOverlap(*det.Overlap, d.truncA, d.truncB))
+		b.WriteString(renderOverlap(*det.Overlap, d.A.Truncated, d.B.Truncated))
 		if hx := renderHex(det.Hex, false, width); hx != "" {
 			b.WriteString("\n" + hx)
 		}
@@ -792,75 +536,32 @@ func renderDetail(it diffItem, d *pairData, mode, width int, wrap, hexMore, word
 
 // renderOneSide shows a file present on one side only: its start if it is
 // text, else the strings in it.
-func renderOneSide(it diffItem, d *pairData, width int, wrap bool) string {
-	data := d.a
-	if it.a == nil {
-		data = d.b
-	}
+func renderOneSide(o *analysis.OneSide, width int, wrap bool) string {
 	var b strings.Builder
-	if analysis.IsText(data) {
-		for i, ln := range strings.SplitAfter(string(data), "\n") {
-			if i >= 200 {
-				b.WriteString(styDim.Render("… more") + "\n")
-				break
-			}
-			if ln == "" {
-				continue
-			}
-			b.WriteString(fit(fmt.Sprintf("%6d  ", i+1), clean(strings.TrimRight(ln, "\r\n")), width, wrap, lipgloss.NewStyle()) + "\n")
+	if o.Text {
+		for i, ln := range o.Lines {
+			b.WriteString(fit(fmt.Sprintf("%6d  ", i+1), clean(ln), width, wrap, lipgloss.NewStyle()) + "\n")
+		}
+		if o.More {
+			b.WriteString(styDim.Render("… more") + "\n")
 		}
 		return b.String()
 	}
 	b.WriteString(styDim.Render("binary; the printable strings in it:") + "\n\n")
-	for i, s := range analysis.Strings(data, stringsMin) {
-		if i >= 200 {
-			b.WriteString(styDim.Render("… more") + "\n")
-			break
-		}
+	for _, s := range o.Strings {
 		b.WriteString(fit("", clean(s), width, wrap, lipgloss.NewStyle()) + "\n")
 	}
-	return b.String()
-}
-
-// ---- the comparison, running ----
-
-// liveRun is a comparison running in the background that the viewer watches.
-type liveRun struct {
-	mu      sync.Mutex
-	root    *treeDiffTally
-	summary string
-	err     error
-	done    chan struct{} // closed when the comparison has finished, successfully or not
-}
-
-func newLiveRun() *liveRun { return &liveRun{done: make(chan struct{})} }
-
-func (r *liveRun) setRoot(t *treeDiffTally) {
-	r.mu.Lock()
-	r.root = t
-	r.mu.Unlock()
-}
-
-func (r *liveRun) get() (root *treeDiffTally, summary string, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.root, r.summary, r.err
-}
-
-func (r *liveRun) finished() bool {
-	select {
-	case <-r.done:
-		return true
-	default:
-		return false
+	if o.More {
+		b.WriteString(styDim.Render("… more") + "\n")
 	}
+	return b.String()
 }
 
 // ---- the model ----
 
 type diffTUI struct {
 	title         string
-	run           *liveRun
+	run           *analysis.Run
 	frames        []navFrame // the levels gone through, the one in view last
 	lines         []diffItem // that level's entries
 	cur, top      int
@@ -878,7 +579,7 @@ type diffTUI struct {
 	spinning      bool // the spinner's clock is running
 	ticking       bool // the clock that takes snapshots is running
 
-	data     map[itemKey]*pairData
+	data     map[itemKey]*analysis.Pair
 	rendered map[renderKey]string
 	loading  map[itemKey]bool
 	meta     map[itemKey]string // what containers' headers say, by pair
@@ -903,7 +604,7 @@ type (
 	tickMsg   struct{}
 	loadedMsg struct {
 		k itemKey
-		d *pairData
+		d *analysis.Pair
 	}
 	renderedMsg struct {
 		k    renderKey
@@ -918,17 +619,13 @@ type (
 	}
 )
 
-func newDiffTUI(title string, run *liveRun) *diffTUI {
+func newDiffTUI(title string, run *analysis.Run) *diffTUI {
 	m := &diffTUI{
 		title: title, run: run, pane: viewport.New(), limit: viewLimit, wrap: true, words: true,
-		data: map[itemKey]*pairData{}, rendered: map[renderKey]string{}, loading: map[itemKey]bool{}, meta: map[itemKey]string{},
-		frames: []navFrame{{title: title, source: func(root *treeDiffTally) []*diffLine {
-			if root == nil {
-				return nil
-			}
-			return root.lines
-		}}},
+		data: map[itemKey]*analysis.Pair{}, rendered: map[renderKey]string{}, loading: map[itemKey]bool{}, meta: map[itemKey]string{},
+		frames: []navFrame{{level: run.Root()}},
 	}
+	m.frames[0].level.SetTitle(title)
 	// Titles, notes and anything else that is not a diff line wrap here; diff
 	// lines are wrapped with an indent under their text before they get this far.
 	m.pane.SoftWrap = true
@@ -1004,7 +701,7 @@ func (m *diffTUI) frame() navFrame { return m.frames[len(m.frames)-1] }
 func (m *diffTUI) breadcrumb() string {
 	var t []string
 	for _, f := range m.frames {
-		t = append(t, f.title)
+		t = append(t, f.level.Title())
 	}
 	return strings.Join(t, " / ")
 }
@@ -1074,7 +771,7 @@ func (m *diffTUI) tabStrip() (string, []tabHit) {
 }
 
 // hasDetail says whether an item is something with sides to read.
-func hasDetail(it diffItem) bool { return !it.pending && (it.a != nil || it.b != nil) }
+func hasDetail(it diffItem) bool { return it.e.HasFiles() }
 
 // syncLines takes a snapshot of the comparison and, if it has changed, shows it:
 // the cursor stays on the line it was on, and the right pane is redrawn if that
@@ -1090,9 +787,11 @@ func (m *diffTUI) syncLines() tea.Cmd {
 func (m *diffTUI) syncLevel() tea.Cmd {
 	// Whether it had finished is read first: a snapshot taken after that point is
 	// the whole result.
-	done := m.run.finished()
-	root, _, _ := m.run.get()
-	items := snapshotLevel(root, m.frame(), len(m.frames) > 1)
+	done := m.run.Finished()
+	var items []diffItem
+	for _, e := range m.run.Entries(m.frame().level, len(m.frames) > 1) {
+		items = append(items, itemOf(e))
+	}
 	m.complete = done
 	prev, hadPrev := m.selected()
 	m.lines = items
@@ -1146,7 +845,7 @@ func (m *diffTUI) refresh() tea.Cmd {
 	case !hasDetail(it):
 		m.pane.SetContent(m.describe(it))
 		return nil
-	case needsProbe(it):
+	case it.e.NeedsProbe():
 		// Whether it is a container takes a read of its head; one at a time, with
 		// the other reads (when it lands the cursor's entry goes next).
 		m.pane.SetContent(styDim.Render("looking at it…"))
@@ -1155,7 +854,7 @@ func (m *diffTUI) refresh() tea.Cmd {
 		}
 		m.loading[it.key()] = true
 		return probe(it)
-	case m.mode != modeOverlap && containerPair(it):
+	case m.mode != modeOverlap && it.e.ContainerPair():
 		// Two containers are compared by their members: say what was found, and
 		// read none of their contents (a GiB tar's first 32 MiB, over ssh, shows
 		// nothing of use). What they record about their members, though, is where
@@ -1165,7 +864,7 @@ func (m *diffTUI) refresh() tea.Cmd {
 			m.pane.SetContent(base + sec)
 			return nil
 		}
-		if !headerFormat(it) {
+		if !it.e.HeaderFormat() {
 			m.pane.SetContent(base)
 			return nil
 		}
@@ -1179,7 +878,7 @@ func (m *diffTUI) refresh() tea.Cmd {
 	}
 	m.pane.SetContent(styDim.Render("reading…"))
 	d, ok := m.data[k]
-	if !ok || d.limit != m.limit {
+	if !ok || d.Limit != m.limit {
 		// One read at a time: moving quickly down the list would otherwise start a
 		// read for every row passed, all at once. When this one lands, the next
 		// goes for wherever the cursor has got to by then (see loadedMsg).
@@ -1188,7 +887,7 @@ func (m *diffTUI) refresh() tea.Cmd {
 		}
 		m.loading[k] = true
 		limit := m.limit
-		return func() tea.Msg { return loadedMsg{k, loadPair(it.a, it.b, limit)} }
+		return func() tea.Msg { return loadedMsg{k, analysis.Load(it.e, limit)} }
 	}
 	return m.analyse(it, d)
 }
@@ -1200,7 +899,7 @@ func (m *diffTUI) describe(it diffItem) string {
 	case it.kind == '↑':
 		up := "the top"
 		if len(m.frames) > 1 {
-			up = m.frames[len(m.frames)-2].title
+			up = m.frames[len(m.frames)-2].level.Title()
 		}
 		return styTitle.Render("..") + "\n\n" + styDim.Render("back up to "+up)
 	case it.kind == '/':
@@ -1222,22 +921,13 @@ func (m *diffTUI) descend() (tea.Model, tea.Cmd) {
 		return m, nil
 	case it.kind == '↑':
 		return m.ascend()
-	case !it.kids && !containerPair(it):
-		m.note = strings.TrimSuffix(it.name, "/") + ": nothing inside it differs"
+	}
+	level, err := m.run.Open(m.frame().level, it.e)
+	if err != nil {
+		m.note = strings.TrimSuffix(it.name, "/") + ": " + err.Error()
 		return m, nil
 	}
-	cur := m.frame()
-	var next navFrame
-	switch {
-	case !it.kids: // two containers with nothing differing inside: list their members
-		next = membersFrame(it)
-	case it.src == nil: // a directory made from the paths: the same lines, narrowed
-		next = navFrame{title: strings.TrimSuffix(it.name, "/"), source: cur.source, strip: cur.strip, dir: cur.dir + it.name}
-	default:
-		l := it.src
-		next = navFrame{title: path.Base(strings.TrimSuffix(it.name, "/")), strip: l.path,
-			source: func(*treeDiffTally) []*diffLine { return lineKids(l) }}
-	}
+	next := navFrame{level: level}
 	// Remember where we were, so coming back puts the cursor on this entry.
 	m.frames[len(m.frames)-1].cur, m.frames[len(m.frames)-1].top, m.frames[len(m.frames)-1].sel = m.cur, m.top, it.name
 	m.frames = append(m.frames, next)
@@ -1246,40 +936,9 @@ func (m *diffTUI) descend() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.syncLines(), m.ensureTick())
 }
 
-// membersFrame is the level for two containers whose comparison found nothing
-// different inside: their members, all unchanged, listed by comparing them now.
-// It runs in the background and the level fills in as it goes. (Their digests
-// were taken, or stated, when they were first compared, so it is mostly lookups.)
-func membersFrame(it diffItem) navFrame {
-	a, b := it.a, it.b
-	t := &treeDiffTally{depth: 1, verbose: true, claimsA: subClaims(a, ""), claimsB: subClaims(b, "")}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := diffNodes(a, b, "", "", 1, true, t); err != nil {
-			t.out("  (%v)", err)
-			return
-		}
-		t.pairRenames()
-	}()
-	return navFrame{
-		title:  path.Base(strings.TrimSuffix(it.name, "/")),
-		source: func(*treeDiffTally) []*diffLine { return t.lines },
-		busy: func() bool {
-			select {
-			case <-done:
-				return false
-			default:
-				return true
-			}
-		},
-	}
-}
-
 // busy says whether the level in view is still being listed.
 func (m *diffTUI) busy() bool {
-	f := m.frame()
-	return f.busy != nil && f.busy()
+	return m.frame().level.Busy()
 }
 
 // ensureTick starts the clock that takes snapshots, unless it is running.
@@ -1307,7 +966,7 @@ func (m *diffTUI) ascend() (tea.Model, tea.Cmd) {
 const cachedFiles = 4
 
 // remember keeps what was read for k, and lets the oldest go beyond cachedFiles.
-func (m *diffTUI) remember(k itemKey, d *pairData) {
+func (m *diffTUI) remember(k itemKey, d *analysis.Pair) {
 	if _, ok := m.data[k]; !ok {
 		m.order = append(m.order, k)
 	}
@@ -1324,10 +983,10 @@ func (m *diffTUI) have(it diffItem) bool {
 		return true
 	}
 	d, ok := m.data[it.key()]
-	return ok && d.limit == m.limit
+	return ok && d.Limit == m.limit
 }
 
-func (m *diffTUI) analyse(it diffItem, d *pairData) tea.Cmd {
+func (m *diffTUI) analyse(it diffItem, d *analysis.Pair) tea.Cmd {
 	k, w := m.rk(it), m.paneWidth()
 	return func() tea.Msg { return renderedMsg{k, renderDetail(it, d, k.mode, w, k.wrap, k.more, k.words)} }
 }
@@ -1377,7 +1036,7 @@ func (m *diffTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case metaMsg:
 		m.metaBusy = false
 		m.meta[msg.k] = msg.text
-		if it, ok := m.selected(); ok && containerPair(it) && m.mode != modeOverlap {
+		if it, ok := m.selected(); ok && it.e.ContainerPair() && m.mode != modeOverlap {
 			if _, have := m.meta[it.key()]; have {
 				return m, m.refresh() // the pair the cursor is on: now it can be drawn
 			}
@@ -1581,7 +1240,7 @@ func (m *diffTUI) View() tea.View {
 		}
 		body.WriteString(left[i] + " " + padToWidth(r, m.paneWidth()) + "\n")
 	}
-	_, summary, runErr := m.run.get()
+	summary, runErr := m.run.Summary(), m.run.Err()
 	title := m.title
 	if summary != "" {
 		title += "    " + summary
@@ -1593,8 +1252,8 @@ func (m *diffTUI) View() tea.View {
 	switch {
 	case runErr != nil:
 		status += "  " + styDel.Render("error: "+runErr.Error())
-	case !m.run.finished():
-		if s := dprog.status(); s != "" {
+	case !m.run.Finished():
+		if s := m.run.Status(); s != "" {
 			status += "  " + styMid.Render("comparing: "+s)
 		} else {
 			status += "  " + styMid.Render("opening…")
@@ -1624,49 +1283,12 @@ func (m *diffTUI) View() tea.View {
 // runDiffInteractive compares two inputs and browses the result while it is
 // still being found: a tree of differences for containers and directories, or
 // the one pair for two files.
-func runDiffInteractive(pathA, pathB string, depth int, verbose bool, member string) error {
+func runDiffInteractive(cfg analysis.Config) error {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fmt.Errorf("--interactive needs a terminal")
 	}
-	diffQuiet = true // the viewer draws the progress itself
-	run := newLiveRun()
-	go func() {
-		defer close(run.done)
-		if member != "" { // one file out of each, not the trees
-			run.setRoot(pairRoot(pathA, pathB, member, run))
-			return
-		}
-		t, ok, err := diffTree(pathA, pathB, depth, verbose, run.setRoot)
-		switch {
-		case err != nil:
-			run.mu.Lock()
-			run.err = err
-			run.mu.Unlock()
-		case ok:
-			run.mu.Lock()
-			run.summary = fmt.Sprintf("%d changed, %d added, %d removed, %d renamed, %d unchanged",
-				t.changed, t.added, t.removed, t.renamed+t.similar, t.same)
-			run.mu.Unlock()
-		default:
-			run.setRoot(pairRoot(pathA, pathB, "", run))
-		}
-	}()
-	title := fmt.Sprintf("%s  vs  %s", infile.Base(pathA), infile.Base(pathB))
+	run := analysis.Start(cfg)
+	title := fmt.Sprintf("%s  vs  %s", infile.Base(cfg.A), infile.Base(cfg.B))
 	_, err := tea.NewProgram(newDiffTUI(title, run)).Run()
 	return err
-}
-
-// pairRoot is the tree for one pair: two inputs that are not containers, or the
-// member at member inside each.
-func pairRoot(pathA, pathB, member string, run *liveRun) *treeDiffTally {
-	a, b, name, err := pairNodes(pathA, pathB, member)
-	if err != nil {
-		run.mu.Lock()
-		run.err = err
-		run.mu.Unlock()
-		return nil
-	}
-	root := &treeDiffTally{}
-	root.lines = []*diffLine{(&diffLine{text: "  ~ " + name}).tag('~', name, a, b)}
-	return root
 }

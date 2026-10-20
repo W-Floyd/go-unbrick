@@ -3,7 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
-	"os"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 	"strings"
 	"sync"
 	"testing"
@@ -47,11 +47,7 @@ func containers(t *testing.T) *diffTUI {
 	writeTree(t, b, map[string][]byte{
 		"pkg_v2.tar": members(t2), "changed_v2.tar": tarAt(t, t1, "m.bin", "NEW!", "k.bin", "keep"), "top.txt": []byte("two\n"),
 	})
-	tally, ok, err := diffTree(a, b, 3, false, nil)
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, 130, 30)
 	return m
 }
@@ -244,13 +240,13 @@ func TestAMembersLevelFillsInAndShowsItIsBusy(t *testing.T) {
 	}
 	reached, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	diffStep = func(path string) {
+	analysis.SetStepHook(func(path string) {
 		if path == "b.bin" {
 			once.Do(func() { close(reached) })
 			<-release
 		}
-	}
-	t.Cleanup(func() { diffStep = nil })
+	})
+	t.Cleanup(func() { analysis.SetStepHook(nil) })
 
 	key(m, "enter")
 	awaitClosed(t, reached, "the listing to reach b.bin") // a.bin is listed; b.bin is next
@@ -288,16 +284,14 @@ func TestLabelForARenamedContainer(t *testing.T) {
 			it = x
 		}
 	}
-	if it.a == nil {
+	if it.kind == 0 {
 		t.Skip("no renamed container in this tree")
 	}
-	if it.kind == '>' && labelFor(it) != "renamed, nothing inside it differs" {
-		t.Errorf("label %q", labelFor(it))
+	if it.kind == '>' && it.e.Title() != "renamed, nothing inside it differs" {
+		t.Errorf("label %q", it.e.Title())
 	}
 	// A renamed plain file really is identical.
-	plainRename := diffItem{kind: '>', a: nil}
-	if labelFor(plainRename) != "renamed, content identical" {
-		t.Errorf("label for a renamed file: %q", labelFor(plainRename))
+	if got := (analysis.Entry{Kind: analysis.Renamed}).Title(); got != "renamed, content identical" {
+		t.Errorf("label for a renamed file: %q", got)
 	}
-	_ = os.Stdout
 }

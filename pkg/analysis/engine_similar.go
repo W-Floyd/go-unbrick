@@ -1,4 +1,4 @@
-package main
+package analysis
 
 import (
 	"bytes"
@@ -111,7 +111,7 @@ func similarity(g, f *diffEnt) (score float64, ok bool) {
 	if xc != yc || g.node.IsDirNode() != f.node.IsDirNode() {
 		return 0, false
 	}
-	if !xc && typeLabel(g.node.Name, g.node.Head()) != typeLabel(f.node.Name, f.node.Head()) {
+	if !xc && TypeLabel(g.node.Name, g.node.Head()) != TypeLabel(f.node.Name, f.node.Head()) {
 		return 0, false
 	}
 	ns := nameScore(g.path, f.path)

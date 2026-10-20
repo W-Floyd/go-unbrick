@@ -31,11 +31,7 @@ func manyFiles(t *testing.T, n, w, h int, body func(i int) (a, b string)) *diffT
 		writeTree(t, a, map[string][]byte{name: []byte(x)})
 		writeTree(t, b, map[string][]byte{name: []byte(y)})
 	}
-	tally, ok, err := diffTree(a, b, 3, false, nil)
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	m := newDiffTUI("t", finished(tally))
+	m := newDiffTUI("t", compared(t, a, b))
 	open(m, w, h)
 	return m
 }

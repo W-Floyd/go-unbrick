@@ -8,38 +8,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 
-	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // diffContext is how many unchanged lines are shown around each change.
 var diffContext = contextLines
-
-// pairNodes opens the two things to compare: each input as it is, or, with a
-// member, the file at that path inside each (a directory, an archive, an image,
-// as ls and extract take a path). name is what the pair is called.
-func pairNodes(pathA, pathB, member string) (a, b *carve.Node, name string, err error) {
-	if a, err = diffRoot(pathA); err != nil {
-		return nil, nil, "", err
-	}
-	if b, err = diffRoot(pathB); err != nil {
-		return nil, nil, "", err
-	}
-	name = infile.Base(pathA)
-	if bn := infile.Base(pathB); bn != name {
-		name += " -> " + bn
-	}
-	if member == "" {
-		return a, b, name, nil
-	}
-	if a, err = a.Walk(member); err != nil {
-		return nil, nil, "", fmt.Errorf("%s: %w", pathA, err)
-	}
-	if b, err = b.Walk(member); err != nil {
-		return nil, nil, "", fmt.Errorf("%s: %w", pathB, err)
-	}
-	return a, b, member, nil
-}
 
 // viewMode is the view a --view value names.
 func viewMode(v string) (int, error) {
@@ -61,16 +35,18 @@ func runFileDiff(pathA, pathB, member, view string) error {
 	if err != nil {
 		return err
 	}
-	a, b, name, err := pairNodes(pathA, pathB, member)
+	a, b, name, err := analysis.PairNodes(pathA, pathB, member)
 	if err != nil {
 		return err
 	}
 	if a.IsDirNode() || b.IsDirNode() {
 		return fmt.Errorf("%s is a directory: name two files, or a file in them with --path (without --path, directories are compared whole)", name)
 	}
-	d := loadPair(a, b, viewLimitMore)
+	e := analysis.PairEntry(name, a, b)
+	d := analysis.Load(e, viewLimitMore)
+	da, db := d.Bytes()
 	fmt.Printf("%s vs %s\n", infile.Base(pathA), infile.Base(pathB))
-	if d.err == nil && !d.truncA && !d.truncB && bytes.Equal(d.a, d.b) {
+	if d.Err == nil && !d.TruncA && !d.TruncB && bytes.Equal(da, db) {
 		fmt.Println("identical")
 		return nil
 	}
@@ -84,7 +60,7 @@ func runFileDiff(pathA, pathB, member, view string) error {
 			width = 100
 		}
 	}
-	out := renderDetail(diffItem{kind: '~', path: name, a: a, b: b}, d, mode, width, wrap, true, tty)
+	out := renderDetail(itemOf(e), d, mode, width, wrap, true, tty)
 	if !tty {
 		out = ansi.Strip(out)
 	}

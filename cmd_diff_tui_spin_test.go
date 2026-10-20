@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // spinnerIn is the spinner glyph at the start of a rendered row, if it has one.
@@ -30,28 +32,27 @@ func listRows(m *diffTUI, from, to int) []string {
 	return out
 }
 
-// runningDiff is a viewer on a comparison part-way: pkg.tar is still being
-// compared (what is found inside it so far is hung from it), sub/ holds a changed
-// file and another container still going, and done.txt is finished.
-func runningDiff() (*diffTUI, *treeDiffTally, *diffLine) {
-	inner := &treeDiffTally{lines: []*diffLine{{kind: '~', path: "pkg.tar/m.bin"}}}
-	running := &diffLine{kind: '~', path: "pkg.tar", subT: inner}
-	deep := &diffLine{kind: '~', path: "sub/deep.tar", subT: &treeDiffTally{}}
-	root := &treeDiffTally{lines: []*diffLine{
-		{kind: '~', path: "done.txt"},
-		running,
-		{kind: '~', path: "sub/changed.txt"},
-		deep,
-	}}
-	run := newLiveRun()
-	run.setRoot(root)
+// runningDiffLines are what a comparison part-way has found: pkg.tar is still
+// being compared (what is found inside it so far is hung from it), sub/ holds a
+// changed file and another container still going, and done.txt is finished.
+func runningDiffLines() []analysis.FakeLine {
+	return []analysis.FakeLine{
+		{Kind: analysis.Changed, Path: "done.txt"},
+		{Kind: analysis.Changed, Path: "pkg.tar", Pending: true, Kids: []analysis.FakeLine{{Kind: analysis.Changed, Path: "pkg.tar/m.bin"}}},
+		{Kind: analysis.Changed, Path: "sub/changed.txt"},
+		{Kind: analysis.Changed, Path: "sub/deep.tar", Pending: true},
+	}
+}
+
+func runningDiff() (*diffTUI, *analysis.Run) {
+	run := analysis.NewFakeRun(runningDiffLines(), false)
 	m := newDiffTUI("t", run)
 	open(m, 100, 20)
-	return m, root, running
+	return m, run
 }
 
 func TestRowsInProgressShowASpinner(t *testing.T) {
-	m, _, _ := runningDiff()
+	m, _ := runningDiff()
 	if got := names(m.lines); got != "sub/ | done.txt | pkg.tar/" {
 		t.Fatalf("the level: %q", got)
 	}
@@ -94,7 +95,7 @@ func TestRowsInProgressShowASpinner(t *testing.T) {
 }
 
 func TestTheSpinnerAnimatesWhileSomethingIsInProgress(t *testing.T) {
-	m, _, _ := runningDiff()
+	m, _ := runningDiff()
 	if !m.spinning {
 		t.Fatal("the spinner's clock did not start with something in progress")
 	}
@@ -121,15 +122,9 @@ func TestTheSpinnerAnimatesWhileSomethingIsInProgress(t *testing.T) {
 }
 
 func TestTheSpinnerStopsWhenTheWorkIsDone(t *testing.T) {
-	m, root, running := runningDiff()
+	m, run := runningDiff()
 	// Everything finishes, and the viewer takes its last snapshot.
-	live(func() {
-		for _, l := range root.lines {
-			l.subT = nil
-		}
-		running.sub = []*diffLine{{kind: '~', path: "pkg.tar/m.bin"}}
-	})
-	close(m.run.done)
+	run.FakeFinish()
 	drive(m, m.syncLines())
 	if m.anyPending() {
 		t.Fatal("something is still marked in progress")
@@ -147,11 +142,8 @@ func TestTheSpinnerStopsWhenTheWorkIsDone(t *testing.T) {
 		}
 	}
 	// And it starts again for something that goes into progress.
-	live(func() {
-		root.lines = append(root.lines, &diffLine{kind: '~', path: "later.tar", subT: &treeDiffTally{}})
-	})
-	m.run = newLiveRun() // a comparison that is not finished
-	m.run.setRoot(root)
+	// a comparison that is not finished, with something new in progress
+	m.run = analysis.NewFakeRun(append(runningDiffLines(), analysis.FakeLine{Kind: analysis.Changed, Path: "later.tar", Pending: true}), false)
 	if cmd := m.syncLines(); cmd == nil || !m.spinning {
 		t.Error("the clock did not start for a row that went into progress")
 	}

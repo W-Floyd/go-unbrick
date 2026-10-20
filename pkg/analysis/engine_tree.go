@@ -1,4 +1,4 @@
-package main
+package analysis
 
 import (
 	"fmt"
@@ -102,7 +102,7 @@ func diffRoot(p string) (*carve.Node, error) {
 	if infile.IsDir(p) {
 		return dirNode(p)
 	}
-	return carveRoot(p)
+	return OpenRoot(p)
 }
 
 // dirNode is a directory as a carve node, hidden entries left out as in a
@@ -125,7 +125,7 @@ func dirNode(dir string) (*carve.Node, error) {
 		} else {
 			// carveRoot, not carve.Open: it registers the vendor and
 			// encrypted-member formats and loads --secrets.
-			k, err = carveRoot(full)
+			k, err = OpenRoot(full)
 		}
 		if err != nil {
 			return nil, err
