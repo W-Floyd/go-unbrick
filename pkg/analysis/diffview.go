@@ -55,7 +55,11 @@ type Line struct {
 }
 
 // Stats counts what a line diff found.
-type Stats struct{ Added, Removed, Same int }
+type Stats struct {
+	Added   int `json:"added"`
+	Removed int `json:"removed"`
+	Same    int `json:"same"`
+}
 
 // MaxTextLines bounds a text diff; past it the diff is cut and says so.
 const MaxTextLines = 20000
@@ -270,14 +274,16 @@ func stringMask(data []byte, min int) []uint64 {
 // strings: whether, with every string cut out of both, what is left is identical.
 type StringsVerdict struct {
 	// Only is set when a and b differ and the bytes outside strings are the same.
-	Only bool
+	Only bool `json:"only"`
 	// ResidueA and ResidueB are the bytes outside strings on each side.
-	ResidueA, ResidueB int64
+	ResidueA int64 `json:"residueA"`
+	ResidueB int64 `json:"residueB"`
 	// ResidueDiffering is, when the two residues are the same size, how many of
 	// their bytes differ (0 when Only); -1 when the sizes differ.
-	ResidueDiffering int64
+	ResidueDiffering int64 `json:"residueDiffering"`
 	// StringBytesA and StringBytesB are the bytes inside strings.
-	StringBytesA, StringBytesB int64
+	StringBytesA int64 `json:"stringBytesA"`
+	StringBytesB int64 `json:"stringBytesB"`
 }
 
 // StringsOnly checks whether a and b differ only in strings of at least min
@@ -317,20 +323,25 @@ func StringDiff(a, b []byte, min, context int) (lines []Line, st Stats, truncate
 // unique to each, found by cutting both into content-defined chunks (so an
 // insertion shifts nothing after it) and matching chunks across.
 type Overlap struct {
-	SizeA, SizeB     int64 // bytes analysed
-	SharedA, SharedB int64 // bytes of each in a chunk the other also has
+	SizeA   int64 `json:"sizeA"` // bytes analysed
+	SizeB   int64 `json:"sizeB"`
+	SharedA int64 `json:"sharedA"` // bytes of each in a chunk the other also has
+	SharedB int64 `json:"sharedB"`
 	// Chunk is the average size of the chunks it was measured in (see chunkerFor):
 	// a changed byte makes its whole chunk unique, so this is the resolution. 0
 	// when it was measured byte for byte (see exactMax).
-	Chunk int
+	Chunk int `json:"chunk"`
 	// Prefix and Suffix are the bytes the two begin and end with identically.
-	Prefix, Suffix int64
+	Prefix int64 `json:"prefix"`
+	Suffix int64 `json:"suffix"`
 	// Differing is, for equal sizes, the bytes that differ at the same offset
 	// (-1 when sizes differ), and FirstDiff the first such offset (-1 if none).
-	Differing, FirstDiff int64
+	Differing int64 `json:"differing"`
+	FirstDiff int64 `json:"firstDiff"`
 	// MapA and MapB are Buckets cells along each file: the fraction of that
 	// stretch which is shared.
-	MapA, MapB []float64
+	MapA []float64 `json:"mapA"`
+	MapB []float64 `json:"mapB"`
 }
 
 // Buckets is the resolution of an Overlap's maps.

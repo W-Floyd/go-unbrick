@@ -90,15 +90,19 @@ func ZipMeta(r io.ReaderAt, size int64) ([]MetaEntry, error) {
 
 // MetaDiff is one recorded detail of one member that differs.
 type MetaDiff struct {
-	Name, Field, A, B string
+	Name  string `json:"name"`
+	Field string `json:"field"`
+	A     string `json:"a"`
+	B     string `json:"b"`
 }
 
 // MetaReport is how the recorded details of two archives compare.
 type MetaReport struct {
-	Members      int            // members present in both
-	Diffs        []MetaDiff     // details that differ, in member order
-	ByField      map[string]int // members whose detail differs, by detail
-	OnlyA, OnlyB []string       // members one archive records and the other does not
+	Members int            `json:"members"` // members present in both
+	Diffs   []MetaDiff     `json:"diffs"`   // details that differ, in member order
+	ByField map[string]int `json:"byField"` // members whose detail differs, by detail
+	OnlyA   []string       `json:"onlyA"`   // members one archive records and the other does not
+	OnlyB   []string       `json:"onlyB"`
 }
 
 // Identical says every member is in both and every detail the same.

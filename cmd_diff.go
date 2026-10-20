@@ -22,7 +22,7 @@ func init() {
 // point: it is routinely an order of magnitude larger than the real change.
 func newDiffCmd() *cobra.Command {
 	var verbose, verify, profile, interactive bool
-	var member, view string
+	var member, view, webAddr string
 	var context int
 	var fetchAheadMiB int64
 	var depth int
@@ -42,6 +42,9 @@ func newDiffCmd() *cobra.Command {
 				return err
 			}
 			diffContext = context
+			if webAddr != "" {
+				return runDiffWeb(cfg, webAddr)
+			}
 			if interactive {
 				return runDiffInteractive(cfg)
 			}
@@ -155,6 +158,7 @@ func newDiffCmd() *cobra.Command {
 	c.Flags().StringVar(&view, "view", modeNames[modeAuto], "for one file: diff (a line diff for text; for a binary, overlap and strings), strings, or overlap")
 	c.Flags().IntVarP(&context, "context", "U", contextLines, "for one file: unchanged lines shown around each change")
 	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "browse the differences: a line diff for text; for binaries, shared vs unique bytes and a diff of the strings in them")
+	c.Flags().StringVar(&webAddr, "web", "", "serve the interactive diff as a web page on this address, e.g. 127.0.0.1:8080 (port 0 picks one)")
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "show each differing run with its entropy (images); list unchanged members too (packages)")
 	c.Flags().Int64Var(&fetchAheadMiB, "fetch-ahead", analysis.DefaultFetchAhead>>20, "ssh:// inputs: MiB of upcoming files to fetch while the current one is processed (0 = off)")
 	c.Flags().BoolVar(&profile, "profile", false, "packages: report on stderr where the time went")

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diff</title>
+<link rel="stylesheet" href="style.css">
+<script defer src="app.js"></script>
+<script defer src="alpine.min.js"></script>
+</head>
+<body x-data="app()" x-init="init()" @keydown.window="key($event)">
+<header>
+  <strong x-text="state.title || 'Comparing'"></strong>
+  <span class="summary" x-text="state.summary"></span>
+  <span class="status" x-show="!state.finished || level.busy">
+    <span class="spin"></span>
+    <span x-text="state.finished ? 'listing its members…' : (state.status ? 'comparing: ' + state.status : 'opening…')"></span>
+  </span>
+  <span class="err" x-show="state.err" x-text="'error: ' + state.err"></span>
+</header>
+
+<nav class="crumbs">
+  <a href="#" @click.prevent="goTo(0)" x-text="rootTitle()"></a>
+  <template x-for="(name, i) in path" :key="i">
+    <span><span class="sep">/</span><a href="#" @click.prevent="goTo(i + 1)" x-text="trim(name)"></a></span>
+  </template>
+</nav>
+
+<main>
+  <section class="list" role="listbox" aria-label="Differences">
+    <div class="row up" x-show="path.length" @click="up()">↑ ..</div>
+    <template x-for="e in entries" :key="e.name">
+      <div class="row" :class="'k-' + e.kind + (e.name === sel ? ' sel' : '')" role="option"
+           :aria-selected="e.name === sel" @click="select(e)" @dblclick="open(e)">
+        <span class="glyph"><span x-show="e.pending" class="spin"></span><span x-show="!e.pending" x-text="glyph(e.kind)"></span></span>
+        <span class="name" x-text="e.name"></span>
+        <span class="note" x-text="e.kind === 'dir' ? '(' + e.summary + ')' : e.sizeNote"></span>
+      </div>
+    </template>
+    <p class="empty" x-show="!entries.length" x-text="state.finished ? 'nothing differs' : 'comparing…'"></p>
+  </section>
+
+  <section class="pane">
+    <div class="tabs">
+      <template x-for="v in views" :key="v">
+        <button :class="{on: view === v}" @click="setView(v)" x-text="v"></button>
+      </template>
+      <label><input type="checkbox" x-model="wrap"> wrap</label>
+      <label><input type="checkbox" x-model="words" @change="reload()"> words</label>
+      <label x-show="view === 'hex'"><input type="checkbox" x-model="hexMore" @change="reload()"> more</label>
+      <span class="loading" x-show="loading">reading…</span>
+    </div>
+
+    <div class="detail" :class="{wrap: wrap}">
+      <template x-if="!cur"><p class="empty">Select an entry.</p></template>
+
+      <template x-if="cur">
+        <div>
+          <h2 x-text="cur.title + '  ' + cur.entry.path"></h2>
+          <p class="dim" x-show="cur.entry.sizeA >= 0 && cur.entry.sizeB >= 0"
+             x-text="'A ' + size(cur.entry.sizeA) + '    B ' + size(cur.entry.sizeB)"></p>
+
+          <template x-if="cur.entry.kind === 'dir'">
+            <div><p x-text="cur.entry.summary"></p><p class="dim">double-click or Enter to go in</p></div>
+          </template>
+          <template x-if="cur.entry.kind === 'note'"><p x-text="cur.entry.text"></p></template>
+          <template x-if="cur.entry.pending">
+            <p class="dim">still being compared; what differs inside it appears in the list as it is found</p>
+          </template>
+
+          <template x-if="cur.container">
+            <div>
+              <template x-if="cur.entry.summary"><p>Inside it: <span x-text="cur.entry.summary"></span></p></template>
+              <template x-if="!cur.entry.summary"><p>Nothing inside it differs: its members are all the same.</p></template>
+              <p class="dim" x-text="cur.entry.hasKids ? 'Enter to go in.' : 'Enter to list its members.'"></p>
+              <template x-if="cur.container.headers">
+                <div>
+                  <h3>What each records about its members <span class="dim">(times, owners, modes: not their contents)</span></h3>
+                  <p class="err" x-show="cur.container.headers.err" x-text="'could not read the headers: ' + cur.container.headers.err"></p>
+                  <template x-if="!cur.container.headers.err">
+                    <div>
+                      <p x-show="!cur.container.headers.report.diffs.length && !cur.container.headers.report.onlyA.length && !cur.container.headers.report.onlyB.length"
+                         x-text="'All ' + cur.container.headers.report.members + ' members’ headers are identical too: the containers differ only in what lies between them (padding, a trailer).'"></p>
+                      <p class="mid" x-text="headerSummary(cur.container.headers.report)"></p>
+                      <p class="del" x-show="cur.container.headers.report.onlyA.length" x-text="cur.container.headers.report.onlyA.length + ' member(s) only in A, e.g. ' + cur.container.headers.report.onlyA[0]"></p>
+                      <p class="add" x-show="cur.container.headers.report.onlyB.length" x-text="cur.container.headers.report.onlyB.length + ' member(s) only in B, e.g. ' + cur.container.headers.report.onlyB[0]"></p>
+                      <table class="meta">
+                        <template x-for="d in cur.container.headers.report.diffs.slice(0, 200)">
+                          <tr><td x-text="d.name"></td><td x-text="d.field"></td><td class="del" x-text="d.a"></td><td class="add" x-text="d.b"></td></tr>
+                        </template>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <p class="dim">The overlap view shows how much of the container’s own bytes are shared.</p>
+            </div>
+          </template>
+
+          <template x-if="cur.detail && cur.detail.err"><p class="del" x-text="'reading: ' + cur.detail.err"></p></template>
+          <template x-if="cur.detail && partial(cur.detail)">
+            <p class="mid" x-text="partial(cur.detail)"></p>
+          </template>
+          <template x-if="cur.detail && cur.detail.identical"><p>identical content</p></template>
+
+          <template x-if="cur.detail && cur.detail.oneSide">
+            <div>
+              <template x-if="cur.detail.oneSide.text">
+                <pre class="lines"><template x-for="(ln, i) in cur.detail.oneSide.lines"><div class="ln"><span class="no" x-text="i + 1"></span><span x-text="ln"></span></div></template></pre>
+              </template>
+              <template x-if="!cur.detail.oneSide.text">
+                <div><p class="dim">binary; the printable strings in it:</p>
+                <pre class="lines"><template x-for="s in cur.detail.oneSide.strings"><div class="ln"><span x-text="s"></span></div></template></pre></div>
+              </template>
+              <p class="dim" x-show="cur.detail.oneSide.more">… more</p>
+            </div>
+          </template>
+
+          <template x-if="cur.detail && cur.detail.bytes">
+            <div>
+              <template x-if="cur.detail.bytes.verdict"><p :class="verdict(cur.detail.bytes).cls" x-text="verdict(cur.detail.bytes).text"></p></template>
+
+              <template x-if="cur.detail.bytes.diff">
+                <div>
+                  <h3 x-text="cur.detail.bytes.diff.stats.removed + ' removed, ' + cur.detail.bytes.diff.stats.added + ' added, ' + cur.detail.bytes.diff.stats.same + ' unchanged lines'"></h3>
+                  <p x-show="!cur.detail.bytes.diff.lines.length">the text is identical</p>
+                  <pre class="lines"><template x-for="l in cur.detail.bytes.diff.lines"><div class="ln" :class="'op' + opName(l.op)"><span class="no" x-text="l.a || ''"></span><span class="no" x-text="l.b || ''"></span><span class="mk" x-text="l.op === '@' ? '' : l.op"></span><template x-for="s in segs(l)"><span :class="{mark: s.mark}" x-text="s.t"></span></template></div></template></pre>
+                  <p class="dim" x-show="cur.detail.bytes.diff.truncated">… cut off</p>
+                </div>
+              </template>
+
+              <template x-if="cur.detail.bytes.overlap">
+                <div>
+                  <h3>Overlap <span class="dim" x-text="overlapHow(cur.detail.bytes.overlap)"></span></h3>
+                  <table class="ov">
+                    <template x-for="s in ['A', 'B']">
+                      <tr>
+                        <td x-text="s"></td>
+                        <td x-text="size(cur.detail.bytes.overlap['size' + s])"></td>
+                        <td>shared <span x-text="size(cur.detail.bytes.overlap['shared' + s]) + ' ' + pct(cur.detail.bytes.overlap['shared' + s], cur.detail.bytes.overlap['size' + s])"></span></td>
+                        <td>unique <span x-text="size(cur.detail.bytes.overlap['size' + s] - cur.detail.bytes.overlap['shared' + s]) + ' ' + pct(cur.detail.bytes.overlap['size' + s] - cur.detail.bytes.overlap['shared' + s], cur.detail.bytes.overlap['size' + s])"></span></td>
+                      </tr>
+                    </template>
+                  </table>
+                  <template x-for="s in ['A', 'B']">
+                    <div class="bar" :title="'each cell is 1/64 of ' + s">
+                      <template x-for="f in cur.detail.bytes.overlap['map' + s]"><i :style="cell(f)"></i></template>
+                    </div>
+                  </template>
+                  <p class="dim">each cell is 1/64 of the file: tall green = shared with the other, yellow = partly, low red = only in this one</p>
+                  <p x-text="'identical start ' + size(cur.detail.bytes.overlap.prefix) + ', identical end ' + size(cur.detail.bytes.overlap.suffix)"></p>
+                  <p x-show="cur.detail.bytes.overlap.differing === 0">same size, every byte equal</p>
+                  <p x-show="cur.detail.bytes.overlap.differing > 0"
+                     x-text="'same size: ' + bytesN(cur.detail.bytes.overlap.differing) + ' at the same offset (' + pct(cur.detail.bytes.overlap.differing, cur.detail.bytes.overlap.sizeA) + '), first at 0x' + cur.detail.bytes.overlap.firstDiff.toString(16)"></p>
+                </div>
+              </template>
+
+              <template x-if="cur.detail.bytes.hex">
+                <div>
+                  <p class="dim" x-show="cur.detail.bytes.hex.unavailable">too large, and different in size, to find the bytes that differ</p>
+                  <template x-if="!cur.detail.bytes.hex.unavailable">
+                    <div>
+                      <h3 x-text="'Bytes: ' + count(cur.detail.bytes.hex.total) + ' differ in ' + cur.detail.bytes.hex.places + ' place(s)'"></h3>
+                      <p class="dim" x-show="!cur.detail.bytes.hex.places">no bytes differ outside the printable strings (see the strings view)</p>
+                      <template x-for="h in cur.detail.bytes.hex.hunks">
+                        <div class="hunk">
+                          <div class="hh" x-text="'@@ A 0x' + h.offA.toString(16) + ' +' + h.lenA + '   B 0x' + h.offB.toString(16) + ' +' + h.lenB + ' @@'"></div>
+                          <template x-for="side in ['a', 'b']">
+                            <div>
+                              <template x-for="r in hexRows(h[side])"><div class="hx" :class="side === 'a' ? 'del' : 'add'"><span class="mk" x-text="side === 'a' ? '-' : '+'"></span><span class="off" x-text="r.off"></span><template x-for="c in r.cells"><span :class="c.hit ? 'hit' : 'ctx'" x-text="c.h"></span></template><span class="asc" x-text="'|' + r.asc + '|'"></span></div></template>
+                              <div class="dim" x-show="!h[side].hex" x-text="'(nothing at 0x' + h[side].offset.toString(16) + ')'"></div>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                      <p class="dim" x-show="cur.detail.bytes.hex.more" x-text="'… ' + cur.detail.bytes.hex.more + ' more place(s); tick “more”'"></p>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <template x-if="cur.detail.bytes.strings">
+                <div>
+                  <h3 x-text="'Strings: ' + cur.detail.bytes.strings.stats.removed + ' removed, ' + cur.detail.bytes.strings.stats.added + ' added'"></h3>
+                  <p x-show="!cur.detail.bytes.strings.lines.length">the printable strings are identical</p>
+                  <pre class="lines"><template x-for="l in cur.detail.bytes.strings.lines"><div class="ln" :class="'op' + opName(l.op)"><span class="mk" x-text="l.op === '@' ? '' : l.op"></span><span x-text="l.text"></span></div></template></pre>
+                  <p class="dim" x-show="cur.detail.bytes.strings.truncated" x-text="cur.detail.bytes.stringsPeek ? '… more in the strings view' : '… cut off'"></p>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </section>
+</main>
+<footer class="dim">j/k move · Enter/l in · h/Backspace out · 1–4 views · w wrap · d words · x more hex</footer>
+</body>
+</html>

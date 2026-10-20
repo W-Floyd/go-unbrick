@@ -1,0 +1,60 @@
+:root {
+  --bg: #fff; --fg: #1d2125; --dim: #6b7280; --line: #e5e7eb; --panel: #f6f7f9;
+  --add: #1a7f37; --del: #cf222e; --mid: #9a6700; --sel: #dbeafe; --addbg: #e6ffec; --delbg: #ffebe9; --mark: #ffd33d66;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --fg: #e5e7eb; --dim: #8b93a1; --line: #2a2e35; --panel: #1b1e23;
+    --add: #3fb950; --del: #f85149; --mid: #d29922; --sel: #1f3a5f; --addbg: #12261a; --delbg: #2d1417; --mark: #bb800966;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { height: 100dvh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
+header, nav.crumbs, footer { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+footer { border: 0; border-top: 1px solid var(--line); font-size: 12px; }
+header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.summary, .dim { color: var(--dim); }
+.status { color: var(--mid); }
+.err, .del { color: var(--del); } .add { color: var(--add); } .mid { color: var(--mid); }
+nav.crumbs a { color: inherit; text-decoration: none; } nav.crumbs a:hover { text-decoration: underline; }
+.sep { margin: 0 6px; color: var(--dim); }
+main { flex: 1; display: flex; min-height: 0; }
+.list { width: min(38%, 520px); overflow: auto; border-right: 1px solid var(--line); font: 13px/1.5 ui-monospace, monospace; }
+.row { display: flex; gap: 8px; padding: 1px 12px; cursor: pointer; white-space: nowrap; }
+.row:hover { background: var(--panel); }
+.row.sel { background: var(--sel); box-shadow: inset 3px 0 0 var(--mid); }
+.row .glyph { width: 1.2em; flex: none; text-align: center; }
+.row .name { overflow: hidden; text-overflow: ellipsis; }
+.row .note { color: var(--dim); margin-left: auto; padding-left: 12px; }
+.k-added .glyph { color: var(--add); } .k-removed .glyph { color: var(--del); } .k-changed .glyph, .k-renamed-changed .glyph { color: var(--mid); } .k-dir { color: var(--dim); }
+.empty { padding: 12px 16px; color: var(--dim); }
+.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabs { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.tabs button { border: 1px solid var(--line); background: var(--bg); color: inherit; padding: 2px 10px; border-radius: 4px; cursor: pointer; }
+.tabs button.on { background: var(--sel); }
+.tabs label { color: var(--dim); font-size: 12px; } .loading { color: var(--mid); font-size: 12px; }
+.detail { flex: 1; overflow: auto; padding: 8px 16px; }
+h2 { font-size: 15px; margin: 4px 0; } h3 { font-size: 14px; margin: 14px 0 6px; }
+pre.lines { margin: 0; font: 12.5px/1.4 ui-monospace, monospace; }
+.ln { display: flex; white-space: pre; content-visibility: auto; contain-intrinsic-size: auto 1.4em; }
+.detail.wrap .ln { white-space: pre-wrap; word-break: break-all; }
+.ln .no { flex: none; width: 4.5ch; text-align: right; color: var(--dim); padding-right: 1ch; user-select: none; }
+.ln .mk { flex: none; width: 2ch; user-select: none; }
+.opadd { background: var(--addbg); } .opdel { background: var(--delbg); } .ophunk { color: #0969da; } .opctx { color: var(--dim); }
+mark, .mark { background: var(--mark); color: inherit; border-radius: 2px; }
+table { border-collapse: collapse; } td { padding: 1px 12px 1px 0; }
+table.ov td:first-child { font-weight: 600; }
+table.meta { font: 12.5px ui-monospace, monospace; margin-top: 8px; } table.meta td { border-bottom: 1px solid var(--line); }
+.bar { display: flex; align-items: flex-end; height: 22px; gap: 1px; margin: 3px 0; max-width: 640px; }
+.bar i { flex: 1; display: block; }
+.hunk { margin: 10px 0; font: 12.5px/1.4 ui-monospace, monospace; }
+.hh { color: var(--mid); }
+.hx { white-space: pre; } .hx span { margin-right: 0; }
+.hx .mk { display: inline-block; width: 2ch; } .hx .off { margin-right: 1.5ch; color: var(--dim); }
+.hx span.hit, .hx span.ctx { display: inline-block; width: 3ch; }
+.hx.del .hit { color: var(--del); font-weight: 600; } .hx.add .hit { color: var(--add); font-weight: 600; } .hx .ctx { color: var(--dim); }
+.hx .asc { margin-left: 1ch; color: var(--dim); }
+.spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--mid); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 4px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 760px) { main { flex-direction: column; } .list { width: auto; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--line); } }

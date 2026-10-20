@@ -1,0 +1,245 @@
+// Package web serves a comparison (analysis.Run) to a browser: a JSON API over the
+// same calls the terminal viewer makes, and a single-page Alpine.js front end,
+// embedded, with nothing fetched from the network.
+//
+// Mount it anywhere: the page and its API use relative URLs.
+//
+//	run := analysis.Start(analysis.Config{A: "old.tar", B: "new.tar", Depth: 3})
+//	http.Handle("/diff/", http.StripPrefix("/diff", web.Handler(run, web.Options{Title: "old vs new"})))
+package web
+
+import (
+	"embed"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
+)
+
+//go:embed static
+var assets embed.FS
+
+// Options tunes the handler.
+type Options struct {
+	Title string
+	// Limit is the bytes read of each side of a file to show what differs (default
+	// 32 MiB); a request may ask for up to MaxLimit.
+	Limit    int64
+	MaxLimit int64 // default 256 MiB
+}
+
+const (
+	defaultLimit = 32 << 20
+	maxLimit     = 256 << 20
+	cachedPairs  = 4
+)
+
+// Handler serves run. It is safe for concurrent requests.
+func Handler(run *analysis.Run, opts Options) http.Handler {
+	if opts.Limit <= 0 {
+		opts.Limit = defaultLimit
+	}
+	if opts.MaxLimit <= 0 {
+		opts.MaxLimit = maxLimit
+	}
+	s := &server{run: run, opts: opts, levels: map[string]*analysis.Level{}}
+	s.root = run.Root()
+	s.root.SetTitle(opts.Title)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/state", s.state)
+	mux.HandleFunc("/api/level", s.level)
+	mux.HandleFunc("/api/entry", s.entry)
+	sub, _ := fs.Sub(assets, "static")
+	mux.Handle("/", http.FileServer(http.FS(sub)))
+	return mux
+}
+
+type server struct {
+	run  *analysis.Run
+	opts Options
+	root *analysis.Level
+
+	mu     sync.Mutex
+	levels map[string]*analysis.Level // opened levels, by their path of entry names
+	pairs  []cachedPair               // the last few files read, newest last
+	load   sync.Mutex                 // one read at a time: the filesystems underneath are not safe for more
+}
+
+type cachedPair struct {
+	key   analysis.EntryKey
+	limit int64
+	pair  *analysis.Pair
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(v)
+}
+
+func fail(w http.ResponseWriter, code int, err error) {
+	http.Error(w, err.Error(), code)
+}
+
+func (s *server) state(w http.ResponseWriter, r *http.Request) {
+	st := struct {
+		Title    string `json:"title"`
+		Finished bool   `json:"finished"`
+		Summary  string `json:"summary"`
+		Status   string `json:"status"`
+		Err      string `json:"err,omitempty"`
+	}{s.opts.Title, s.run.Finished(), s.run.Summary(), s.run.Status(), ""}
+	if st.Finished {
+		st.Status = "" // the last thing it was doing
+	}
+	if err := s.run.Err(); err != nil {
+		st.Err = err.Error()
+	}
+	writeJSON(w, st)
+}
+
+var errNoSuchEntry = errors.New("no such entry")
+
+// resolve is the level at a path of entry names from the root, opened on first
+// use and kept (a container's members level is a comparison of its own).
+func (s *server) resolve(path []string) (*analysis.Level, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.root
+	for i, name := range path {
+		key := strings.Join(path[:i+1], "\x00")
+		if l, ok := s.levels[key]; ok {
+			cur = l
+			continue
+		}
+		e, ok := find(s.run.Entries(cur, false), name)
+		if !ok {
+			return nil, errNoSuchEntry
+		}
+		l, err := s.run.Open(cur, e)
+		if err != nil {
+			return nil, err
+		}
+		s.levels[key] = l
+		cur = l
+	}
+	return cur, nil
+}
+
+func find(es []analysis.Entry, name string) (analysis.Entry, bool) {
+	for _, e := range es {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return analysis.Entry{}, false
+}
+
+// level lists a level as it stands: the page polls it while the comparison runs.
+func (s *server) level(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query()["p"]
+	l, err := s.resolve(path)
+	if err != nil {
+		fail(w, http.StatusNotFound, err)
+		return
+	}
+	es := s.run.Entries(l, false)
+	if es == nil {
+		es = []analysis.Entry{}
+	}
+	writeJSON(w, struct {
+		Title   string           `json:"title"`
+		Path    []string         `json:"path"`
+		Busy    bool             `json:"busy"`
+		Entries []analysis.Entry `json:"entries"`
+	}{l.Title(), path, l.Busy(), es})
+}
+
+// containerResp is what to show for two containers: what is inside them (the
+// level's entries say) and how their own headers compare. Their bytes are read only
+// in the overlap view.
+type containerResp struct {
+	Headers *analysis.Headers `json:"headers,omitempty"`
+}
+
+func (s *server) entry(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	l, err := s.resolve(q["p"])
+	if err != nil {
+		fail(w, http.StatusNotFound, err)
+		return
+	}
+	e, ok := find(s.run.Entries(l, false), q.Get("name"))
+	if !ok {
+		fail(w, http.StatusNotFound, errNoSuchEntry)
+		return
+	}
+	resp := struct {
+		Entry     analysis.Entry        `json:"entry"`
+		Title     string                `json:"title"`
+		Detail    *analysis.EntryDetail `json:"detail,omitempty"`
+		Container *containerResp        `json:"container,omitempty"`
+	}{Entry: e, Title: e.Title()}
+	if !e.HasFiles() {
+		writeJSON(w, resp)
+		return
+	}
+	view := analysis.View(q.Get("view"))
+	switch view {
+	case analysis.ViewStrings, analysis.ViewOverlap, analysis.ViewHex:
+	default:
+		view = analysis.ViewAuto
+	}
+	s.load.Lock() // what reads the inputs goes one at a time
+	e.Probe()
+	if view != analysis.ViewOverlap && e.ContainerPair() {
+		c := &containerResp{}
+		if e.HeaderFormat() {
+			c.Headers = e.ReadHeaders()
+		}
+		s.load.Unlock()
+		resp.Container = c
+		writeJSON(w, resp)
+		return
+	}
+	s.load.Unlock()
+	limit := s.opts.Limit
+	if n, err := strconv.ParseInt(q.Get("limit"), 10, 64); err == nil && n > 0 {
+		limit = min(n, s.opts.MaxLimit)
+	}
+	opts := analysis.Options{View: view, Words: q.Get("words") != "0", HexBudget: 4 << 10}
+	if q.Get("more") == "1" {
+		opts.HexBudget = 1 << 20
+	}
+	resp.Detail = s.pair(e, limit).Detail(e, opts)
+	writeJSON(w, resp)
+}
+
+// pair is the bytes of an entry, read once and kept for the next few requests (a
+// page switching views asks again for the same file).
+func (s *server) pair(e analysis.Entry, limit int64) *analysis.Pair {
+	k := e.Key()
+	s.mu.Lock()
+	for _, c := range s.pairs {
+		if c.key == k && c.limit == limit {
+			s.mu.Unlock()
+			return c.pair
+		}
+	}
+	s.mu.Unlock()
+	s.load.Lock()
+	defer s.load.Unlock()
+	p := analysis.Load(e, limit)
+	s.mu.Lock()
+	s.pairs = append(s.pairs, cachedPair{k, limit, p})
+	if len(s.pairs) > cachedPairs {
+		s.pairs = s.pairs[len(s.pairs)-cachedPairs:]
+	}
+	s.mu.Unlock()
+	return p
+}
