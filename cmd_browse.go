@@ -40,6 +40,7 @@ import (
 func newBrowseCmd() *cobra.Command {
 	var skip []string
 	var webAddr string
+	var noCrawl bool
 	c := &cobra.Command{
 		Use:   "browse <file | dir | url>",
 		Short: "interactively navigate a directory or anything carve can open inside a file",
@@ -84,7 +85,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 			if !isInteractive() {
 				return fmt.Errorf("browse needs an interactive terminal (stdin and stdout); use ls/tree/recon/extract instead")
 			}
-			m, err := newBrowseModel(args[0], skip)
+			m, err := newBrowseModel(args[0], skip, !noCrawl)
 			if err != nil {
 				return err
 			}
@@ -116,6 +117,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 		},
 	}
 	c.Flags().StringSliceVar(&skip, "skip", nil, "directory listings: leave files out (they're never listed, so never preemptively reconned either): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated - same values as 'recon --skip'")
+	c.Flags().BoolVar(&noCrawl, "no-auto-recon", false, "recon only what is listed and highlighted; by default the rest is reconned too, to any depth, in the background and behind whatever you navigate to")
 	c.Flags().StringVar(&webAddr, "web", "", "serve the browser as a web page on this address instead, e.g. 127.0.0.1:8765 (port 0 picks one)")
 	return addSecrets(addFullDownload(c))
 }
@@ -293,7 +295,7 @@ type browseModel struct {
 	height  int
 }
 
-func newBrowseModel(input string, skip []string) (*browseModel, error) {
+func newBrowseModel(input string, skip []string, crawl bool) (*browseModel, error) {
 	m := &browseModel{
 		list:     list.New(nil, browseDelegate{}, 0, 0),
 		preview:  viewport.New(),
@@ -308,6 +310,7 @@ func newBrowseModel(input string, skip []string) (*browseModel, error) {
 	// horizontal scroll either.
 	m.preview.SoftWrap = true
 	m.graphics = detectGraphics()
+	m.rq.crawlOn, m.rq.skip = crawl, skip // before the first frame, which is where the crawl starts
 	// This isn't list.DefaultDelegate's two-line card view, and the
 	// breadcrumb/status line below the panes already says where we are and
 	// what the last action did — the list's own title/status/pagination/help
@@ -818,7 +821,11 @@ func (m *browseModel) fallbackPreview(e browseEntry) string {
 		if e.isContainer {
 			fmt.Fprintln(&b, "\npress enter to open")
 		}
-		fmt.Fprintln(&b, "reconning in the background (spooled to a temp file); x extracts")
+		if e.node != nil && e.node.RandomAccess() {
+			fmt.Fprintln(&b, "reconning in the background; x extracts")
+		} else {
+			fmt.Fprintln(&b, "reconning in the background (spooled to a temp file); x extracts")
+		}
 	}
 	return b.String()
 }
@@ -1112,6 +1119,13 @@ func (m *browseModel) enqueueAll(items []list.Item) {
 		m.rq.enqueue(reconJob{key: key, name: e.name, osPath: e.osPath, node: e.node})
 		queued++
 	}
+	// What is on screen is where the crawl starts: it lists the containers and
+	// directories here, then those inside them, whenever nothing else is waiting.
+	for _, it := range items {
+		if e, ok := it.(browseEntry); ok && !e.isParent && (e.dir || e.isContainer || e.osPath != "" && !e.isText && !e.isImage) {
+			m.rq.addCrawl(e.core())
+		}
+	}
 	if e, ok := m.selected(); ok {
 		if key, ok := reconKey(e); ok {
 			m.rq.bump(key)
@@ -1246,11 +1260,21 @@ type reconReadyMsg struct{ key, name string }
 // file, and running many at once would thrash disk/CPU for no benefit — the
 // point of bumping is that whatever you're looking at gets there next, not
 // that everything finishes faster.
+//
+// Below those is the crawl: with it on, the queue goes on by itself, listing the
+// containers and directories it has seen (starting from what is on screen) and
+// queueing their entries too, to any depth, at the lowest priority. It lists
+// and recons only when nothing else is waiting or running, and anything the
+// user navigates to is promoted out of it, so navigating always comes first. A
+// job already running is not interrupted (recon cannot be cancelled): it is
+// what finishes before the next thing you asked for.
 type reconQueue struct {
 	mu           sync.Mutex
 	cond         *sync.Cond
 	pending      *cl.List               // of reconJob, front = next to run
 	byKey        map[string]*cl.Element // pending[key]'s element, for O(1) bump - with pending a slice, bump had to linear-scan it (then shift up to N elements) on every single highlight change; for a few thousand entries (an ext4 with ~2000 files) that's real, felt lag on every j/k, not a one-off cost
+	low          *cl.List               // of reconJob: what the crawl found, run when pending is empty
+	lowByKey     map[string]*cl.Element
 	inflightKey  string
 	inflightName string
 	cache        map[string]string
@@ -1258,7 +1282,21 @@ type reconQueue struct {
 	ready        chan reconReadyMsg
 	startOnce    sync.Once
 	pauseCount   int // see pause/resume
+
+	crawlOn    bool
+	crawlTodo  []analysis.BrowseEntry // containers and directories to list, in the order seen
+	crawlKnown map[string]bool        // keys ever added to crawlTodo
+	crawlLists int                    // how many it has listed
+	skip       []string               // --skip, for the directory listings
 }
+
+// Bounds on the crawl: a filesystem image lists thousands of files and a
+// directory tree more; the crawl takes the first of each level and stops after
+// a number of listings, so it cannot run for ever on a large input.
+const (
+	crawlPerLevel = 300
+	crawlMaxLists = 3000
+)
 
 // newReconQueue only allocates - start() launches the worker. A job's work
 // (runReconJob) swaps the global os.Stdout to capture recon's printed report,
@@ -1270,17 +1308,27 @@ type reconQueue struct {
 // after the terminal is set up - starts it.
 func newReconQueue() *reconQueue {
 	q := &reconQueue{
-		pending: cl.New(),
-		byKey:   map[string]*cl.Element{},
-		cache:   map[string]string{},
-		seen:    map[string]bool{},
-		ready:   make(chan reconReadyMsg, 32),
+		pending:    cl.New(),
+		byKey:      map[string]*cl.Element{},
+		low:        cl.New(),
+		lowByKey:   map[string]*cl.Element{},
+		cache:      map[string]string{},
+		seen:       map[string]bool{},
+		crawlKnown: map[string]bool{},
+		ready:      make(chan reconReadyMsg, 32),
 	}
 	q.cond = sync.NewCond(&q.mu)
 	return q
 }
 
-func (q *reconQueue) start() { q.startOnce.Do(func() { go q.run() }) }
+func (q *reconQueue) start() {
+	q.startOnce.Do(func() {
+		go q.run()
+		if q.crawlOn {
+			go q.crawl()
+		}
+	})
+}
 
 func (q *reconQueue) run() {
 	for {
@@ -1290,22 +1338,30 @@ func (q *reconQueue) run() {
 		q.cache[job.key] = out
 		q.inflightKey, q.inflightName = "", ""
 		q.mu.Unlock()
+		q.cond.Broadcast() // the crawl waits for the queue to go idle
 		q.ready <- reconReadyMsg{key: job.key, name: job.name}
 	}
 }
 
-// next blocks until a job is pending and the queue isn't paused, then claims
-// it.
+// next blocks until a job is pending (or the crawl has one) and the queue isn't
+// paused, then claims it.
 func (q *reconQueue) next() reconJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for q.pending.Len() == 0 || q.pauseCount > 0 {
+	for (q.pending.Len() == 0 && q.low.Len() == 0) || q.pauseCount > 0 {
 		q.cond.Wait()
 	}
-	front := q.pending.Front()
-	job := front.Value.(reconJob)
-	q.pending.Remove(front)
-	delete(q.byKey, job.key)
+	var job reconJob
+	if front := q.pending.Front(); front != nil {
+		job = front.Value.(reconJob)
+		q.pending.Remove(front)
+		delete(q.byKey, job.key)
+	} else {
+		front = q.low.Front()
+		job = front.Value.(reconJob)
+		q.low.Remove(front)
+		delete(q.lowByKey, job.key)
+	}
 	q.inflightKey, q.inflightName = job.key, job.name
 	return job
 }
@@ -1335,28 +1391,52 @@ func (q *reconQueue) resume() {
 	q.cond.Broadcast()
 }
 
+// promote takes a job the crawl queued out of the low queue, if it is there.
+// Caller holds mu.
+func (q *reconQueue) promote(key string) (reconJob, bool) {
+	elem, ok := q.lowByKey[key]
+	if !ok {
+		return reconJob{}, false
+	}
+	job := elem.Value.(reconJob)
+	q.low.Remove(elem)
+	delete(q.lowByKey, key)
+	return job, true
+}
+
 // enqueue appends job once per key, ever - a frame revisited later (ascend
 // back into it) calls this again for the same entries, and seen is what
-// keeps that from re-running or re-counting work already done.
+// keeps that from re-running or re-counting work already done. One the crawl
+// had already queued is promoted to the back of the real queue: it was
+// navigated to.
 func (q *reconQueue) enqueue(job reconJob) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.seen[job.key] {
+		if j, ok := q.promote(job.key); ok {
+			q.byKey[j.key] = q.pending.PushBack(j)
+			q.cond.Broadcast()
+		}
 		return
 	}
 	q.seen[job.key] = true
 	q.byKey[job.key] = q.pending.PushBack(job)
-	q.cond.Signal()
+	q.cond.Broadcast()
 }
 
-// bump moves key to the front of the queue if it's waiting there; a no-op if
-// it's already done, already in flight, or not queued at all (not every
-// list entry is reconnable).
+// bump moves key to the front of the queue if it's waiting there, whether in the
+// real queue or the crawl's; a no-op if it's already done, already in flight, or
+// not queued at all (not every list entry is reconnable).
 func (q *reconQueue) bump(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if elem, ok := q.byKey[key]; ok {
 		q.pending.MoveToFront(elem)
+		return
+	}
+	if j, ok := q.promote(key); ok {
+		q.byKey[j.key] = q.pending.PushFront(j)
+		q.cond.Broadcast()
 	}
 }
 
@@ -1373,12 +1453,80 @@ func (q *reconQueue) enqueueFront(job reconJob) {
 		q.pending.MoveToFront(elem)
 		return
 	}
+	if j, ok := q.promote(job.key); ok {
+		q.byKey[j.key] = q.pending.PushFront(j)
+		q.cond.Broadcast()
+		return
+	}
 	if q.seen[job.key] {
 		return
 	}
 	q.seen[job.key] = true
 	q.byKey[job.key] = q.pending.PushFront(job)
-	q.cond.Signal()
+	q.cond.Broadcast()
+}
+
+// enqueueLow queues a job at the lowest priority, once per key.
+func (q *reconQueue) enqueueLow(job reconJob) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.seen[job.key] {
+		return
+	}
+	q.seen[job.key] = true
+	q.lowByKey[job.key] = q.low.PushBack(job)
+	q.cond.Broadcast()
+}
+
+// addCrawl notes a container or directory for the crawl to list, once.
+func (q *reconQueue) addCrawl(e analysis.BrowseEntry) {
+	key := e.Key()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.crawlOn || q.crawlKnown[key] {
+		return
+	}
+	q.crawlKnown[key] = true
+	q.crawlTodo = append(q.crawlTodo, e)
+	q.cond.Broadcast()
+}
+
+// idleLocked says nothing is queued, running or held back. Caller holds mu.
+func (q *reconQueue) idleLocked() bool {
+	return q.pending.Len() == 0 && q.low.Len() == 0 && q.inflightKey == "" && q.pauseCount == 0
+}
+
+// crawl lists what it has noted, first seen first (so a level before the
+// levels below it), one listing at a time and only when the queue is idle: the
+// entries it finds are queued low, to be reconned the same way, and the
+// containers among them noted in turn.
+func (q *reconQueue) crawl() {
+	for {
+		q.mu.Lock()
+		for len(q.crawlTodo) == 0 || !q.idleLocked() || q.crawlLists >= crawlMaxLists {
+			q.cond.Wait()
+		}
+		e := q.crawlTodo[0]
+		q.crawlTodo = q.crawlTodo[1:]
+		q.crawlLists++
+		q.mu.Unlock()
+
+		level, err := analysis.Open(e, q.skip)
+		if err != nil {
+			continue
+		}
+		for i, c := range level.Entries {
+			if i >= crawlPerLevel {
+				break
+			}
+			if key, ok := reconKey(entryOf(c)); ok {
+				q.enqueueLow(reconJob{key: key, name: c.Name, osPath: c.OSPath, node: c.Node})
+			}
+			if c.Dir || c.Container || c.Openable {
+				q.addCrawl(c)
+			}
+		}
+	}
 }
 
 func (q *reconQueue) get(key string) (string, bool) {
@@ -1414,12 +1562,24 @@ func (q *reconQueue) inflightDisplay() (name string, ok bool) {
 func runReconJob(job reconJob) string {
 	path := job.osPath
 	if path == "" {
-		tmp, cleanup, err := spoolNodeToTemp(job.node)
-		if err != nil {
-			return cWarn("[!] spooling for recon: " + err.Error())
+		if job.node.RandomAccess() {
+			// A member that reads at random is recon'd where it is, as a virtual
+			// input: nothing is written to disk, however large (a decrypted
+			// 859 MiB OTA zip would otherwise be copied out in full first).
+			if ra, err := job.node.ReaderAt(); err == nil {
+				p, release := infile.RegisterVirtual(job.node.Name, ra, job.node.Size, "")
+				defer release()
+				path = p
+			}
 		}
-		defer cleanup()
-		path = tmp
+		if path == "" { // one that can only be streamed has to be written out to be read at random
+			tmp, cleanup, err := spoolNodeToTemp(job.node)
+			if err != nil {
+				return cWarn("[!] spooling for recon: " + err.Error())
+			}
+			defer cleanup()
+			path = tmp
+		}
 	}
 	// recon's progress spinner/bar writes straight to os.Stderr assuming it
 	// owns the terminal; browse already does, via bubbletea's alt screen, so

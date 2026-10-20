@@ -32,6 +32,9 @@ func isHTTP(p string) bool {
 // path element, ignoring any query string (signed CDN links carry long ones),
 // or, once the URL is open, the name the server gave it.
 func Base(p string) string {
+	if v, ok := lookupVirtual(p); ok {
+		return path.Base(v.name)
+	}
 	if !IsRemote(p) {
 		return filepath.Base(p)
 	}
@@ -64,6 +67,9 @@ func (f *File) Close() error {
 // Open opens p for reading. A remote File is backed by the shared per-URL cache,
 // so opening the same URL repeatedly costs one validation request per process.
 func Open(p string) (*File, error) {
+	if IsVirtual(p) {
+		return openVirtual(p)
+	}
 	if IsSSH(p) {
 		return openSSH(p)
 	}
@@ -88,6 +94,9 @@ func Open(p string) (*File, error) {
 
 // Stat is os.Stat; an http URL is never a directory.
 func Stat(p string) (fs.FileInfo, error) {
+	if IsVirtual(p) {
+		return statVirtual(p)
+	}
 	if IsSSH(p) {
 		return statSSH(p)
 	}
@@ -107,6 +116,17 @@ var MaxRemoteRead int64 = 256 << 20
 
 // ReadFile is os.ReadFile, refusing a URL larger than MaxRemoteRead.
 func ReadFile(p string) ([]byte, error) {
+	if IsVirtual(p) {
+		f, err := openVirtual(p)
+		if err != nil {
+			return nil, err
+		}
+		b := make([]byte, f.Size())
+		if _, err := f.ReadAt(b, 0); err != nil && err != io.EOF {
+			return nil, err
+		}
+		return b, nil
+	}
 	if !IsRemote(p) {
 		return os.ReadFile(p)
 	}

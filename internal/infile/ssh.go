@@ -184,6 +184,9 @@ func Join(dir, name string) string {
 // changes when the bytes do (size and mtime; an http object's ETag or
 // Last-Modified). "" when it cannot be determined, which disables caching.
 func Identity(p string) string {
+	if v, ok := lookupVirtual(p); ok {
+		return v.id
+	}
 	switch {
 	case isHTTP(p):
 		r, err := openRemote(p)
