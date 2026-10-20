@@ -18,9 +18,9 @@ import (
 	"golang.org/x/term"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
-	"github.com/W-Floyd/go-unbrick/internal/diffview"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // The interactive diff: the tree of differences on the left, and for the one
@@ -330,7 +330,7 @@ func fit(prefix, text string, width int, wrap bool, sty lipgloss.Style) string {
 }
 
 // renderLines draws a unified diff, coloured, wrapped or cut to width.
-func renderLines(ls []diffview.Line, width int, wrap bool) string {
+func renderLines(ls []analysis.Line, width int, wrap bool) string {
 	var b strings.Builder
 	for _, l := range ls {
 		text := clean(l.Text)
@@ -387,10 +387,13 @@ func differs(n int64) string {
 
 // verdictLine says, for two binaries, whether only their printable strings
 // differ: whether everything outside them is identical.
-func verdictLine(d *pairData) string {
-	v := diffview.StringsOnly(d.a, d.b, stringsMin)
+func verdictLine(det *analysis.Detail) string {
+	v := det.Verdict
+	if v == nil {
+		return ""
+	}
 	part := ""
-	if d.truncA || d.truncB {
+	if det.A.Truncated || det.B.Truncated {
 		part = " (in the part read)"
 	}
 	switch {
@@ -435,87 +438,75 @@ func mapBar(cells []float64) string {
 	return b.String()
 }
 
-// renderHex shows the bytes where a and b differ: each hunk's bytes on each side,
-// with the rest of the rows they fall in as context. At most budget differing
-// bytes are shown. Unasked (explicit false) it shows nothing unless every one
-// fits, and says nothing if they do not: the hex view is for that.
-func renderHex(a, b []byte, budget, width int, explicit bool) string {
-	hunks, total, ok := diffview.HexDiffOutsideStrings(a, b, stringsMin) // the strings are the strings diff's
+// renderHex draws where two binaries differ outside strings: each hunk's bytes on
+// each side, with the rest of the rows they fall in as context. explicit is the
+// hex view (which says why there is nothing to show); otherwise it is the auto
+// view's section, which h == nil leaves out.
+func renderHex(h *analysis.HexReport, explicit bool, width int) string {
 	switch {
-	case !ok:
-		if explicit {
-			return styDim.Render("too large, and different in size, to find the bytes that differ") + "\n"
-		}
-		return ""
-	case total == 0:
+	case h == nil:
 		if explicit {
 			return "no bytes differ outside the printable strings (see the strings view)\n"
 		}
 		return ""
-	case !explicit && total > budget:
-		return ""
+	case h.Unavailable:
+		return styDim.Render("too large, and different in size, to find the bytes that differ") + "\n"
+	case h.Total == 0:
+		return "no bytes differ outside the printable strings (see the strings view)\n"
 	}
 	per := 16
 	if width < 80 {
 		per = 8
 	}
 	var sb strings.Builder
-	title := fmt.Sprintf("Bytes: %s differ in %d place(s)", byteCount(int64(total)), len(hunks))
-	sb.WriteString(styTitle.Render(title))
+	sb.WriteString(styTitle.Render(fmt.Sprintf("Bytes: %s differ in %d place(s)", byteCount(int64(h.Total)), h.Places)))
 	if !explicit {
 		sb.WriteString(styDim.Render("   (4 for hex view, x for more)"))
 	}
 	sb.WriteString("\n\n")
-	shown := 0
-	for i, h := range hunks {
-		if shown >= budget {
-			sb.WriteString(styDim.Render(fmt.Sprintf("… %d more place(s); x shows more", len(hunks)-i)) + "\n")
-			break
-		}
-		shown += h.Len()
-		fmt.Fprintf(&sb, "%s\n", styMid.Render(fmt.Sprintf("@@ A 0x%x +%d   B 0x%x +%d @@", h.OffA, len(h.A), h.OffB, len(h.B))))
-		sb.WriteString(hexRows("- ", a, h.OffA, len(h.A), per, styDel))
-		sb.WriteString(hexRows("+ ", b, h.OffB, len(h.B), per, styAdd))
+	for _, hk := range h.Hunks {
+		fmt.Fprintf(&sb, "%s\n", styMid.Render(fmt.Sprintf("@@ A 0x%x +%d   B 0x%x +%d @@", hk.OffA, hk.LenA, hk.OffB, hk.LenB)))
+		sb.WriteString(hexRows("- ", hk.A, per, styDel))
+		sb.WriteString(hexRows("+ ", hk.B, per, styAdd))
 		sb.WriteString("\n")
+	}
+	if h.More > 0 {
+		sb.WriteString(styDim.Render(fmt.Sprintf("… %d more place(s); x shows more", h.More)) + "\n")
 	}
 	return sb.String()
 }
 
-// hexRows lays out the rows of data that hold [off, off+n), the bytes in that
-// range in style and the rest dim.
-func hexRows(mark string, data []byte, off, n, per int, sty lipgloss.Style) string {
-	if n == 0 {
-		return styDim.Render(fmt.Sprintf("%s(nothing at 0x%x)", mark, off)) + "\n"
+// hexRows lays out a window of bytes in rows of per, the hunk's bytes in style
+// and the rest dim.
+func hexRows(mark string, w analysis.HexRow, per int, sty lipgloss.Style) string {
+	if len(w.Bytes) == 0 {
+		return styDim.Render(fmt.Sprintf("%s(nothing at 0x%x)", mark, w.Offset)) + "\n"
 	}
 	var sb strings.Builder
-	for row := off / per * per; row < off+n; row += per {
+	for row := 0; row < len(w.Bytes); row += per {
 		var hexs, asc strings.Builder
 		for i := row; i < row+per; i++ {
-			switch {
-			case i >= len(data):
+			if i >= len(w.Bytes) {
 				hexs.WriteString("   ")
 				continue
-			case i >= off && i < off+n:
-				hexs.WriteString(sty.Render(fmt.Sprintf("%02x", data[i])) + " ")
-			default:
-				hexs.WriteString(styDim.Render(fmt.Sprintf("%02x", data[i])) + " ")
 			}
-			c := data[i]
+			st := styDim
+			if i >= w.From && i < w.To {
+				st = sty
+			}
+			c := w.Bytes[i]
+			hexs.WriteString(st.Render(fmt.Sprintf("%02x", c)) + " ")
 			if c < 0x20 || c >= 0x7f {
 				c = '.'
 			}
-			if i >= off && i < off+n {
-				asc.WriteString(sty.Render(string(c)))
-			} else {
-				asc.WriteString(styDim.Render(string(c)))
-			}
+			asc.WriteString(st.Render(string(c)))
 		}
-		fmt.Fprintf(&sb, "%s%08x  %s |%s|\n", mark, row, hexs.String(), asc.String())
+		fmt.Fprintf(&sb, "%s%08x  %s |%s|\n", mark, w.Offset+row, hexs.String(), asc.String())
 	}
 	return sb.String()
 }
 
-func renderOverlap(o diffview.Overlap, d *pairData) string {
+func renderOverlap(o analysis.Overlap, truncA, truncB bool) string {
 	var b strings.Builder
 	how := "measured byte for byte: the stretches the two have in common, in order"
 	if o.Chunk > 0 {
@@ -530,8 +521,8 @@ func renderOverlap(o diffview.Overlap, d *pairData) string {
 		fmt.Fprintf(&b, "  %s  %12s   shared %12s %5s   unique %12s %5s%s\n", name,
 			humanBytes(size), humanBytes(shared), pct(shared, size), humanBytes(unique), pct(unique, size), note)
 	}
-	row("A", o.SizeA, o.SharedA, o.UniqueA(), d.truncA)
-	row("B", o.SizeB, o.SharedB, o.UniqueB(), d.truncB)
+	row("A", o.SizeA, o.SharedA, o.UniqueA(), truncA)
+	row("B", o.SizeB, o.SharedB, o.UniqueB(), truncB)
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "  A %s\n  B %s\n", mapBar(o.MapA), mapBar(o.MapB))
 	b.WriteString(styDim.Render("    each cell is 1/64 of the file: tall green = shared with the other, yellow = partly, low red = only in this one") + "\n\n")
@@ -585,15 +576,15 @@ const maxMetaLines = 24
 // zips) and says what differs: which details, in how many members, and the first
 // few. It reads a header per member, not the members.
 func metaSection(it diffItem) string {
-	read := func(n *carve.Node) ([]diffview.MetaEntry, error) {
+	read := func(n *carve.Node) ([]analysis.MetaEntry, error) {
 		ra, err := n.ReaderAt()
 		if err != nil {
 			return nil, err
 		}
 		if filetype.Detect(n.Head()) == filetype.Zip {
-			return diffview.ZipMeta(ra, n.Size)
+			return analysis.ZipMeta(ra, n.Size)
 		}
-		return diffview.TarMeta(ra, n.Size)
+		return analysis.TarMeta(ra, n.Size)
 	}
 	var b strings.Builder
 	b.WriteString("\n" + styTitle.Render("What each records about its members") + styDim.Render("  (times, owners, modes: not their contents)") + "\n\n")
@@ -603,7 +594,7 @@ func metaSection(it diffItem) string {
 		b.WriteString(styDel.Render("could not read the headers: "+err.Error()) + "\n")
 		return b.String()
 	}
-	r := diffview.CompareMeta(ea, eb)
+	r := analysis.CompareMeta(ea, eb)
 	if r.Identical() {
 		b.WriteString(fmt.Sprintf("All %d members' headers are identical too: the containers differ only in what lies between\nthem (padding, a trailer).\n", r.Members))
 		return b.String()
@@ -734,62 +725,65 @@ func renderDetail(it diffItem, d *pairData, mode, width int, wrap, hexMore, word
 	case it.a == nil || it.b == nil:
 		return b.String() + renderOneSide(it, d, width, wrap)
 	}
-	text := diffview.IsText(d.a) && diffview.IsText(d.b)
-	if !text && !isContainerNode(it.a) {
-		b.WriteString(verdictLine(d) + "\n")
+	cont := isContainerNode(it.a) && isContainerNode(it.b)
+	opts := analysis.Options{Context: diffContext, StringsMin: stringsMin, Words: words, HexBudget: hexBytes}
+	if diffContext == 0 {
+		opts.Context = analysis.NoContext
+	}
+	if hexMore {
+		opts.HexBudget = hexMoreBytes
 	}
 	switch mode {
 	case modeOverlap:
-		b.WriteString(renderOverlap(diffview.Compare(d.a, d.b), d))
+		opts.View = analysis.ViewOverlap
 	case modeHex:
-		budget := hexBytes
-		if hexMore {
-			budget = hexMoreBytes
-		}
-		b.WriteString(renderHex(d.a, d.b, budget, width, true))
+		opts.View = analysis.ViewHex
 	case modeStrings:
-		lines, st, trunc := diffview.StringDiff(d.a, d.b, stringsMin, diffContext)
-		b.WriteString(styTitle.Render(fmt.Sprintf("Strings (%d+ chars): %d removed, %d added", stringsMin, st.Removed, st.Added)) + "\n\n")
-		if len(lines) == 0 {
+		opts.View = analysis.ViewStrings
+	default:
+		if cont {
+			opts.View = analysis.ViewOverlap // a container's members are listed beside; its bytes only overlap
+		}
+	}
+	det := analysis.Analyse(d.a, d.b, d.sizeA, d.sizeB, opts)
+	if det.Verdict != nil && !isContainerNode(it.a) {
+		b.WriteString(verdictLine(det) + "\n")
+	}
+	switch {
+	case mode == modeOverlap:
+		b.WriteString(renderOverlap(*det.Overlap, d.truncA, d.truncB))
+	case mode == modeHex:
+		b.WriteString(renderHex(det.Hex, true, width))
+	case mode == modeStrings:
+		b.WriteString(styTitle.Render(fmt.Sprintf("Strings (%d+ chars): %d removed, %d added", stringsMin, det.Strings.Stats.Removed, det.Strings.Stats.Added)) + "\n\n")
+		if len(det.Strings.Lines) == 0 {
 			b.WriteString("the printable strings are identical\n")
 		}
-		b.WriteString(renderLines(lines, width, wrap))
-		if trunc {
+		b.WriteString(renderLines(det.Strings.Lines, width, wrap))
+		if det.Strings.Truncated {
+			b.WriteString(styDim.Render("… cut off") + "\n")
+		}
+	case cont:
+		b.WriteString("a container: what differs inside it is listed beneath it on the left.\n\n")
+		b.WriteString(renderOverlap(*det.Overlap, d.truncA, d.truncB))
+	case det.Text:
+		st := det.Diff.Stats
+		b.WriteString(styTitle.Render(fmt.Sprintf("%d removed, %d added, %d unchanged lines", st.Removed, st.Added, st.Same)) + "\n\n")
+		if len(det.Diff.Lines) == 0 {
+			b.WriteString("the text is identical\n")
+		}
+		b.WriteString(renderLines(det.Diff.Lines, width, wrap))
+		if det.Diff.Truncated {
 			b.WriteString(styDim.Render("… cut off") + "\n")
 		}
 	default:
-		if isContainerNode(it.a) && isContainerNode(it.b) {
-			b.WriteString("a container: what differs inside it is listed beneath it on the left.\n\n")
-			b.WriteString(renderOverlap(diffview.Compare(d.a, d.b), d))
-			break
-		}
-		if text {
-			lines, st, trunc := diffview.TextDiff(d.a, d.b, diffContext)
-			if words {
-				lines = diffview.MarkWords(lines)
-			}
-			b.WriteString(styTitle.Render(fmt.Sprintf("%d removed, %d added, %d unchanged lines", st.Removed, st.Added, st.Same)) + "\n\n")
-			if len(lines) == 0 {
-				b.WriteString("the text is identical\n")
-			}
-			b.WriteString(renderLines(lines, width, wrap))
-			if trunc {
-				b.WriteString(styDim.Render("… cut off") + "\n")
-			}
-			break
-		}
-		b.WriteString(renderOverlap(diffview.Compare(d.a, d.b), d))
-		if hx := renderHex(d.a, d.b, hexAuto, width, false); hx != "" {
+		b.WriteString(renderOverlap(*det.Overlap, d.truncA, d.truncB))
+		if hx := renderHex(det.Hex, false, width); hx != "" {
 			b.WriteString("\n" + hx)
 		}
-		lines, st, trunc := diffview.StringDiff(d.a, d.b, stringsMin, 1)
-		b.WriteString("\n" + styTitle.Render(fmt.Sprintf("Strings: %d removed, %d added", st.Removed, st.Added)) + styDim.Render("   (tab for the full diff)") + "\n\n")
-		const peek = 60
-		if len(lines) > peek {
-			lines, trunc = lines[:peek], true
-		}
-		b.WriteString(renderLines(lines, width, wrap))
-		if trunc {
+		b.WriteString("\n" + styTitle.Render(fmt.Sprintf("Strings: %d removed, %d added", det.Strings.Stats.Removed, det.Strings.Stats.Added)) + styDim.Render("   (tab for the full diff)") + "\n\n")
+		b.WriteString(renderLines(det.Strings.Lines, width, wrap))
+		if det.Strings.Truncated {
 			b.WriteString(styDim.Render("… more in the strings view") + "\n")
 		}
 	}
@@ -804,7 +798,7 @@ func renderOneSide(it diffItem, d *pairData, width int, wrap bool) string {
 		data = d.b
 	}
 	var b strings.Builder
-	if diffview.IsText(data) {
+	if analysis.IsText(data) {
 		for i, ln := range strings.SplitAfter(string(data), "\n") {
 			if i >= 200 {
 				b.WriteString(styDim.Render("… more") + "\n")
@@ -818,7 +812,7 @@ func renderOneSide(it diffItem, d *pairData, width int, wrap bool) string {
 		return b.String()
 	}
 	b.WriteString(styDim.Render("binary; the printable strings in it:") + "\n\n")
-	for i, s := range diffview.Strings(data, stringsMin) {
+	for i, s := range analysis.Strings(data, stringsMin) {
 		if i >= 200 {
 			b.WriteString(styDim.Render("… more") + "\n")
 			break

@@ -8,7 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/W-Floyd/go-unbrick/internal/diffview"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 func TestFitWrapsWithAHangingIndent(t *testing.T) {
@@ -63,7 +63,7 @@ func TestFitWrapsWithAHangingIndent(t *testing.T) {
 
 func TestRenderLinesWrapsWideChars(t *testing.T) {
 	// Wide characters count two columns: no row may be wider than asked.
-	ls := []diffview.Line{{Op: '+', B: 1, Text: strings.Repeat("日本語のテキスト", 10)}}
+	ls := []analysis.Line{{Op: '+', B: 1, Text: strings.Repeat("日本語のテキスト", 10)}}
 	for i, r := range strings.Split(strings.TrimRight(plain(renderLines(ls, 40, true)), "\n"), "\n") {
 		if w := ansi.StringWidth(r); w > 40 {
 			t.Errorf("row %d is %d wide", i, w)

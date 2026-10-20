@@ -5,14 +5,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/W-Floyd/go-unbrick/internal/diffview"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
+
+// hexOf is the hex section the analysis finds for a and b in a view.
+func hexOf(a, b []byte, v analysis.View) *analysis.HexReport {
+	return analysis.Analyse(a, b, int64(len(a)), int64(len(b)), analysis.Options{View: v}).Hex
+}
 
 func TestHexShownUnaskedOnlyWhenFewBytesDiffer(t *testing.T) {
 	a := bytes.Repeat([]byte{0, 1, 2, 3}, 500)
 	few := append([]byte(nil), a...)
 	few[40], few[41] = 0xde, 0xad
-	out := plain(renderHex(a, few, hexAuto, 100, false))
+	out := plain(renderHex(hexOf(a, few, analysis.ViewAuto), false, 100))
 	for _, want := range []string{"2 bytes differ in 1 place", "@@ A 0x28 +2", "de ad", "- 00000020", "+ 00000020"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lacks %q:\n%s", want, out)
@@ -22,13 +27,13 @@ func TestHexShownUnaskedOnlyWhenFewBytesDiffer(t *testing.T) {
 	for i := 0; i < 1000; i += 2 {
 		many[i] ^= 0xff
 	}
-	if got := renderHex(a, many, hexAuto, 100, false); got != "" {
+	if got := renderHex(hexOf(a, many, analysis.ViewAuto), false, 100); got != "" {
 		t.Errorf("unasked, %d differing bytes were shown", 500)
 	}
-	if got := plain(renderHex(a, many, hexBytes, 100, true)); !strings.Contains(got, "differ in") {
+	if got := plain(renderHex(hexOf(a, many, analysis.ViewHex), true, 100)); !strings.Contains(got, "differ in") {
 		t.Errorf("the hex view shows nothing:\n%s", got)
 	}
-	if got := plain(renderHex(a, a, hexBytes, 100, true)); !strings.Contains(got, "no bytes differ") {
+	if got := plain(renderHex(hexOf(a, a, analysis.ViewHex), true, 100)); !strings.Contains(got, "no bytes differ") {
 		t.Errorf("identical: %q", got)
 	}
 }
@@ -55,8 +60,8 @@ func TestWordDiffMarksChangedWordsAndToggles(t *testing.T) {
 
 func TestWordDiffMarkingIgnoresUnchangedWordsAndLines(t *testing.T) {
 	a, b := []byte("let total = price * 3;\nsame\n"), []byte("let total = cost * 3;\nsame\n")
-	ls, _, _ := diffview.TextDiff(a, b, 1)
-	out := renderLines(diffview.MarkWords(ls), 100, true)
+	ls, _, _ := analysis.TextDiff(a, b, 1)
+	out := renderLines(analysis.MarkWords(ls), 100, true)
 	if !strings.Contains(out, "\x1b[7mprice\x1b[27m") || !strings.Contains(out, "\x1b[7mcost\x1b[27m") {
 		t.Errorf("changed words are not marked:\n%q", out)
 	}

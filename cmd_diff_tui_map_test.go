@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/W-Floyd/go-unbrick/internal/diffview"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // A stretch with nothing shared is drawn as a low bar, not left blank: a blank
@@ -18,8 +18,7 @@ func TestMapBarDrawsUnsharedCells(t *testing.T) {
 		t.Errorf("a cell was left blank: %q", got)
 	}
 	// And the legend says what the colours and heights mean, blank not among them.
-	d := &pairData{}
-	out := plain(renderOverlap(diffview.Compare([]byte("a"), []byte("b")), d))
+	out := plain(renderOverlap(analysis.Compare([]byte("a"), []byte("b")), false, false))
 	for _, want := range []string{"tall green = shared", "yellow = partly", "low red = only in this one"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the legend lacks %q:\n%s", want, out)
@@ -35,10 +34,7 @@ func TestByteCountsSayBytes(t *testing.T) {
 		}
 	}
 	// 31 differing bytes outside 21.1 MiB of non-string bytes, as in a kernel image.
-	got := plain(verdictLine(&pairData{
-		a: append(make([]byte, 100), 1, 2, 3),
-		b: append(make([]byte, 100), 1, 2, 4),
-	}))
+	got := plain(verdictLine(detailOf(append(make([]byte, 100), 1, 2, 3), append(make([]byte, 100), 1, 2, 4))))
 	if !strings.Contains(got, "1 byte of the") || !strings.Contains(got, "differs too") {
 		t.Errorf("verdict: %q", got)
 	}
@@ -47,13 +43,17 @@ func TestByteCountsSayBytes(t *testing.T) {
 	for i := 0; i < 31; i++ {
 		other[i*1000] = 1
 	}
-	got = plain(verdictLine(&pairData{a: long, b: other}))
+	got = plain(verdictLine(detailOf(long, other)))
 	if !strings.Contains(got, "31 bytes of the 3.0 MiB outside printable strings differ too") {
 		t.Errorf("a count beside a size must say bytes: %q", got)
 	}
 	// And the overlap line.
-	o := plain(renderOverlap(diffview.Compare([]byte("abcdefgh"), []byte("abcdefgX")), &pairData{}))
+	o := plain(renderOverlap(analysis.Compare([]byte("abcdefgh"), []byte("abcdefgX")), false, false))
 	if !strings.Contains(o, "1 byte differs at the same offset") {
 		t.Errorf("overlap: %s", o)
 	}
+}
+
+func detailOf(a, b []byte) *analysis.Detail {
+	return analysis.Analyse(a, b, int64(len(a)), int64(len(b)), analysis.Options{})
 }

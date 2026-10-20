@@ -2,7 +2,7 @@
 // for text, how much of two binaries is shared and how much is unique to each,
 // and a diff of the printable strings inside binaries. It does no I/O and no
 // drawing, so what the interactive diff shows can be tested.
-package diffview
+package analysis
 
 import (
 	"bytes"

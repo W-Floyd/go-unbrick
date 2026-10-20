@@ -1,4 +1,4 @@
-package diffview
+package analysis
 
 import (
 	"archive/tar"
