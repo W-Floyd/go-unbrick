@@ -153,6 +153,9 @@ func Analyse(a, b []byte, sizeA, sizeB int64, opts Options) *Detail {
 
 func textDiff(a, b []byte, context int, words bool) *LineDiff {
 	lines, st, trunc := TextDiff(a, b, context)
+	if lines == nil {
+		lines = []Line{} // a JSON array, not null
+	}
 	if words {
 		lines = MarkWords(lines)
 	}
@@ -163,6 +166,9 @@ func textDiff(a, b []byte, context int, words bool) *LineDiff {
 // many lines.
 func stringsDiff(a, b []byte, min, context, peek int) *LineDiff {
 	lines, st, trunc := StringDiff(a, b, min, context)
+	if lines == nil {
+		lines = []Line{}
+	}
 	if peek > 0 && len(lines) > peek {
 		lines, trunc = lines[:peek], true
 	}

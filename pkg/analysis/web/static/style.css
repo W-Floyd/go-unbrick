@@ -68,3 +68,10 @@ button.open:hover { background: var(--sel); }
 .meter i { display: block; height: 100%; background: var(--mid); transition: width .3s; }
 .depth { display: inline-flex; gap: 8px; align-items: baseline; }
 button.open:disabled { opacity: .5; cursor: default; }
+.b-dir .name { font-weight: 600; } .b-container .glyph { color: var(--mid); }
+pre.text, pre.recon { margin: 8px 0; font: 12.5px/1.45 ui-monospace, monospace; white-space: pre; overflow-x: auto; }
+.detail.wrap pre.text, .detail.wrap pre.recon { white-space: pre-wrap; word-break: break-all; }
+pre.text { background: var(--panel); padding: 8px 12px; border-radius: 6px; }
+pre.recon { border-left: 3px solid var(--line); padding-left: 10px; }
+img.preview-img { max-width: 100%; max-height: 70vh; margin: 8px 0; background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 50% / 16px 16px; }
+a.dl { color: var(--dim); font-size: 12px; margin-left: auto; }

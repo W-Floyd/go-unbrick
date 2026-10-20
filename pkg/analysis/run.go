@@ -95,8 +95,7 @@ type Run struct {
 	depth     int        // container levels compared into: Config.Depth, and Deepen's
 	xmu       sync.Mutex // one expansion at a time (the disks underneath are not safe for more)
 	rootLevel *Level
-	lmu       sync.Mutex
-	levels    map[string]*Level // opened by LevelAt, by path
+	lc        levelCache[*Level] // opened by LevelAt
 }
 
 func newRun() *Run { return &Run{done: make(chan struct{})} }
@@ -815,4 +814,27 @@ func LoadSize(e Entry, limit int64) int64 {
 		}
 	}
 	return n
+}
+
+// OneSided is the file of an entry present on one side only, as a browse entry, so
+// it can be previewed the way browse previews any file: as highlighted text, an
+// image, or a download. ok is false for a pair, or an entry with no file.
+func (e Entry) OneSided() (be BrowseEntry, ok bool) {
+	n := e.a
+	if (e.a == nil) == (e.b == nil) {
+		return BrowseEntry{}, false
+	}
+	if n == nil {
+		n = e.b
+	}
+	if n.IsDirNode() {
+		return BrowseEntry{}, false
+	}
+	name := n.Name
+	if i := strings.LastIndex(strings.TrimSuffix(name, "/"), "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	head := n.Head()
+	return BrowseEntry{Name: name, Size: n.Size, Label: TypeLabel(n.Name, head), Text: LooksLikeText(n.Name, head),
+		Image: LooksLikeImage(head), Node: n}, true
 }

@@ -35,6 +35,14 @@ type Options struct {
 	MaxLimit    int64
 	CachedPairs int
 
+	// PreviewCap and ImageCap bound the bytes read to preview a file present on one
+	// side only as text (default analysis.PreviewCap) and to serve it as an image
+	// (default 32 MiB). AllowDownload decides whether a request may fetch such a file
+	// whole (GET /api/raw?download=1); nil allows it.
+	PreviewCap    int64
+	ImageCap      int64
+	AllowDownload func(*http.Request) bool
+
 	// AllowDeepen decides whether a request may have the comparison go a level
 	// deeper (POST /api/deepen), which reads inside every container the first pass
 	// stopped at. Nil allows it; MaxDepth, when positive, stops it once the run has
@@ -66,12 +74,19 @@ func Handler(run *analysis.Run, opts Options) http.Handler {
 	if opts.CachedPairs <= 0 {
 		opts.CachedPairs = defaultCachedPairs
 	}
+	if opts.PreviewCap <= 0 {
+		opts.PreviewCap = analysis.PreviewCap
+	}
+	if opts.ImageCap <= 0 {
+		opts.ImageCap = 32 << 20
+	}
 	s := &server{run: run, opts: opts, loads: map[loadKey]*loadState{}}
 	run.Root().SetTitle(opts.Title)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", s.state)
 	mux.HandleFunc("/api/level", s.level)
 	mux.HandleFunc("/api/entry", s.entry)
+	mux.HandleFunc("/api/raw", s.raw)
 	mux.HandleFunc("/api/deepen", s.deepen)
 	sub, _ := fs.Sub(assets, "static")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
@@ -184,11 +199,23 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 		Detail    *analysis.EntryDetail `json:"detail,omitempty"`
 		Container *containerResp        `json:"container,omitempty"`
 		Loading   *loadingResp          `json:"loading,omitempty"`
+		Preview   *previewResp          `json:"preview,omitempty"` // a file on one side only: previewed as browse would
 	}{Entry: e, Title: e.Title()}
 	if !e.HasFiles() {
 		writeJSON(w, resp)
 		return
 	}
+	// A file present on one side only is just a file: preview it as browse does.
+	s.load.Lock()
+	be, one := e.OneSided()
+	if one {
+		p := buildPreview(be, q.Get("raw") == "1", s.opts.PreviewCap, s.redact)
+		s.load.Unlock()
+		resp.Preview = &p
+		writeJSON(w, resp)
+		return
+	}
+	s.load.Unlock()
 	view := loc.View
 	if view == "" {
 		view = analysis.ViewAuto
@@ -304,4 +331,32 @@ func (s *server) mayDeepen(r *http.Request) bool {
 		return false
 	}
 	return s.opts.MaxDepth <= 0 || s.run.Depth() < s.opts.MaxDepth
+}
+
+// raw streams the file of an entry present on one side only (see Options.ImageCap,
+// AllowDownload): an inline image, or a download.
+func (s *server) raw(w http.ResponseWriter, r *http.Request) {
+	loc := analysis.ParseLocation(r.URL.RawQuery)
+	name := loc.Entry
+	if name == "" {
+		name = r.URL.Query().Get("name")
+	}
+	l, err := s.resolve(loc.Path)
+	if err != nil {
+		s.fail(w, http.StatusNotFound, err)
+		return
+	}
+	e, ok := analysis.FindEntry(s.run.Entries(l, false), name)
+	if !ok {
+		s.fail(w, http.StatusNotFound, analysis.ErrNoSuchEntry)
+		return
+	}
+	s.load.Lock()
+	be, one := e.OneSided()
+	s.load.Unlock()
+	if !one {
+		s.fail(w, http.StatusBadRequest, errors.New("only a file on one side has a raw form"))
+		return
+	}
+	serveRaw(w, r, be, s.opts.ImageCap, s.opts.AllowDownload, s.fail)
 }

@@ -71,30 +71,13 @@ func ParseLocation(s string) Location {
 // comparison runs it may be found later) and with Open's error for one with
 // nowhere to go.
 func (r *Run) LevelAt(path []string) (*Level, error) {
-	r.lmu.Lock()
-	defer r.lmu.Unlock()
-	if r.levels == nil {
-		r.levels = map[string]*Level{}
-	}
-	cur := r.Root()
-	for i, name := range path {
-		key := strings.Join(path[:i+1], "\x00")
-		if l, ok := r.levels[key]; ok {
-			cur = l
-			continue
-		}
+	return r.lc.at(r.Root(), path, func(cur *Level, name string) (*Level, error) {
 		e, ok := findEntry(r.Entries(cur, false), name)
 		if !ok {
 			return nil, ErrNoSuchEntry
 		}
-		l, err := r.Open(cur, e)
-		if err != nil {
-			return nil, err
-		}
-		r.levels[key] = l
-		cur = l
-	}
-	return cur, nil
+		return r.Open(cur, e)
+	})
 }
 
 // Locate is the level and, if loc names one, the entry in it.

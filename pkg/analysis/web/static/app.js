@@ -1,23 +1,43 @@
-// The page is one Alpine component over the JSON API (api/state, api/level,
-// api/entry): the same calls the terminal viewer makes of the analysis package.
+// The diff page: one Alpine component over the JSON API (api/state, api/level,
+// api/entry, api/deepen): the same calls the terminal viewer makes of the analysis
+// package. Moving through levels and keeping the place in the URL is shared.js's.
 function app() {
+  const u = window.unbrick;
   const GLYPH = { changed: '~', renamed: '>', 'renamed-changed': '≈', added: '+', removed: '-', unchanged: '=', dir: '/', note: '', 'metadata-only': '≡' };
-  const q = (params) => params.map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
-  const store = {
-    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
-  };
+  const views = ['auto', 'strings', 'overlap', 'hex'];
   return {
-    views: ['auto', 'strings', 'overlap', 'hex'],
+    ...u.nav({
+      // The place is the level, the entry, the view and whether words are marked.
+      watch: ['view', 'words'],
+      writeExtra: (c, p) => {
+        if (c.view !== 'auto') p.set('view', c.view);
+        if (!c.words) p.set('words', '0');
+      },
+      readExtra: (c, p) => {
+        c._wantSel = !!c.sel; // kept while the comparison has not found it yet
+        c.view = views.includes(p.get('view')) ? p.get('view') : 'auto';
+        if (p.get('words') === '0') c.words = false;
+      },
+      onMove: (c) => { c.cur = null; c._curSig = ''; },
+      onRestore: (c) => { c.cur = null; c._curSig = ''; c.loadInfo = null; },
+      keys: (ev, c) => {
+        switch (ev.key) {
+          case '1': case '2': case '3': case '4': c.setView(views[+ev.key - 1]); return true;
+          case 'w': c.wrap = !c.wrap; return true;
+          case 'D': c.deeper(); return true;
+          case 'd': c.words = !c.words; c.reload(); return true;
+          case 'x': c.hexMore = !c.hexMore; c.setView('hex'); return true;
+        }
+        return false;
+      },
+    }),
+    views,
     state: { title: '', finished: false, summary: '', status: '', err: '' },
-    path: [],
-    entries: [],
     level: { title: '', busy: false },
-    sel: '',
     cur: null,
     view: 'auto',
-    wrap: store.get('wrap', true),
-    words: store.get('words', true),
+    wrap: u.store.get('wrap', true),
+    words: u.store.get('words', true),
     hexMore: false,
     loading: false,
     deepenNote: '',
@@ -27,63 +47,18 @@ function app() {
     _timer: null,
 
     async init() {
-      this.$watch('wrap', (v) => store.set('wrap', v));
-      this.$watch('words', (v) => store.set('words', v));
-      // The place on screen lives in the URL fragment, in the text form of the Go
-      // library's analysis.Location (analysis.ParseLocation reads it), so a link
-      // opens the same level, entry and view, and back/forward move through levels.
-      this.fromFragment(location.hash);
-      this._urlPath = this.path.join('\0');
-      for (const k of ['path', 'sel', 'view', 'words']) this.$watch(k, () => this.toFragment());
-      window.addEventListener('popstate', () => this.restore());
+      this.$watch('wrap', (v) => u.store.set('wrap', v));
+      this.$watch('words', (v) => u.store.set('words', v));
+      // A link opens the same level, entry and view, and back/forward move through levels.
+      this.startUrl();
       await this.poll();
       this._timer = setInterval(() => this.poll(), 700);
-    },
-
-    // fragment is the location in analysis.Location's text form:
-    // p=<level>&p=...&sel=<entry>&view=<view>&words=0
-    fragment() {
-      const u = new URLSearchParams();
-      for (const p of this.path) u.append('p', p);
-      if (this.sel) u.set('sel', this.sel);
-      if (this.view !== 'auto') u.set('view', this.view);
-      if (!this.words) u.set('words', '0');
-      return u.toString();
-    },
-    fromFragment(h) {
-      const u = new URLSearchParams(h.replace(/^[#?]/, ''));
-      this.path = u.getAll('p');
-      this.sel = u.get('sel') || '';
-      this._wantSel = !!this.sel; // kept while the comparison has not found it yet
-      this.view = this.views.includes(u.get('view')) ? u.get('view') : 'auto';
-      if (u.get('words') === '0') this.words = false;
-    },
-    toFragment() {
-      const f = this.fragment();
-      const h = f ? '#' + f : '';
-      if (h === location.hash || (!h && !location.hash)) return;
-      const here = this.path.join('\0');
-      // A new level is a step back can return to; a selection or a view is not.
-      history[here !== this._urlPath ? 'pushState' : 'replaceState'](null, '', location.pathname + location.search + h);
-      this._urlPath = here;
-    },
-    async restore() {
-      this.fromFragment(location.hash);
-      this._urlPath = this.path.join('\0');
-      this.cur = null; this._curSig = ''; this.loadInfo = null;
-      try { await this.loadLevel(); } catch (e) { /* not there (yet) */ }
-    },
-
-    async get(url) {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
     },
 
     // poll refreshes what may have changed while the comparison runs.
     async poll() {
       try {
-        this.state = await this.get('api/state');
+        this.state = await u.get('api/state');
         document.title = (this.state.title || 'Diff') + (this.state.finished ? '' : ' …');
         await this.loadLevel();
       } catch (e) {
@@ -94,7 +69,7 @@ function app() {
     },
 
     async loadLevel() {
-      const lv = await this.get('api/level?' + q(this.path.map((p) => ['p', p])));
+      const lv = await u.get('api/level?' + u.q(this.levelQuery()));
       this.level = { title: lv.title, busy: lv.busy };
       this.entries = lv.entries;
       if (!this.entries.some((e) => e.name === this.sel)) {
@@ -121,7 +96,7 @@ function app() {
       if (again === undefined) this.loadInfo = null;
       this.loading = true;
       try {
-        const r = await this.get('api/entry?' + q([...this.path.map((p) => ['p', p]), ['name', e.name], ['view', this.view],
+        const r = await u.get('api/entry?' + u.q([...this.levelQuery(), ['name', e.name], ['view', this.view],
           ['words', this.words ? '1' : '0'], ['more', this.hexMore ? '1' : '0']]));
         if (seq !== this._seq) return; // a slower answer for an entry the cursor left is dropped
         if (r.loading) {
@@ -151,19 +126,9 @@ function app() {
     },
     select(e) { this.sel = e.name; this._curSig = ''; return this.loadLevel(); },
     async open(e) {
-      if (e.kind === 'note' || (!e.hasKids && e.kind !== 'dir' && !(this.cur && this.cur.container && this.cur.entry.name === e.name))) return;
-      this.path = [...this.path, e.name];
-      this.sel = ''; this.cur = null; this._curSig = ''; this.entries = [];
-      await this.loadLevel();
+      if (e.kind === 'note' || !this.canOpen(e)) return;
+      await this.enter(e.name);
     },
-    async up() {
-      if (!this.path.length) return;
-      const from = this.path[this.path.length - 1];
-      this.path = this.path.slice(0, -1);
-      this.sel = from; this.cur = null; this._curSig = '';
-      await this.loadLevel();
-    },
-    async goTo(n) { while (this.path.length > n) await this.up(); },
     setView(v) { this.view = v; return this.reload(); },
 
     // deeper compares one more container level: the pairs the first pass stopped at
@@ -181,38 +146,21 @@ function app() {
       }
     },
 
-    key(ev) {
-      if (ev.target.closest('input,textarea') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-      const i = this.entries.findIndex((e) => e.name === this.sel);
-      const move = (d) => { const e = this.entries[Math.max(0, Math.min(this.entries.length - 1, i + d))]; if (e) { this.select(e); this.$nextTick(() => document.querySelector('.row.sel')?.scrollIntoView({ block: 'nearest' })); } };
-      switch (ev.key) {
-        case 'j': case 'ArrowDown': move(1); break;
-        case 'k': case 'ArrowUp': move(-1); break;
-        case 'Enter': case 'l': case 'ArrowRight': if (this.entries[i]) this.open(this.entries[i]); break;
-        case 'h': case 'ArrowLeft': case 'Backspace': this.up(); break;
-        case '1': case '2': case '3': case '4': this.setView(this.views[+ev.key - 1]); break;
-        case 'w': this.wrap = !this.wrap; break;
-        case 'D': this.deeper(); break;
-        case 'd': this.words = !this.words; this.reload(); break;
-        case 'x': this.hexMore = !this.hexMore; this.setView('hex'); break;
-        default: return;
-      }
-      ev.preventDefault();
+    // A file on one side only is previewed as browse previews any file.
+    rawUrl(download) {
+      if (!this.cur) return '#';
+      return 'api/raw?' + u.q([...this.levelQuery(), ['name', this.cur.entry.name], ...(download ? [['download', '1']] : [])]);
     },
+    previewHTML() { return this.cur && this.cur.preview ? u.previewHTML(this.cur.preview, (d) => this.rawUrl(d)) : ''; },
 
     // ---- formatting ----
     rootTitle() { return this.state.title || 'top'; },
-    trim(n) { return n.replace(/\/$/, ''); },
+    trim: u.trim,
+    size: u.size,
+    count: u.count,
+    pct: u.pct,
     glyph(k) { return GLYPH[k] ?? ''; },
-    size(n) {
-      if (n < 1024) return n + ' B';
-      const u = 'KMGT'; let e = 0; let d = 1024;
-      while (n / d >= 1024 && e < 3) { d *= 1024; e++; }
-      return (n / d).toFixed(1) + ' ' + u[e] + 'iB';
-    },
-    count(n) { return n + (n === 1 ? ' byte' : ' bytes'); },
     bytesN(n) { return this.count(n) + (n === 1 ? ' differs' : ' differ'); },
-    pct(part, whole) { return whole ? Math.round(100 * part / whole) + '%' : '—'; },
     opName(op) { return { '+': 'add', '-': 'del', '@': 'hunk', ' ': 'ctx' }[op] || 'ctx'; },
     segs(l) { return l.segs || [{ t: l.text }]; },
     partial(d) {

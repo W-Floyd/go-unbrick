@@ -210,7 +210,8 @@ func TestOneSideAndDirectoryEntries(t *testing.T) {
 	srv := serve(t)
 	q := url.Values{"p": {"sub/"}}
 	out := entry(t, srv, "only.txt", "auto", q)
-	if lines, _ := dig(out, "detail", "oneSide", "lines").([]any); len(lines) != 1 || lines[0] != "gone" {
+	// A file on one side only is previewed as browse previews any file.
+	if dig(out, "preview", "kind") != "text" || dig(out, "preview", "text") != "gone\n" || dig(out, "detail") != nil {
 		t.Errorf("one side: %v", out)
 	}
 	if d := entry(t, srv, "sub/", "auto", nil); dig(d, "detail") != nil || dig(d, "entry", "kind") != "dir" {
@@ -371,5 +372,37 @@ func TestHandlerControlsForUntrustedCallers(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/level?p=nope%2F", nil))
 	if rec.Code != 404 {
 		t.Errorf("%d", rec.Code)
+	}
+}
+
+// A picture on one side only is shown as a picture, and served by the same raw
+// route as browse's, under the same download gate.
+func TestOneSidedImageAndDownload(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write(t, b, "new.png", png1x1)
+	write(t, a, "keep.txt", []byte("x\n"))
+	write(t, b, "keep.txt", []byte("y\n"))
+	run := analysis.Start(analysis.Config{A: a, B: b, Depth: 1})
+	<-run.Done()
+	srv := httptest.NewServer(Handler(run, Options{AllowDownload: func(*http.Request) bool { return false }}))
+	defer srv.Close()
+	out := entry(t, srv, "new.png", "auto", nil)
+	if dig(out, "preview", "kind") != "image" {
+		t.Fatalf("%v", out)
+	}
+	resp, err := http.Get(srv.URL + "/api/raw?name=new.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("image: %s %s", resp.Status, resp.Header.Get("Content-Type"))
+	}
+	if r, _ := http.Get(srv.URL + "/api/raw?name=new.png&download=1"); r.StatusCode != 403 {
+		t.Errorf("download gate: %s", r.Status)
+	}
+	// A pair has no raw form.
+	if r, _ := http.Get(srv.URL + "/api/raw?name=keep.txt"); r.StatusCode != 400 {
+		t.Errorf("raw of a pair: %s", r.Status)
 	}
 }

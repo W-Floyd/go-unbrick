@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Diff</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="chroma.css">
+<script defer src="shared.js"></script>
 <script defer src="app.js"></script>
 <script defer src="alpine.min.js"></script>
 </head>
@@ -118,16 +120,12 @@
           </template>
           <template x-if="cur.detail && cur.detail.identical"><p>identical content</p></template>
 
-          <template x-if="cur.detail && cur.detail.oneSide">
+          <template x-if="cur.preview">
             <div>
-              <template x-if="cur.detail.oneSide.text">
-                <pre class="lines"><template x-for="(ln, i) in cur.detail.oneSide.lines"><div class="ln"><span class="no" x-text="i + 1"></span><span x-text="ln"></span></div></template></pre>
-              </template>
-              <template x-if="!cur.detail.oneSide.text">
-                <div><p class="dim">binary; the printable strings in it:</p>
-                <pre class="lines"><template x-for="s in cur.detail.oneSide.strings"><div class="ln"><span x-text="s"></span></div></template></pre></div>
-              </template>
-              <p class="dim" x-show="cur.detail.oneSide.more">… more</p>
+              <p class="err" x-show="cur.preview.err" x-text="cur.preview.err"></p>
+              <p class="dim">only in <span x-text="cur.entry.kind === 'added' ? 'B' : 'A'"></span>: <span x-text="cur.preview.entry.label"></span>
+                <a class="dl" :href="rawUrl(true)" download>download</a></p>
+              <div x-html="previewHTML()"></div>
             </div>
           </template>
 

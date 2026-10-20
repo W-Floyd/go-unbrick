@@ -65,3 +65,16 @@ func TestAnalyseViewsAreSelfContained(t *testing.T) {
 		t.Errorf("strings view: %+v", d)
 	}
 }
+
+// A page asks the length of these, so they are JSON arrays even when empty.
+func TestEmptyListsAreNotNullInJSON(t *testing.T) {
+	d := Analyse([]byte("same\n"), []byte("same\n"), 5, 5, Options{})
+	b, _ := json.Marshal(d)
+	if !bytes.Contains(b, []byte(`"lines":[]`)) || bytes.Contains(b, []byte(`null`)) {
+		t.Errorf("%s", b)
+	}
+	m, _ := json.Marshal(CompareMeta(nil, nil))
+	if bytes.Contains(m, []byte(`null`)) {
+		t.Errorf("%s", m)
+	}
+}

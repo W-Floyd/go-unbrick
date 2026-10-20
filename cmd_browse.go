@@ -4,14 +4,12 @@ import (
 	"bytes"
 	cl "container/list" // aliased: "list" below is charm.land/bubbles/v2/list, the TUI widget - unrelated
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/jpeg" // registers the JPEG decoder with image.Decode; never called directly
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -21,18 +19,18 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/NurramoX/streakboard/kitty"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
-	"github.com/NurramoX/streakboard/kitty"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/iterm2"
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
-	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // browse is the one TUI in go-unbrick: everything else (ls, tree, extract,
@@ -41,6 +39,7 @@ import (
 // directory on disk, and anything carve can open inside a file.
 func newBrowseCmd() *cobra.Command {
 	var skip []string
+	var webAddr string
 	c := &cobra.Command{
 		Use:   "browse <file | dir | url>",
 		Short: "interactively navigate a directory or anything carve can open inside a file",
@@ -79,6 +78,9 @@ There is no flat/non-interactive mode for this command; it requires a real
 terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if webAddr != "" {
+				return runBrowseWeb(args[0], skip, webAddr)
+			}
 			if !isInteractive() {
 				return fmt.Errorf("browse needs an interactive terminal (stdin and stdout); use ls/tree/recon/extract instead")
 			}
@@ -114,6 +116,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 		},
 	}
 	c.Flags().StringSliceVar(&skip, "skip", nil, "directory listings: leave files out (they're never listed, so never preemptively reconned either): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated - same values as 'recon --skip'")
+	c.Flags().StringVar(&webAddr, "web", "", "serve the browser as a web page on this address instead, e.g. 127.0.0.1:8765 (port 0 picks one)")
 	return addSecrets(addFullDownload(c))
 }
 
@@ -253,8 +256,7 @@ func (browseDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 // a frame's contents came from carve.Node.Children.
 type browseFrame struct {
 	title    string
-	osDir    string
-	node     *carve.Node
+	level    *analysis.BrowseLevel
 	selected int // index to restore on ascend - set by descend() just before leaving this frame
 }
 
@@ -286,9 +288,9 @@ type browseModel struct {
 	// recon queue's worker goroutine (Init does that, not newBrowseModel),
 	// so os.Stdout is still reliably the real terminal here.
 	termOut *os.File
-	status             string
-	width              int
-	height             int
+	status  string
+	width   int
+	height  int
 }
 
 func newBrowseModel(input string, skip []string) (*browseModel, error) {
@@ -1011,29 +1013,9 @@ func loadImage(e browseEntry, key string, graphics graphicsProtocol, oldID, newI
 }
 
 // readImageBytes reads up to capBytes+1 of e's content to detect whether it
-// was truncated, from disk or from its carve.Node - whichever e actually is.
+// exceeds the cap.
 func readImageBytes(e browseEntry, capBytes int64) (data []byte, truncated bool, err error) {
-	var r io.ReadCloser
-	switch {
-	case e.osPath != "":
-		r, err = infile.Open(e.osPath)
-	case e.node != nil:
-		r, err = e.node.Reader()
-	default:
-		return nil, false, fmt.Errorf("%s has no readable content", e.name)
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	defer r.Close()
-	data, err = io.ReadAll(io.LimitReader(r, capBytes+1))
-	if err != nil {
-		return nil, false, err
-	}
-	if int64(len(data)) > capBytes {
-		return data[:capBytes], true, nil
-	}
-	return data, false, nil
+	return analysis.ReadEntry(e.core(), capBytes)
 }
 
 // debugImagePreview appends one diagnostic line per image render to the file
@@ -1139,77 +1121,45 @@ func (m *browseModel) enqueueAll(items []list.Item) {
 
 // pushDirFrame lists an OS directory's entries as the new top frame.
 func (m *browseModel) pushDirFrame(dir string) error {
-	des, err := infile.ReadDir(dir)
+	l, err := analysis.ListDir(dir, m.skip)
 	if err != nil {
 		return err
 	}
-	sort.Slice(des, func(i, j int) bool { return des[i].Name() < des[j].Name() })
-	var filePaths []string
-	for _, d := range des {
-		if !d.IsDir() {
-			filePaths = append(filePaths, infile.Join(dir, d.Name()))
-		}
-	}
-	// applySkips prints a "Skipped navi: N file(s), ..." line straight to
-	// os.Stdout, meant for recon's flat report; here it would just corrupt
-	// bubbletea's screen, so it's captured and dropped rather than shown -
-	// the files simply aren't in the listing, which says the same thing.
-	var kept []string
-	captureStdout(func() error { kept = applySkips(filePaths, m.skip); return nil }) //nolint:errcheck
-	keep := map[string]bool{}
-	for _, p := range kept {
-		keep[p] = true
-	}
-	items := make([]list.Item, 0, len(des))
-	for _, d := range des {
-		if d.Name() != "." && strings.HasPrefix(d.Name(), ".") {
-			continue
-		}
-		full := infile.Join(dir, d.Name())
-		if d.IsDir() {
-			items = append(items, browseEntry{name: d.Name(), size: -1, dir: true, osPath: full})
-			continue
-		}
-		if !keep[full] {
-			continue
-		}
-		size := int64(-1)
-		if fi, err := d.Info(); err == nil {
-			size = fi.Size()
-		}
-		label, isText, isImage := fileHeadLabel(full)
-		items = append(items, browseEntry{name: d.Name(), size: size, label: label, isText: isText, isImage: isImage, osPath: full})
-	}
-	m.frames = append(m.frames, browseFrame{title: filepath.Base(dir), osDir: dir})
-	m.finishFrame(items)
+	m.pushLevel(l)
 	return nil
 }
 
 // pushNodeFrame lists a carve.Node's children as the new top frame.
 func (m *browseModel) pushNodeFrame(n *carve.Node) error {
-	_, kids, err := n.Children()
+	l, err := analysis.ListNode(n)
 	if err != nil {
 		return err
 	}
-	items := make([]list.Item, 0, len(kids))
-	for _, k := range kids {
-		label := typeLabel(k.Name, k.Head())
-		isContainer := false
-		if sub, ok := carve.Format(k); ok {
-			label = sub.Kind
-			isContainer = true
-		}
-		isText := looksLikeText(k.Name, k.Head())
-		isImage := looksLikeImage(k.Head())
-		items = append(items, browseEntry{name: k.Name, size: k.Size, label: label, isContainer: isContainer, isText: isText, isImage: isImage, node: k})
-	}
-	title := n.Name
-	if title == "" {
-		title = "/"
-	}
-	m.frames = append(m.frames, browseFrame{title: title, node: n})
-	m.finishFrame(items)
+	m.pushLevel(l)
 	return nil
+}
+
+// pushLevel makes a listed level (analysis.ListDir, ListNode, Open) the new top
+// frame.
+func (m *browseModel) pushLevel(l *analysis.BrowseLevel) {
+	items := make([]list.Item, 0, len(l.Entries))
+	for _, e := range l.Entries {
+		items = append(items, entryOf(e))
+	}
+	m.frames = append(m.frames, browseFrame{title: l.Title, level: l})
+	m.finishFrame(items)
+}
+
+// entryOf is a listed entry as the list holds it.
+func entryOf(e analysis.BrowseEntry) browseEntry {
+	return browseEntry{name: e.Name, size: e.Size, label: e.Label, dir: e.Dir, isContainer: e.Container,
+		isText: e.Text, isImage: e.Image, osPath: e.OSPath, node: e.Node}
+}
+
+// core is the entry as the analysis package knows it.
+func (e browseEntry) core() analysis.BrowseEntry {
+	return analysis.BrowseEntry{Name: e.name, Size: e.size, Label: e.label, Dir: e.dir, Container: e.isContainer,
+		Text: e.isText, Image: e.isImage, OSPath: e.osPath, Node: e.node}
 }
 
 // finishFrame prepends the synthetic ".." row (every frame but the root one
@@ -1249,26 +1199,14 @@ func (m *browseModel) descend() {
 	if len(m.frames) > 0 {
 		m.frames[len(m.frames)-1].selected = m.list.Index()
 	}
+	l, err := analysis.Open(e.core(), m.skip)
 	switch {
-	case e.dir:
-		if err := m.pushDirFrame(e.osPath); err != nil {
-			m.setStatus(err.Error())
-		}
-	case e.osPath != "":
-		root, err := carveRoot(e.osPath)
-		if err != nil {
-			m.setStatus(err.Error())
-			return
-		}
-		if err := m.pushNodeFrame(root); err != nil {
-			m.setStatus(e.name + ": " + err.Error())
-		}
-	case e.node != nil && e.isContainer:
-		if err := m.pushNodeFrame(e.node); err != nil {
-			m.setStatus(e.name + ": " + err.Error())
-		}
+	case err != nil && e.dir:
+		m.setStatus(err.Error())
+	case err != nil:
+		m.setStatus(e.name + ": " + err.Error())
 	default:
-		m.setStatus(e.name + ": not a container (" + e.label + ")")
+		m.pushLevel(l)
 	}
 }
 
@@ -1277,33 +1215,18 @@ func (m *browseModel) ascend() {
 		return
 	}
 	m.frames = m.frames[:len(m.frames)-1]
-	f := m.current() // a copy: rebuild*Frame below pops and re-pushes the slice entry, but f.selected survives in this local copy
-	var err error
-	if f.node != nil {
-		err = m.rebuildNodeFrame(f.node)
-	} else {
-		err = m.rebuildDirFrame(f.osDir)
-	}
+	f := m.current() // a copy: the frame is popped and re-pushed below, but f.selected survives in this local copy
+	l, err := f.level.Refresh(m.skip)
 	if err != nil {
 		m.setStatus(err.Error())
 		return
 	}
+	m.frames = m.frames[:len(m.frames)-1]
+	m.pushLevel(l)
 	if f.selected >= 0 && f.selected < len(m.list.Items()) {
 		m.list.Select(f.selected)
 		m.onSelectionChanged()
 	}
-}
-
-// rebuildDirFrame/rebuildNodeFrame redraw a frame already on the stack
-// (ascend popped back to it) without pushing a duplicate.
-func (m *browseModel) rebuildDirFrame(dir string) error {
-	m.frames = m.frames[:len(m.frames)-1]
-	return m.pushDirFrame(dir)
-}
-
-func (m *browseModel) rebuildNodeFrame(n *carve.Node) error {
-	m.frames = m.frames[:len(m.frames)-1]
-	return m.pushNodeFrame(n)
 }
 
 // reconJob is one entry's recon work: a real OS path, or a package member
@@ -1544,53 +1467,19 @@ func (m *browseModel) extract() {
 	m.setStatus("extracted to ./" + dst)
 }
 
-// prettyPrint reformats content for a format browse knows how to, by
-// extension first and then by sniffing the content itself (a renamed or
-// extensionless .json still opens brace-first). ok is false for anything
-// else - a plain text file just shows as its (already readable) self, not
-// "pretty-printed" vs. "raw" versions of the same bytes.
+// prettyPrint, readForPreview and the content gates are the analysis package's,
+// shared with the web browser.
 func prettyPrint(name string, content []byte) ([]byte, bool) {
-	trimmed := bytes.TrimSpace(content)
-	looksJSON := len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
-	if strings.ToLower(filepath.Ext(name)) != ".json" && !looksJSON {
-		return nil, false
-	}
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, content, "", "  "); err != nil {
-		return nil, false
-	}
-	return buf.Bytes(), true
+	return analysis.PrettyPrint(name, content)
 }
 
 // textPreviewCap bounds how much of a text file showPreview reads: enough
 // for a real look at it, not so much that a mislabeled multi-GB file (text
 // detection is a heuristic on the first 8KB, not a guarantee) stalls the UI.
-const textPreviewCap = 256 << 10
+const textPreviewCap = analysis.PreviewCap
 
-// readForPreview reads up to textPreviewCap bytes of e's content, from disk
-// or from its carve.Node - whichever e actually is.
 func readForPreview(e browseEntry) (content []byte, truncated bool, err error) {
-	var r io.ReadCloser
-	switch {
-	case e.osPath != "":
-		r, err = infile.Open(e.osPath)
-	case e.node != nil:
-		r, err = e.node.Reader()
-	default:
-		return nil, false, fmt.Errorf("%s has no readable content", e.name)
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	defer r.Close()
-	content, err = io.ReadAll(io.LimitReader(r, textPreviewCap+1))
-	if err != nil {
-		return nil, false, err
-	}
-	if len(content) > textPreviewCap {
-		return content[:textPreviewCap], true, nil
-	}
-	return content, false, nil
+	return analysis.ReadEntry(e.core(), textPreviewCap)
 }
 
 // highlightText renders content with chroma's syntax highlighting, matched
@@ -1619,52 +1508,10 @@ func highlightText(name string, content []byte) string {
 	return buf.String()
 }
 
-// fileHeadLabel reads just enough of a plain OS file to type-label it, the
-// way recon and ls already do — cheap even for a multi-GB file.
 func fileHeadLabel(path string) (label string, isText, isImage bool) {
-	f, err := infile.Open(path)
-	if err != nil {
-		return "unknown", false, false
-	}
-	defer f.Close()
-	head := make([]byte, 8192)
-	n, _ := f.Read(head)
-	head = head[:n]
-	return typeLabel(filepath.Base(path), head), looksLikeText(path, head), looksLikeImage(head)
+	return analysis.FileHeadLabel(path)
 }
 
-// looksLikeImage is the isImage gate: a real decodable raster format
-// (JPEG/PNG - what the image preview path can actually re-encode or hand
-// the terminal directly), by content, not extension - a renamed non-image
-// file with a ".jpg" extension would otherwise fail to decode at preview
-// time instead of just not matching here.
-func looksLikeImage(head []byte) bool {
-	switch filetype.Detect(head) {
-	case filetype.JPEG, filetype.PNG:
-		return true
-	}
-	return false
-}
+func looksLikeImage(head []byte) bool { return analysis.LooksLikeImage(head) }
 
-// textExts names extensions worth previewing as text even when
-// filetype.Text's content heuristic says no - a real .ini/.log/.cfg can have
-// one stray non-UTF8 or control byte (a mis-encoded string, a CRLF artifact,
-// one binary-ish line in an otherwise-text log) and that heuristic rejects
-// the whole file over it. The name already says "this is text" more
-// reliably than a byte-level scan of just the head can refute.
-var textExts = map[string]bool{
-	".txt": true, ".ini": true, ".cfg": true, ".conf": true, ".config": true,
-	".log": true, ".json": true, ".xml": true, ".yaml": true, ".yml": true,
-	".md": true, ".markdown": true, ".csv": true, ".tsv": true, ".properties": true,
-	".rc": true, ".env": true, ".sh": true, ".bash": true, ".inf": true,
-}
-
-// looksLikeText is the isText gate shared by OS files and carve.Node
-// members: a real content check first, a known text extension as a
-// fallback for what that check's strict UTF-8/control-byte rule rejects.
-func looksLikeText(name string, head []byte) bool {
-	if ok, _ := filetype.Text(head); ok {
-		return true
-	}
-	return textExts[strings.ToLower(filepath.Ext(name))]
-}
+func looksLikeText(name string, head []byte) bool { return analysis.LooksLikeText(name, head) }

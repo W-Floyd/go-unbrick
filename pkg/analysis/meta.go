@@ -113,7 +113,8 @@ func (r MetaReport) Identical() bool {
 // CompareMeta pairs members by name (a name that repeats is paired in order)
 // and lists what differs.
 func CompareMeta(a, b []MetaEntry) MetaReport {
-	r := MetaReport{ByField: map[string]int{}}
+	// Slices start empty, not nil: they are JSON arrays a page asks the length of.
+	r := MetaReport{ByField: map[string]int{}, Diffs: []MetaDiff{}, OnlyA: []string{}, OnlyB: []string{}}
 	byName := map[string][]MetaEntry{}
 	for _, e := range b {
 		byName[e.Name] = append(byName[e.Name], e)

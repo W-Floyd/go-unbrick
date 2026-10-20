@@ -16,9 +16,16 @@ import (
 )
 
 // runDiffWeb serves the comparison as a web page, the same views as diff -i, until
-// interrupted. The page shows the contents of the inputs, so it is for loopback
-// unless the address says otherwise.
+// interrupted.
 func runDiffWeb(cfg analysis.Config, addr string) error {
+	run := analysis.Start(cfg)
+	title := fmt.Sprintf("%s  vs  %s", infile.Base(cfg.A), infile.Base(cfg.B))
+	return serveWeb(addr, web.Handler(run, web.Options{Title: title}))
+}
+
+// serveWeb serves h on addr until interrupted. The pages show the contents of the
+// inputs, so it is for loopback unless the address says otherwise.
+func serveWeb(addr string, h http.Handler) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -26,9 +33,7 @@ func runDiffWeb(cfg analysis.Config, addr string) error {
 	if host, _, _ := net.SplitHostPort(ln.Addr().String()); !net.ParseIP(host).IsLoopback() {
 		fmt.Fprintln(os.Stderr, "warning: listening beyond this machine; anyone who can connect can read the inputs' contents")
 	}
-	run := analysis.Start(cfg)
-	title := fmt.Sprintf("%s  vs  %s", infile.Base(cfg.A), infile.Base(cfg.B))
-	srv := &http.Server{Handler: web.Handler(run, web.Options{Title: title})}
+	srv := &http.Server{Handler: h}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	go func() {

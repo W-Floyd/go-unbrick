@@ -13,6 +13,14 @@ import (
 func init() {
 	analysis.OpenRoot = carveRoot
 	analysis.TypeLabel = typeLabel
+	// applySkips prints a "Skipped navi: ..." line straight to stdout, meant for
+	// recon's flat report; in a listing it is captured and dropped: the files
+	// simply are not there, which says the same thing.
+	analysis.SkipFilter = func(paths, skip []string) []string {
+		kept := paths
+		captureStdout(func() error { kept = applySkips(paths, skip); return nil }) //nolint:errcheck
+		return kept
+	}
 }
 
 // ---- diff ----

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browse</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="chroma.css">
+<script defer src="shared.js"></script>
+<script defer src="browse.js"></script>
+<script defer src="alpine.min.js"></script>
+</head>
+<body x-data="browse()" x-init="init()" @keydown.window="key($event)">
+<header>
+  <strong x-text="info.title || 'Browse'"></strong>
+  <span class="err" x-show="error" x-text="error"></span>
+</header>
+
+<nav class="crumbs">
+  <a href="#" @click.prevent="goTo(0)" x-text="info.title || 'top'"></a>
+  <template x-for="(name, i) in path" :key="i">
+    <span><span class="sep">/</span><a href="#" @click.prevent="goTo(i + 1)" x-text="trim(name)"></a></span>
+  </template>
+</nav>
+
+<main>
+  <section class="list" role="listbox" aria-label="Entries">
+    <div class="row up" x-show="path.length" @click="up()">↑ ..</div>
+    <template x-for="e in entries" :key="e.name + e.size">
+      <div class="row" :class="'b-' + kind(e) + (e.name === sel ? ' sel' : '')" role="option"
+           :aria-selected="e.name === sel" @click="select(e)" @dblclick="open(e)">
+        <span class="glyph" x-text="glyph(e)"></span>
+        <span class="name" x-text="e.name"></span>
+        <span class="note" x-text="(e.size >= 0 ? size(e.size) + '  ' : '') + (e.dir ? 'directory' : e.label)"></span>
+        <button class="go" x-show="e.openable" title="open" aria-label="open" @click.stop="select(e).then(() => open(e))">›</button>
+      </div>
+    </template>
+    <p class="empty" x-show="!entries.length && !loading">empty</p>
+  </section>
+
+  <section class="pane">
+    <div class="tabs">
+      <label x-show="cur && cur.canPretty"><input type="checkbox" x-model="pretty" @change="reload()"> pretty</label>
+      <label x-show="cur && cur.kind === 'text'"><input type="checkbox" x-model="wrap"> wrap</label>
+      <a class="dl" x-show="cur && cur.kind !== 'dir'" :href="rawUrl(true)" download>download</a>
+      <span class="loading" x-show="loading">reading…</span>
+    </div>
+    <div class="detail" :class="{wrap: wrap}">
+      <template x-if="!cur"><p class="empty">Select an entry.</p></template>
+      <template x-if="cur">
+        <div>
+          <h2 x-text="cur.entry.name"></h2>
+          <p class="dim" x-text="(cur.entry.size >= 0 ? size(cur.entry.size) + '  ' : '') + (cur.entry.dir ? 'directory' : cur.entry.label)"></p>
+          <p x-show="note" class="err" x-text="note"></p>
+
+          <template x-if="cur.kind === 'dir'"><p class="dim">double-click or Enter to go in</p></template>
+          <template x-if="cur.entry.openable && cur.kind !== 'dir'"><button class="open" @click="open(cur.entry)">open</button></template>
+          <p class="err" x-show="cur.err" x-text="cur.err"></p>
+
+          <template x-if="cur.recon">
+            <div>
+              <h3>recon <span class="dim" x-show="cur.recon.state === 'running'"><span class="spin"></span> running in the background…</span></h3>
+              <p class="err" x-show="cur.recon.err" x-text="cur.recon.err"></p>
+              <pre class="recon" x-show="cur.recon.text" x-text="cur.recon.text"></pre>
+            </div>
+          </template>
+
+          <div x-html="preview()"></div>
+        </div>
+      </template>
+    </div>
+  </section>
+</main>
+<footer class="dim">j/k move · Enter/l in · h/Backspace out · w wrap · p pretty</footer>
+</body>
+</html>
