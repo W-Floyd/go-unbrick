@@ -2,7 +2,6 @@ package infile
 
 import (
 	"fmt"
-	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -18,6 +18,10 @@ import (
 // SSHDial connects to "user@host[:port]". It is set by the command layer, which
 // owns authentication and host-key policy; infile only speaks SFTP over it.
 var SSHDial func(target string) (*ssh.Client, error)
+
+// OnSSHRead, when set, is told of each block fetched over SFTP: its bytes and
+// how long the round trip took. For profiling.
+var OnSSHRead func(n int, d time.Duration)
 
 // IsSSH reports whether p is an ssh://[user@]host[:port]/path URL, read over SFTP.
 func IsSSH(p string) bool { return strings.HasPrefix(p, "ssh://") }
@@ -81,85 +85,6 @@ func sftpFor(p string) (*sftp.Client, string, error) {
 		sshConns[target] = c
 	}
 	return c.cl, remote, c.err
-}
-
-// blockSize is the unit sshFile caches. Format sniffing issues many small
-// reads (a zip directory, member heads); one round trip per block, not per read.
-const (
-	blockSize = 1 << 20
-	maxBlocks = 64
-)
-
-// sshFile is a remote file with an in-memory block cache.
-type sshFile struct {
-	f    *sftp.File
-	size int64
-
-	mu     sync.Mutex
-	blocks map[int64][]byte
-}
-
-func (s *sshFile) block(i int64) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if b, ok := s.blocks[i]; ok {
-		return b, nil
-	}
-	off := i * blockSize
-	b := make([]byte, min(blockSize, s.size-off))
-	n, err := s.f.ReadAt(b, off)
-	if err != nil && !(err == io.EOF && n == len(b)) {
-		return nil, err
-	}
-	if len(s.blocks) >= maxBlocks {
-		for k := range s.blocks {
-			delete(s.blocks, k)
-			break
-		}
-	}
-	s.blocks[i] = b
-	return b, nil
-}
-
-func (s *sshFile) ReadAt(p []byte, off int64) (int, error) {
-	n := 0
-	for n < len(p) && off < s.size {
-		b, err := s.block(off / blockSize)
-		if err != nil {
-			return n, err
-		}
-		c := copy(p[n:], b[off%blockSize:])
-		n += c
-		off += int64(c)
-	}
-	if n < len(p) {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
-func (s *sshFile) Close() error { return s.f.Close() }
-
-func openSSH(p string) (*File, error) {
-	cl, rp, err := sftpFor(p)
-	if err != nil {
-		return nil, err
-	}
-	f, err := cl.Open(rp)
-	if err != nil {
-		return nil, err
-	}
-	fi, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	if fi.IsDir() {
-		f.Close()
-		return nil, fmt.Errorf("%s is a directory", p)
-	}
-	sf := &sshFile{f: f, size: fi.Size(), blocks: map[int64][]byte{}}
-	return &File{SectionReader: io.NewSectionReader(sf, 0, sf.size), name: p, closer: sf}, nil
 }
 
 func statSSH(p string) (fs.FileInfo, error) {
@@ -253,4 +178,33 @@ func Join(dir, name string) string {
 		return dir + "/" + name
 	}
 	return sshURL(dir, path.Join(u.Path, name))
+}
+
+// Identity names p's current content for caching: its location plus whatever
+// changes when the bytes do (size and mtime; an http object's ETag or
+// Last-Modified). "" when it cannot be determined, which disables caching.
+func Identity(p string) string {
+	switch {
+	case isHTTP(p):
+		r, err := openRemote(p)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("%s|%d|%s|%s", r.meta.URL, r.size, r.meta.ETag, r.meta.LastModified)
+	case IsSSH(p):
+		fi, err := statSSH(p)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("%s|%d|%d", p, fi.Size(), fi.ModTime().UnixNano())
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return ""
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s|%d|%d", abs, fi.Size(), fi.ModTime().UnixNano())
 }
