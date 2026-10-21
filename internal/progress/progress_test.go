@@ -17,3 +17,13 @@ func TestTask(t *testing.T) {
 		t.Error("still active")
 	}
 }
+
+func TestReset(t *testing.T) {
+	task := Begin("again", 100)
+	defer task.End()
+	task.Add(80)
+	task.Reset()
+	if a := Active(); len(a) != 1 || a[0].Done != 0 {
+		t.Errorf("%+v", a)
+	}
+}

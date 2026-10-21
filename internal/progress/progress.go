@@ -36,6 +36,9 @@ func Begin(label string, total int64) *Task {
 // Add counts n units done.
 func (t *Task) Add(n int64) { t.done.Add(n) }
 
+// Reset starts the count again, for work that began over.
+func (t *Task) Reset() { t.done.Store(0) }
+
 // End removes the task.
 func (t *Task) End() {
 	mu.Lock()
