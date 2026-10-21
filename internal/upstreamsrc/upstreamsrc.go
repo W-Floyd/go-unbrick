@@ -8,6 +8,7 @@ package upstreamsrc
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
@@ -355,16 +357,53 @@ func (s *Snapshot) gitProgress(label string, args ...string) error {
 	return nil
 }
 
+// gitTimeout bounds a git command that is not a long fetch: a stalled server must
+// not leave the whole run waiting with nothing on screen.
+const gitTimeout = 3 * time.Minute
+
 func (s *Snapshot) git(args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"--git-dir", s.dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	return s.gitEnv(nil, args...)
+}
+
+func (s *Snapshot) gitEnv(env []string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir", s.dir}, args...)...)
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("git %s: timed out after %s", args[0], gitTimeout)
+		}
 		return nil, fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+// Prefetch brings in the blobs shas name, in batches, from origin. It stops at the
+// first batch the server will not send (many will not send an object by id),
+// leaving the blobs unfetched; Blob would then fetch them one at a time, which is
+// BlobLocal's reason to exist.
+func (s *Snapshot) Prefetch(label string, shas []string) error {
+	for len(shas) > 0 {
+		chunk := shas[:min(len(shas), 100)]
+		shas = shas[len(chunk):]
+		if err := s.gitProgress(label, append([]string{"fetch", "--no-tags", "origin"}, chunk...)...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BlobLocal is the content of a blob already held, without ever fetching it: ok is
+// false for one that is not. A partial clone's Blob fetches each missing object
+// from origin on its own, a round trip apiece; this is for the many-file checks
+// where that would not finish.
+func (s *Snapshot) BlobLocal(sha string) (b []byte, ok bool) {
+	out, err := s.gitEnv([]string{"GIT_NO_LAZY_FETCH=1"}, "cat-file", "blob", sha)
+	return out, err == nil
 }
 
 // Sizes fetches the blobs shas name (in batches, from origin) and returns each

@@ -175,3 +175,33 @@ func TestHistoryBetweenTags(t *testing.T) {
 		t.Errorf("describe %q %q", date, subject)
 	}
 }
+
+func TestPrefetchAndBlobLocal(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	origin := t.TempDir()
+	run(t, origin, "init", "-q", "-b", "main")
+	run(t, origin, "config", "uploadpack.allowFilter", "true")
+	run(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	if err := os.WriteFile(filepath.Join(origin, "a.c"), []byte("hello\r\nworld\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, origin, "add", ".")
+	run(t, origin, "commit", "-q", "-m", "one")
+	s, err := Open("file://"+origin, "main", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := s.Files["a.c"]
+	// The tree is held; the blob is not, and asking for it must not go to origin.
+	if _, ok := s.BlobLocal(sha); ok {
+		t.Fatal("a blob nobody fetched was there")
+	}
+	if err := s.Prefetch("test", []string{sha}); err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := s.BlobLocal(sha); !ok || string(b) != "hello\r\nworld\r\n" {
+		t.Errorf("after prefetch: %q %v", b, ok)
+	}
+}

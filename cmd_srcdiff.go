@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -285,6 +286,11 @@ func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error 
 			fmt.Printf("%s: %s %s is a large upstream; skipped (--heavy)\n", c.Root, c.Rule.ID, c.Ref)
 		default:
 			tag := c.Ref
+			// OSV is asked by tag; a project pinned to a commit is asked by the release
+			// its version names, when it has one.
+			if commitID.MatchString(tag) && c.Version != "" {
+				tag = c.Rule.TagFor(c.Version)
+			}
 			// A snapshot is usually of some commit between releases: look there, unless
 			// a notice has already named the commit.
 			if srcdiffSweep && !strings.HasPrefix(c.Evidence, "pinned") {
@@ -360,17 +366,6 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 		}
 	}
 	files = kept
-	eol := func(f srcdiff.File, upSHA string) bool {
-		a, err := readAllCapped(f)
-		if err != nil {
-			return false
-		}
-		b, err := snap.Blob(upSHA)
-		if err != nil {
-			return false
-		}
-		return bytes.Equal(bytes.ReplaceAll(a, []byte("\r\n"), []byte("\n")), bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")))
-	}
 	// Hashing every file is the long part for a big tree: counted as it goes.
 	task := work.Begin("comparing "+label, int64(len(files)))
 	for i := range files {
@@ -381,12 +376,15 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 		}
 	}
 	stop = showProgress(label)
-	res, err := srcdiff.Compare(files, snap.Files, prefix, eol)
+	res, err := srcdiff.Compare(files, snap.Files, prefix, nil)
 	stop()
 	task.End()
 	if err != nil {
 		return err
 	}
+	stop = showProgress(label)
+	markLineEndings(&res, files, snap)
+	stop()
 	declared, imports := declaredPaths(input, root)
 	// A notice that lists the whole tree (an initial import) declares every file, so
 	// what it declares cannot be told from what it changed.
@@ -558,3 +556,48 @@ func printUpstreamCandidates(input string) {
 		fmt.Printf("%s  [%s]\n", line, c.Evidence)
 	}
 }
+
+// markLineEndings sets EOLOnly on the modified files that differ from upstream only
+// in their line endings (an archive built on Windows). It fetches the differing
+// files' blobs in one batch and reads them without going back to origin; if the
+// server will not send blobs by id, it stops there: the files are then reported as
+// modified, which is true, and not found one round trip at a time, which does not
+// finish when a tree has hundreds of them.
+func markLineEndings(res *srcdiff.Result, files []srcdiff.File, snap *upstreamsrc.Snapshot) {
+	size := make(map[string]int64, len(res.Modified))
+	for _, f := range files {
+		size[f.Path] = f.Size
+	}
+	var shas []string
+	for _, m := range res.Modified {
+		if size[m.Path] <= maxSrcdiffRead {
+			shas = append(shas, m.UpstreamSHA)
+		}
+	}
+	if len(shas) == 0 || snap.Prefetch("fetching changed files", shas) != nil {
+		return
+	}
+	byPath := make(map[string]srcdiff.File, len(res.Modified))
+	for _, f := range files {
+		byPath[f.Path] = f
+	}
+	task := work.Begin("checking line endings", int64(len(res.Modified)))
+	defer task.End()
+	lf := func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")) }
+	for i := range res.Modified {
+		task.Add(1)
+		m := &res.Modified[i]
+		up, ok := snap.BlobLocal(m.UpstreamSHA)
+		if !ok {
+			continue
+		}
+		local, err := readAllCapped(byPath[m.Path])
+		if err != nil {
+			continue
+		}
+		m.EOLOnly = bytes.Equal(lf(local), lf(up))
+	}
+}
+
+// commitID is a full git commit id.
+var commitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
