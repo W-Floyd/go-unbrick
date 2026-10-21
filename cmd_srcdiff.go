@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"path"
 	"strings"
 
@@ -12,8 +11,10 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/gitsrc"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	work "github.com/W-Floyd/go-unbrick/internal/progress"
 	"github.com/W-Floyd/go-unbrick/internal/srcdiff"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/srcident"
 	"github.com/W-Floyd/go-unbrick/internal/upstreamsrc"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
@@ -24,10 +25,10 @@ const maxSrcdiffRead = 4 << 20
 
 func newSrcdiffCmd() *cobra.Command {
 	var upstream, upstreamPath string
-	var showDiff bool
+	var showDiff, auto, heavy bool
 	var limit int
 	cmd := &cobra.Command{
-		Use:   "srcdiff <file | dir> <path> --upstream <url[#ref]>",
+		Use:   "srcdiff <file | dir> <path> --upstream <url[#ref]> | srcdiff <file> --auto",
 		Short: "compare a vendor source tree against the upstream it came from",
 		Long: `srcdiff compares the tree at <path> inside an input (a source release's archive, or a
 directory) with an upstream git repository at a branch, tag or commit, by git blob
@@ -43,14 +44,19 @@ changes found are checked against them: declared and changed, changed but undecl
 
 Reads from upstream only; git is needed, and the fetch is partial (commits, trees,
 and the blobs that differ).`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if upstream == "" {
-				return fmt.Errorf("--upstream is required")
+			if auto {
+				return runSrcdiffAuto(args[0], heavy)
 			}
-			return runSrcdiff(args[0], strings.Trim(args[1], "/"), upstream, upstreamPath, showDiff, limit)
+			if len(args) != 2 || upstream == "" {
+				return fmt.Errorf("give <file> <path> and --upstream, or --auto")
+			}
+			return runSrcdiff(args[0], strings.Trim(args[1], "/"), upstream, upstreamPath, showDiff, limit, false)
 		},
 	}
+	cmd.Flags().BoolVar(&auto, "auto", false, "find the upstream of each project in the release (names, versions and notices; see catalog/upstreams.yaml) and compare them all, one line each")
+	cmd.Flags().BoolVar(&heavy, "heavy", false, "with --auto, also compare projects whose upstream is large (the Linux kernel)")
 	cmd.Flags().StringVar(&upstream, "upstream", "", "upstream git repository, as url or url#ref (branch, tag, or commit id)")
 	cmd.Flags().StringVar(&upstreamPath, "upstream-path", "", "directory in upstream the tree corresponds to (default: found by matching paths)")
 	cmd.Flags().BoolVar(&showDiff, "diff", false, "print the changed lines of each modified file")
@@ -154,7 +160,74 @@ func isDeclared(p string, declared []string) bool {
 	return false
 }
 
-func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit int) error {
+// identifyUpstreams finds the projects a source release is made of, by the
+// catalog's upstream rules. It reads only the version files and notices the rules
+// ask for.
+func identifyUpstreams(input string) ([]srcident.Candidate, error) {
+	entries, closer, err := srcfile.Entries(input)
+	if err != nil {
+		return nil, err
+	}
+	if closer == nil {
+		return nil, fmt.Errorf("%s is not an archive", infile.Base(input))
+	}
+	defer closer.Close()
+	byName := make(map[string]srcfile.Entry, len(entries))
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		byName[e.Name], names[i] = e, e.Name
+	}
+	read := func(name string) []byte {
+		e, ok := byName[name]
+		if !ok || e.Size > 1<<20 {
+			return nil
+		}
+		rc, err := e.Open()
+		if err != nil {
+			return nil
+		}
+		defer rc.Close()
+		b, _ := io.ReadAll(rc)
+		return b
+	}
+	return srcident.Find(names, read, activeCatalog().Upstreams()), nil
+}
+
+// upstreamURL is the --upstream value a candidate stands for.
+func upstreamURL(c srcident.Candidate) string {
+	if c.Ref == "" {
+		return c.Rule.Repo
+	}
+	return c.Rule.Repo + "#" + c.Ref
+}
+
+// runSrcdiffAuto compares every identified project that has a ref to fetch, one
+// summary line each.
+func runSrcdiffAuto(input string, heavy bool) error {
+	cands, err := identifyUpstreams(input)
+	if err != nil {
+		return err
+	}
+	if len(cands) == 0 {
+		fmt.Println("no known upstream projects found in this release (see catalog/upstreams.yaml)")
+		return nil
+	}
+	for _, c := range cands {
+		switch {
+		case c.Ref == "":
+			fmt.Printf("%s: %s, version not stated; skipped\n", c.Root, c.Rule.ID)
+		case c.Rule.Heavy && !heavy:
+			fmt.Printf("%s: %s %s is a large upstream; skipped (--heavy)\n", c.Root, c.Rule.ID, c.Ref)
+		default:
+			if err := runSrcdiff(input, c.Root, upstreamURL(c), "", false, 0, true); err != nil {
+				fmt.Printf("%s: %s @ %s: %v\n", c.Root, c.Rule.ID, c.Ref, err)
+			}
+		}
+	}
+	return nil
+}
+
+func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit int, summary bool) error {
 	files, byRel, closeIn, err := treeFiles(input, root)
 	if err != nil {
 		return err
@@ -171,7 +244,13 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 	if err != nil {
 		return err
 	}
-	snap, err := upstreamsrc.Open(src.URL, src.Ref, cache, os.Stderr)
+	label := root
+	if label == "" {
+		label = infile.Base(input)
+	}
+	stop := showProgress(label)
+	snap, err := upstreamsrc.Open(src.URL, src.Ref, cache, nil)
+	stop()
 	if err != nil {
 		return err
 	}
@@ -203,7 +282,19 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 		}
 		return bytes.Equal(bytes.ReplaceAll(a, []byte("\r\n"), []byte("\n")), bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")))
 	}
+	// Hashing every file is the long part for a big tree: counted as it goes.
+	task := work.Begin("comparing "+label, int64(len(files)))
+	for i := range files {
+		open := files[i].Open
+		files[i].Open = func() (io.ReadCloser, error) {
+			task.Add(1)
+			return open()
+		}
+	}
+	stop = showProgress(label)
 	res, err := srcdiff.Compare(files, snap.Files, prefix, eol)
+	stop()
+	task.End()
 	if err != nil {
 		return err
 	}
@@ -214,9 +305,20 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 		declared = nil
 	}
 
-	label := root
-	if label == "" {
-		label = infile.Base(input)
+	if summary {
+		line := fmt.Sprintf("%s vs %s @ %s: %d identical, %d modified, %d vendor-only",
+			label, strings.TrimSuffix(snap.URL, ".git"), orHead(snap.Ref), len(res.Identical), len(res.Modified), len(res.VendorOnly))
+		if len(declared) > 0 {
+			undeclared := 0
+			for _, m := range res.Modified {
+				if !m.EOLOnly && !isDeclared(m.Path, declared) {
+					undeclared++
+				}
+			}
+			line += fmt.Sprintf(" (%d not declared)", undeclared)
+		}
+		fmt.Println(line)
+		return nil
 	}
 	fmt.Printf("%s vs %s @ %s (%s)\n", label, snap.URL, orHead(snap.Ref), snap.Commit[:12])
 	fmt.Printf("  aligned to upstream %q\n", prefix)
@@ -337,4 +439,29 @@ func lineStats(e srcfile.Entry, m srcdiff.Modified, snap *upstreamsrc.Snapshot, 
 		}
 	}
 	return st, b.String(), true
+}
+
+// printUpstreamCandidates says which known open-source projects a source release
+// holds and what each would be compared against.
+func printUpstreamCandidates(input string) {
+	cands, err := identifyUpstreams(input)
+	if err != nil || len(cands) == 0 {
+		return
+	}
+	fmt.Println("  Upstream candidates (compare with `srcdiff --auto`):")
+	for _, c := range cands {
+		what := c.Rule.ID
+		switch {
+		case c.Version != "":
+			what += " " + c.Version
+		case c.Ref != "":
+		default:
+			what += " (version not stated)"
+		}
+		line := fmt.Sprintf("    %s: %s", c.Root, what)
+		if c.Ref != "" {
+			line += " -> " + c.Ref
+		}
+		fmt.Printf("%s  [%s]\n", line, c.Evidence)
+	}
 }

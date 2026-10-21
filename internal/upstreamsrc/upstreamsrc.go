@@ -17,7 +17,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
 // Snapshot is one commit's tree.
@@ -61,7 +64,7 @@ func Open(url, ref, cache string, progress io.Writer) (*Snapshot, error) {
 	s.Commit = commit
 	if !s.has(commit) {
 		say("fetching %s at %s", url, commit[:12])
-		if _, err := s.git("fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", commit); err != nil {
+		if err := s.gitProgress("fetching "+shortURL(url), "fetch", "--depth", "1", "--filter=blob:none", "origin", commit); err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", commit[:12], err)
 		}
 	}
@@ -123,7 +126,7 @@ func (s *Snapshot) resolve(ref string, say func(string, ...any)) (string, error)
 	}
 	if shortSHA.MatchString(ref) {
 		say("expanding %s (fetching %s history)", ref, s.URL)
-		if _, err := s.git("fetch", "-q", "--filter=tree:0", "--no-tags", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
+		if err := s.gitProgress("expanding "+ref+" in "+shortURL(s.URL), "fetch", "--filter=tree:0", "--no-tags", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
 			return "", fmt.Errorf("fetch %s: %w", s.URL, err)
 		}
 		out, err := s.git("rev-parse", "--verify", "-q", ref+"^{commit}")
@@ -147,6 +150,86 @@ func (s *Snapshot) lsRemote(patterns ...string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s: not found", strings.Join(patterns, ", "))
+}
+
+// gitPhase picks the phase and percent out of a git progress line
+// ("Receiving objects:  63% (1234/1960), 5.2 MiB | 2.1 MiB/s").
+var gitPhase = regexp.MustCompile(`(Enumerating objects|Counting objects|Compressing objects|Receiving objects|Resolving deltas):\s+(\d+)%`)
+
+// shortURL is an origin without its scheme and .git, for a label.
+func shortURL(u string) string {
+	u = strings.TrimSuffix(u, ".git")
+	if _, rest, ok := strings.Cut(u, "://"); ok {
+		return rest
+	}
+	return u
+}
+
+// gitProgress runs a git command that reports progress, and passes each phase it
+// reports (receiving objects, resolving deltas) to the shared tracker as a task of
+// its own, so a waiting front end can show percent and time left.
+func (s *Snapshot) gitProgress(label string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"--git-dir", s.dir, args[0], "--progress"}, args[1:]...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var (
+		task  *progress.Task
+		phase string
+		last  int64
+		tail  []byte
+	)
+	end := func() {
+		if task != nil {
+			task.End()
+			task = nil
+		}
+	}
+	defer end()
+	buf := make([]byte, 4096)
+	var line []byte
+	handle := func(l []byte) {
+		if m := gitPhase.FindSubmatch(l); m != nil {
+			if p := string(m[1]); p != phase {
+				end()
+				phase, last = p, 0
+				task = progress.Begin(label+": "+strings.ToLower(p), 100)
+			}
+			pct, _ := strconv.ParseInt(string(m[2]), 10, 64)
+			if task != nil && pct > last {
+				task.Add(pct - last)
+				last = pct
+			}
+			return
+		}
+		if tail = append(tail, l...); len(tail) > 2048 {
+			tail = tail[len(tail)-2048:]
+		}
+	}
+	for {
+		n, rerr := stderr.Read(buf)
+		for _, b := range buf[:n] {
+			if b == '\r' || b == '\n' {
+				handle(line)
+				line = line[:0]
+			} else {
+				line = append(line, b)
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	handle(line)
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(string(tail)))
+	}
+	return nil
 }
 
 func (s *Snapshot) git(args ...string) ([]byte, error) {

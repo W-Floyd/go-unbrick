@@ -1,0 +1,117 @@
+# Open-source projects a vendor's GPL source release is made of, as `recon` and
+# `srcdiff --auto` identify them: where each lives upstream, what its directory is
+# called in a release, and how to read its version (and turn it into a tag).
+#
+# names    directory or recipe names that mean the project, ignoring case and
+#          punctuation; the id counts too. A name carrying a version
+#          (gstreamer-1.16.3_r0) gives the version as well.
+# aosp     the project's path in Android, matched against a dotted release
+#          directory (platform.external.e2fsprogs).
+# tag      how a version names a ref upstream: {version}, or {version_} with dots
+#          as underscores. Default {version}.
+# version  files in the project's root to read a version from: a regular
+#          expression (?s allows spanning lines) and how its groups make the
+#          version. Tried in order.
+# heavy    the upstream is too big to fetch for a routine comparison; `srcdiff
+#          --auto` skips it unless asked.
+# strict   report the project only when a version is found: for a name so common
+#          (linux, glib) that a directory of it is usually part of something else.
+#
+# A release may carry only the files its vendor changed, or have no version file at
+# all; then the project is still found, and a version-less match says so instead of
+# guessing a tag. A notice that pins a commit ("via kenlm_5bf7b46.patch") wins over
+# a tag.
+
+upstreams:
+  - id: u-boot
+    names: [uboot]
+    repo: https://source.denx.de/u-boot/u-boot.git
+    tag: "v{version}"
+    version:
+      - file: Makefile
+        pattern: '(?s)(?m)^VERSION\s*=\s*(\d+).*?^PATCHLEVEL\s*=\s*(\d+)'
+        format: "{1}.{2}"
+
+  - id: linux
+    names: [linux]
+    repo: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+    tag: "v{version}"
+    heavy: true
+    strict: true
+    notes: A .0 release is tagged vX.Y, not vX.Y.0; a stable or vendor tree may carry a version string that is not a tag upstream.
+    version:
+      - file: Makefile
+        pattern: '(?s)(?m)^VERSION\s*=\s*(\d+).*?^PATCHLEVEL\s*=\s*(\d+).*?^SUBLEVEL\s*=\s*(\d+)'
+        format: "{1}.{2}.{3}"
+
+  - id: openssl
+    repo: https://github.com/openssl/openssl
+    tag: "OpenSSL_{version_}"
+    notes: The OpenSSL_x_y_z tags are for releases before 3.0; Android's copies carry openssl.version.
+    version:
+      - file: openssl.version
+        pattern: 'OPENSSL_VERSION=(\S+)'
+      - file: ThirdPartyProject.prop
+        pattern: '(?m)^currentVersion=(\S+)'
+      - file: include/openssl/opensslv.h
+        pattern: 'OPENSSL_VERSION_TEXT\s+"OpenSSL (\S+)'
+
+  - id: glib
+    aosp: external/glib
+    repo: https://gitlab.gnome.org/GNOME/glib.git
+    strict: true
+    version:
+      - file: configure.in
+        pattern: '(?s)glib_major_version\], \[(\d+)\].*?glib_minor_version\], \[(\d+)\].*?glib_micro_version\], \[(\d+)\]'
+        format: "{1}.{2}.{3}"
+      - file: configure.ac
+        pattern: '(?s)glib_major_version\], \[(\d+)\].*?glib_minor_version\], \[(\d+)\].*?glib_micro_version\], \[(\d+)\]'
+        format: "{1}.{2}.{3}"
+
+  # GStreamer 1.x is one repository per component up to 1.18, a monorepo after; the
+  # tags are the plain version either way.
+  - id: gstreamer
+    names: [gstreamer1.0]
+    repo: https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+  - id: gst-plugins-base
+    names: [gstreamer1.0-plugins-base]
+    repo: https://gitlab.freedesktop.org/gstreamer/gst-plugins-base.git
+  - id: gst-plugins-good
+    names: [gstreamer1.0-plugins-good]
+    repo: https://gitlab.freedesktop.org/gstreamer/gst-plugins-good.git
+  - id: gst-plugins-bad
+    names: [gstreamer1.0-plugins-bad]
+    repo: https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad.git
+  - id: gst-plugins-ugly
+    names: [gstreamer1.0-plugins-ugly]
+    repo: https://gitlab.freedesktop.org/gstreamer/gst-plugins-ugly.git
+  - id: gst-libav
+    names: [gstreamer1.0-libav]
+    repo: https://gitlab.freedesktop.org/gstreamer/gst-libav.git
+
+  - id: vsomeip
+    repo: https://github.com/COVESA/vsomeip
+  - id: fdk-aac
+    repo: https://github.com/mstorsjo/fdk-aac
+    tag: "v{version}"
+  - id: kenlm
+    names: [kenlm-src]
+    repo: https://github.com/kpu/kenlm
+
+  # Android externals: the release names the project, not the version.
+  - id: e2fsprogs
+    aosp: external/e2fsprogs
+    repo: https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git
+    tag: "v{version}"
+  - id: iproute2
+    aosp: external/iproute2
+    repo: https://git.kernel.org/pub/scm/network/iproute2/iproute2.git
+    tag: "v{version}"
+  - id: libusb
+    aosp: external/libusb
+    repo: https://github.com/libusb/libusb
+    tag: "v{version}"
+  - id: dnsmasq
+    aosp: external/dnsmasq
+    repo: https://thekelleys.org.uk/git/dnsmasq.git
+    tag: "v{version}"

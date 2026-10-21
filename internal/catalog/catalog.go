@@ -26,6 +26,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/distro"
 	"github.com/W-Floyd/go-unbrick/internal/harvest"
 	"github.com/W-Floyd/go-unbrick/internal/provision"
+	"github.com/W-Floyd/go-unbrick/internal/srcident"
 )
 
 type Device struct {
@@ -92,6 +93,10 @@ type catalogFile struct {
 	// own device definition lives and how it is spelled. Reference data like
 	// everything else here, interpreted by internal/distro.
 	Distros []*distro.Distro `yaml:"distros,omitempty"`
+	// Upstreams are the open-source projects a vendor's source release is made of:
+	// where each lives and how its version names a tag, interpreted by
+	// internal/srcident.
+	Upstreams []srcident.Rule `yaml:"upstreams,omitempty"`
 	// Bloat is which preloaded packages a phone can lose, read by
 	// `adb debloat` and interpreted by internal/bloat.
 	Bloat []bloat.Rule `yaml:"bloat,omitempty"`
@@ -135,6 +140,7 @@ type Catalog struct {
 	socNaming  map[string]SoCNaming   // by vendor key
 	partitions map[string]PartitionRule
 	distros    []*distro.Distro          // Linux-on-phone distribution profiles
+	upstreams  []srcident.Rule           // projects a source release is made of
 	bloat      []bloat.Rule              // removable-preload rules
 	provision  []*provision.Profile      // device-setup recipes
 	harvest    harvest.Sources           // loader harvest sources
@@ -164,6 +170,15 @@ func (c *Catalog) Bloat() []bloat.Rule {
 		return nil
 	}
 	return c.bloat
+}
+
+// Upstreams returns the open-source projects the catalog knows how to find in a
+// vendor's source release.
+func (c *Catalog) Upstreams() []srcident.Rule {
+	if c == nil {
+		return nil
+	}
+	return c.upstreams
 }
 
 // Distros returns the distribution profiles the catalog declares, for
@@ -313,6 +328,11 @@ func Load(dir string) (*Catalog, error) {
 		for _, d := range cf.Distros {
 			if d != nil && d.Ident != "" {
 				c.distros = append(c.distros, d)
+			}
+		}
+		for _, u := range cf.Upstreams {
+			if u.ID != "" && u.Repo != "" {
+				c.upstreams = append(c.upstreams, u)
 			}
 		}
 		for _, b := range cf.Bloat {

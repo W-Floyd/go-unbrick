@@ -1220,6 +1220,7 @@ func reconArchive(path string, bag *facts.Bag) error {
 	// A source release has nothing to cascade into: its identity facts are all.
 	if names, _ := srcfile.Names(path); srcfile.IsSourceTree(names) {
 		fmt.Printf("  Kind:   source release (%d files)\n", len(names))
+		printUpstreamCandidates(path)
 		return nil
 	}
 	// Cascade through the members, descending into nested containers.
