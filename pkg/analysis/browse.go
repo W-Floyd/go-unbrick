@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
@@ -87,6 +88,7 @@ func ListDir(dir string, skip []string) (*BrowseLevel, error) {
 		keep[p] = true
 	}
 	l := &BrowseLevel{Title: filepath.Base(dir), Dir: dir}
+	probes := 0
 	for _, d := range des {
 		if d.Name() != "." && strings.HasPrefix(d.Name(), ".") {
 			continue
@@ -104,6 +106,16 @@ func ListDir(dir string, skip []string) (*BrowseLevel, error) {
 			size = fi.Size()
 		}
 		label, isText, isImage := FileHeadLabel(full)
+		if label == string(filetype.Unknown) && probes < deepProbesPerLevel {
+			head, _ := fileHead(full)
+			l2, probed := deepLabel(size, head, func() ([]byte, error) { return infile.ReadFile(full) })
+			if probed {
+				probes++
+			}
+			if l2 != "" {
+				label = l2
+			}
+		}
 		l.Entries = append(l.Entries, BrowseEntry{Name: d.Name(), Size: size, Label: label, Text: isText, Image: isImage,
 			Openable: !isText && !isImage, OSPath: full})
 	}
@@ -169,6 +181,7 @@ func ListGroup(g Group) *BrowseLevel {
 	// Each node caches its head (up to 64 KiB); across a source tree's hundreds of
 	// thousands of members that is gigabytes, for a label read once.
 	dropHeads := len(files) > headCacheMax
+	probes := 0
 	var task *progress.Task
 	if len(files) > progressMin {
 		task = progress.Begin("listing "+title, int64(len(files)))
@@ -180,6 +193,15 @@ func ListGroup(g Group) *BrowseLevel {
 		}
 		name := strings.TrimPrefix(k.Name, g.Prefix)
 		label := TypeLabel(k.Name, k.Head())
+		if label == string(filetype.Unknown) && probes < deepProbesPerLevel {
+			l2, probed := deepLabel(k.Size, k.Head(), k.Bytes)
+			if probed {
+				probes++
+			}
+			if l2 != "" {
+				label = l2
+			}
+		}
 		isContainer := false
 		if sub, ok := carve.Format(k); ok {
 			label, isContainer = sub.Kind, true
@@ -298,15 +320,51 @@ func PrettyPrint(name string, content []byte) ([]byte, bool) {
 // FileHeadLabel reads just enough of a plain file to type-label it, the way recon
 // and ls do: cheap even for a multi-GB file.
 func FileHeadLabel(path string) (label string, isText, isImage bool) {
-	f, err := infile.Open(path)
+	head, err := fileHead(path)
 	if err != nil {
 		return "unknown", false, false
+	}
+	return TypeLabel(filepath.Base(path), head), LooksLikeText(path, head), LooksLikeImage(head)
+}
+
+// fileHead is the first 8 KiB of a plain file.
+func fileHead(path string) ([]byte, error) {
+	f, err := infile.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 	head := make([]byte, 8192)
 	n, _ := f.Read(head)
-	head = head[:n]
-	return TypeLabel(filepath.Base(path), head), LooksLikeText(path, head), LooksLikeImage(head)
+	return head[:n], nil
+}
+
+const (
+	// deepProbeMax is the largest file a listing will read in full to label it.
+	deepProbeMax = 64 << 20
+	// deepProbesPerLevel bounds how many files one listing reads in full this way: a
+	// directory of firmware images, most starting with ARM code, must not be read
+	// whole to list it.
+	deepProbesPerLevel = 8
+)
+
+// deepLabel names a file whose start does not say what it is, by reading all of it,
+// for the kinds that carry nothing recognisable at the start: a raw ARM Linux
+// kernel (padding after a few instructions; its banner is megabytes in). It reads
+// only a file of a plausible size that starts like one, and probed says it did, so
+// the caller can count the reads it makes.
+func deepLabel(size int64, head []byte, read func() ([]byte, error)) (label string, probed bool) {
+	if size <= 0 || size > deepProbeMax || !bootimg.StartsLikeARMKernel(head) {
+		return "", false
+	}
+	data, err := read()
+	if err != nil {
+		return "", true
+	}
+	if bootimg.IsRawKernel(data) {
+		return "ARM Linux kernel", true
+	}
+	return "", true
 }
 
 // LooksLikeImage is the Image gate: a real decodable raster format (JPEG, PNG), by
