@@ -30,6 +30,9 @@ type Rule struct {
 	Repo    string          `yaml:"repo"`
 	Tag     string          `yaml:"tag,omitempty"` // {version} or {version_} (dots as underscores); default {version}
 	Version []VersionSource `yaml:"version,omitempty"`
+	// OSV is the repository URL as the OSV vulnerability database spells it, when
+	// that is not Repo (OSV knows a project by its GitHub URL, usually).
+	OSV string `yaml:"osv,omitempty"`
 	// Heavy marks an upstream too big to fetch for a routine comparison.
 	Heavy bool `yaml:"heavy,omitempty"`
 	// Strict reports a match only when a version is found: for a name common
@@ -331,4 +334,12 @@ func versionParts(v string) [][2]int {
 		out = append(out, [2]int{n, letter})
 	}
 	return out
+}
+
+// OSVRepo is the repository URL to ask the OSV database about.
+func (r *Rule) OSVRepo() string {
+	if r.OSV != "" {
+		return r.OSV
+	}
+	return r.Repo
 }

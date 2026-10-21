@@ -61,8 +61,25 @@ and the blobs that differ).`,
 			case len(args) != 2 || upstream == "":
 				return fmt.Errorf("give <file> <path> and --upstream, or --auto")
 			default:
-				if err := runSrcdiff(args[0], strings.Trim(args[1], "/"), upstream, upstreamPath, showDiff, limit, ui, collect); err != nil {
+				root := strings.Trim(args[1], "/")
+				src, isGit := gitsrc.Parse(upstream)
+				if srcdiffSweep && isGit && src.Ref != "" {
+					commit, note, err := sweepCommits(args[0], root, src.URL, nil, src.Ref)
+					switch {
+					case err != nil:
+						return fmt.Errorf("sweep: %w", err)
+					case commit != "":
+						fmt.Println(note)
+						upstream = src.URL + "#" + commit
+					default:
+						fmt.Println(note)
+					}
+				}
+				if err := runSrcdiff(args[0], root, upstream, upstreamPath, showDiff, limit, ui, collect); err != nil {
 					return err
+				}
+				if isGit && srcdiffCVEs {
+					printCVEs(args[0], src.URL, src.Ref)
 				}
 			}
 			if !ui {
@@ -71,6 +88,8 @@ and the blobs that differ).`,
 			return runSrcdiffUI(trees, webAddr)
 		},
 	}
+	cmd.Flags().BoolVar(&srcdiffSweep, "sweep", false, "look for the upstream commit between releases that the tree matches best, not only the release: a vendor usually snapshots a commit, so some edits are upstream's own changes since the tag")
+	cmd.Flags().BoolVar(&srcdiffCVEs, "cves", false, "list the vulnerabilities the OSV database (api.osv.dev) knows for each upstream version; sends the repository and tag to that service. Incomplete for old versions")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "browse what differs from upstream in the interactive diff (upstream is the base, the vendor's tree the change)")
 	cmd.Flags().StringVar(&webAddr, "web", "", "serve that diff as a web page on this address instead, e.g. 127.0.0.1:8765")
 	cmd.Flags().BoolVar(&auto, "auto", false, "find the upstream of each project in the release (names, versions and notices; see catalog/upstreams.yaml) and compare them all, one line each")
@@ -253,8 +272,25 @@ func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error 
 		case c.Rule.Heavy && !heavy:
 			fmt.Printf("%s: %s %s is a large upstream; skipped (--heavy)\n", c.Root, c.Rule.ID, c.Ref)
 		default:
+			tag := c.Ref
+			// A snapshot is usually of some commit between releases: look there, unless
+			// a notice has already named the commit.
+			if srcdiffSweep && !strings.HasPrefix(c.Evidence, "pinned") {
+				commit, note, err := sweepCommits(input, c.Root, c.Rule.Repo, c.Rule, c.Ref)
+				switch {
+				case err != nil:
+					fmt.Printf("%s: sweep failed: %v\n", c.Root, err)
+				case commit != "":
+					fmt.Printf("%s: %s\n", c.Root, note)
+					c.Ref = commit
+				default:
+					fmt.Printf("%s: %s\n", c.Root, note)
+				}
+			}
 			if err := runSrcdiff(input, c.Root, upstreamURL(c), "", false, 0, true, collect); err != nil {
 				fmt.Printf("%s: %s @ %s: %v\n", c.Root, c.Rule.ID, c.Ref, err)
+			} else if srcdiffCVEs {
+				printCVEs(input, c.Rule.OSVRepo(), tag)
 			}
 		}
 	}

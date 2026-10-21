@@ -30,6 +30,9 @@ var (
 	// SourceTickets counts the Jira projects the commit subjects cite, which
 	// names the teams and programmes behind the changes.
 	SourceTickets = facts.Key[string]("source_tickets")
+	// SourceCVEs are the CVE ids the notices cite in a modification: the
+	// vulnerabilities the vendor says it addressed.
+	SourceCVEs = facts.Key[string]("source_cves")
 )
 
 var (
@@ -268,9 +271,14 @@ func learnSourceRelease(pkg PackageAccess, bag *facts.Bag) {
 	var lines []string
 	var sec, sto []secMod
 	tickets := map[string]int{}
+	cves := map[string]bool{}
 	first, last := "", ""
 	for _, n := range notices {
-		s := ParseNotice(pkg.Read(n))
+		data := pkg.Read(n)
+		s := ParseNotice(data)
+		for _, id := range CitedCVEs(data) {
+			cves[id] = true
+		}
 		line := strings.TrimSuffix(strings.TrimSuffix(n, ".txt"), "_notice")
 		switch {
 		case s.Files > 0:
@@ -330,6 +338,30 @@ func learnSourceRelease(pkg PackageAccess, bag *facts.Bag) {
 	if t := ticketCounts(tickets); t != "" {
 		facts.Set(bag, SourceTickets, t, nprov)
 	}
+	if len(cves) > 0 {
+		ids := make([]string, 0, len(cves))
+		for id := range cves {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		facts.Set(bag, SourceCVEs, strings.Join(ids, ", "), nprov)
+	}
+}
+
+var cveRef = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
+
+// CitedCVEs are the distinct CVE ids a notice mentions, sorted.
+func CitedCVEs(data []byte) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range cveRef.FindAll(data, -1) {
+		if id := string(m); !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ticketCounts is the Jira projects cited, most cited first: "AVNG5WIDE (212), OTAPLAT (30)".

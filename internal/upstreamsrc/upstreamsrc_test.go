@@ -133,3 +133,45 @@ func TestSizes(t *testing.T) {
 		t.Errorf("sizes %v %v", got, err)
 	}
 }
+
+func TestHistoryBetweenTags(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	origin := t.TempDir()
+	run(t, origin, "init", "-q", "-b", "main")
+	run(t, origin, "config", "uploadpack.allowFilter", "true")
+	run(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	var commits []string
+	for i, body := range []string{"one\n", "two\n", "three\n", "four\n"} {
+		if err := os.WriteFile(filepath.Join(origin, "a.c"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run(t, origin, "add", ".")
+		run(t, origin, "commit", "-q", "-m", "c"+body)
+		commits = append(commits, run(t, origin, "rev-parse", "HEAD"))
+		switch i {
+		case 0:
+			run(t, origin, "tag", "v1")
+		case 3:
+			run(t, origin, "tag", "v2")
+		}
+	}
+	r, err := OpenRepo("file://"+origin, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.History("test", "v1", "v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != commits[1] || got[2] != commits[3] {
+		t.Fatalf("history %v want %v", got, commits[1:])
+	}
+	if err := r.Fetch("test", []Tag{{Commit: got[1]}}); err != nil {
+		t.Fatal(err)
+	}
+	if date, subject := r.Describe(got[1]); date == "" || subject != "cthree" {
+		t.Errorf("describe %q %q", date, subject)
+	}
+}

@@ -179,11 +179,18 @@ func (r *Repo) Fetch(label string, tags []Tag) error {
 		need = need[len(chunk):]
 		byID := []string{"fetch", "--depth", "1", "--filter=blob:none", "origin"}
 		byName := append([]string(nil), byID...)
+		named := false
 		for _, t := range chunk {
 			byID = append(byID, t.Commit)
-			byName = append(byName, "+refs/tags/"+t.Name+":refs/tags/"+t.Name)
+			if t.Name != "" { // a bare commit has no name to fall back on
+				byName = append(byName, "+refs/tags/"+t.Name+":refs/tags/"+t.Name)
+				named = true
+			}
 		}
 		if err := r.s.gitProgress(label, byID...); err != nil {
+			if !named {
+				return err
+			}
 			if err2 := r.s.gitProgress(label, byName...); err2 != nil {
 				return fmt.Errorf("%v; by name: %w", err, err2)
 			}
@@ -386,4 +393,32 @@ func (s *Snapshot) Sizes(shas []string) (map[string]int64, error) {
 		}
 	}
 	return s.sizes, nil
+}
+
+// History fetches the commits after tag from up to tag to (history only: no trees,
+// no blobs) and lists them along the first parent, oldest first. A vendor's
+// snapshot is usually of some commit between two releases, and this is the
+// range to look for it in. It needs a server that can cut history at a tag
+// (git's shallow-exclude); an error says if it cannot.
+func (r *Repo) History(label, from, to string) ([]string, error) {
+	err := r.s.gitProgress(label, "fetch", "--filter=tree:0", "--no-tags", "--shallow-exclude="+from,
+		"origin", "+refs/tags/"+to+":refs/tags/"+to)
+	if err != nil {
+		return nil, err
+	}
+	out, err := r.s.git("rev-list", "--first-parent", "--reverse", "refs/tags/"+to)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
+
+// Describe is a held commit's date and subject.
+func (r *Repo) Describe(commit string) (date, subject string) {
+	out, err := r.s.git("show", "-s", "--format=%cs%n%s", commit)
+	if err != nil {
+		return "", ""
+	}
+	date, subject, _ = strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return date, subject
 }

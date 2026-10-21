@@ -148,3 +148,10 @@ func TestNoticeTreeDumpIsNotChanges(t *testing.T) {
 		t.Errorf("mods %+v", s.Mods)
 	}
 }
+
+func TestCitedCVEs(t *testing.T) {
+	got := CitedCVEs([]byte("fix [CVE-2019-1234] and CVE-2020-12345; CVE-2019-1234 again; not CVE-1-2"))
+	if !reflect.DeepEqual(got, []string{"CVE-2019-1234", "CVE-2020-12345"}) {
+		t.Errorf("got %v", got)
+	}
+}

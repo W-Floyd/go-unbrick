@@ -136,3 +136,9 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestOSVRepo(t *testing.T) {
+	if (&Rule{Repo: "a"}).OSVRepo() != "a" || (&Rule{Repo: "a", OSV: "b"}).OSVRepo() != "b" {
+		t.Error("osv repo")
+	}
+}

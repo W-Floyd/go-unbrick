@@ -440,6 +440,9 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.SourceStorage); ok {
 		addList(&out, "Source storage changes", strings.Split(v, "; "))
 	}
+	if v, ok := facts.Get(b, vendor.SourceCVEs); ok {
+		add("Source CVE references: %s", v)
+	}
 	if v, ok := facts.Get(b, vendor.SourceTickets); ok {
 		add("Source tickets: %s", v)
 	}
