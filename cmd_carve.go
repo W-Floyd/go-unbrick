@@ -26,7 +26,7 @@ func carveRoot(input string) (*carve.Node, error) {
 		carve.ZipPasswords = vendor.ZipPasswords
 		carve.Register(encryptedExpander())
 	})
-	if len(reconSecrets) == 0 {
+	if secretsLoaded() == 0 {
 		dir := carveSecrets
 		if dir == "" && !infile.IsRemote(input) {
 			dir = findSecrets(filepath.Dir(input))

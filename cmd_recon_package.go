@@ -46,7 +46,7 @@ func learnPackageFacts(path string, bag *facts.Bag) {
 			}
 			return out
 		},
-		Decrypts: func() bool { return len(reconSecrets) > 0 },
+		Decrypts: func() bool { return secretsLoaded() > 0 },
 	}
 	vendor.LearnPackage(access, bag)
 	if reconVerify {

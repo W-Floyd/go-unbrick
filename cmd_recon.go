@@ -79,7 +79,7 @@ func newReconCmd() *cobra.Command {
 				if err := loadSecrets(secrets); err != nil {
 					return fmt.Errorf("--secrets: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", len(reconSecrets), secrets)
+				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", secretsLoaded(), secrets)
 			}
 			if isDir {
 				if with != "" {
@@ -1242,7 +1242,7 @@ func reconArchive(path string, bag *facts.Bag) error {
 	})
 	// With keys loaded, say which high-entropy members none of them opened
 	// (every key/IV pair and framing was tried): those need another key.
-	if len(reconSecrets) > 0 {
+	if secretsLoaded() > 0 {
 		var locked []string
 		for _, m := range members {
 			base := filepath.Base(m.Name)
@@ -1254,7 +1254,7 @@ func reconArchive(path string, bag *facts.Bag) error {
 			}
 		}
 		if len(locked) > 0 {
-			fmt.Println("  " + cHdr(fmt.Sprintf("Not opened by the %d loaded key/IV candidate(s):", len(reconSecrets))))
+			fmt.Println("  " + cHdr(fmt.Sprintf("Not opened by the %d loaded key/IV candidate(s):", secretsLoaded())))
 			rows := make([][]string, len(locked))
 			for i, name := range locked {
 				rows[i] = []string{vpath.Dir(name), vpath.Base(name)}

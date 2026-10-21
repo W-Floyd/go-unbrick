@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
 )
 
 func TestNameAffinity(t *testing.T) {
@@ -39,8 +41,8 @@ func encrypted(t *testing.T, plain, key, iv []byte, files map[string][]byte) []b
 			t.Fatal(err)
 		}
 	}
-	old := reconSecrets
-	t.Cleanup(func() { reconSecrets = old })
+	old := aeskeys.Secrets()
+	t.Cleanup(func() { aeskeys.Set(old) })
 	if err := loadSecrets(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +112,9 @@ func TestTheNamedIVComesFirst(t *testing.T) {
 		"2022_usa-ev6_iv.hex":            own,
 	})
 	var firstIV []byte
-	for _, s := range reconSecrets {
-		if s.mode == "" && s.name == "2022_usa-ev6_image_dat_key" {
-			firstIV = s.iv
+	for _, s := range aeskeys.Secrets() {
+		if s.Mode == "" && s.Name == "2022_usa-ev6_image_dat_key" {
+			firstIV = s.IV
 			break
 		}
 	}

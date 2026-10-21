@@ -279,7 +279,7 @@ func propsFromFS(fsys fs.FS) map[string]string {
 // cmd_recon_secrets.go). Best-effort: no loaded key, no such member, or an
 // unreadable filesystem returns nil.
 func encryptedSystemProps(path string) map[string]string {
-	if len(reconSecrets) == 0 {
+	if secretsLoaded() == 0 {
 		return nil
 	}
 	members, err := srcfile.Members(path, 8192)
