@@ -34,6 +34,7 @@ type Snapshot struct {
 	// file of its target or drop it, so they are not compared.
 	Symlinks map[string]bool
 	dir      string
+	sizes    map[string]int64 // blob sizes learned by Sizes
 }
 
 var (
@@ -357,4 +358,32 @@ func (s *Snapshot) git(args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+// Sizes fetches the blobs shas name (in batches, from origin) and returns each
+// one's size. A server that will not send a blob by id leaves them to be fetched
+// one at a time as they are measured.
+func (s *Snapshot) Sizes(shas []string) (map[string]int64, error) {
+	for len(shas) > 0 {
+		chunk := shas[:min(len(shas), 100)]
+		shas = shas[len(chunk):]
+		s.gitProgress("fetching changed files", append([]string{"fetch", "--no-tags", "origin"}, chunk...)...) //nolint:errcheck // best effort; see above
+		cmd := exec.Command("git", "--git-dir", s.dir, "cat-file", "--batch-check=%(objectname) %(objectsize)")
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Stdin = strings.NewReader(strings.Join(chunk, "\n") + "\n")
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("git cat-file: %w", err)
+		}
+		if s.sizes == nil {
+			s.sizes = map[string]int64{}
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(line); len(f) == 2 {
+				n, _ := strconv.ParseInt(f[1], 10, 64)
+				s.sizes[f[0]] = n
+			}
+		}
+	}
+	return s.sizes, nil
 }

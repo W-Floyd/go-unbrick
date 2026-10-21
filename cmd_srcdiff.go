@@ -25,7 +25,8 @@ const maxSrcdiffRead = 4 << 20
 
 func newSrcdiffCmd() *cobra.Command {
 	var upstream, upstreamPath string
-	var showDiff, auto, heavy bool
+	var showDiff, auto, heavy, interactive bool
+	var webAddr string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "srcdiff <file | dir> <path> --upstream <url[#ref]> | srcdiff <file> --auto",
@@ -46,15 +47,32 @@ Reads from upstream only; git is needed, and the fetch is partial (commits, tree
 and the blobs that differ).`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if auto {
-				return runSrcdiffAuto(args[0], heavy)
+			ui := interactive || webAddr != ""
+			var trees []*srcdiffTree
+			var collect func(*srcdiffTree)
+			if ui {
+				collect = func(t *srcdiffTree) { trees = append(trees, t) }
 			}
-			if len(args) != 2 || upstream == "" {
+			switch {
+			case auto:
+				if err := runSrcdiffAuto(args[0], heavy, collect); err != nil {
+					return err
+				}
+			case len(args) != 2 || upstream == "":
 				return fmt.Errorf("give <file> <path> and --upstream, or --auto")
+			default:
+				if err := runSrcdiff(args[0], strings.Trim(args[1], "/"), upstream, upstreamPath, showDiff, limit, ui, collect); err != nil {
+					return err
+				}
 			}
-			return runSrcdiff(args[0], strings.Trim(args[1], "/"), upstream, upstreamPath, showDiff, limit, false)
+			if !ui {
+				return nil
+			}
+			return runSrcdiffUI(trees, webAddr)
 		},
 	}
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "browse what differs from upstream in the interactive diff (upstream is the base, the vendor's tree the change)")
+	cmd.Flags().StringVar(&webAddr, "web", "", "serve that diff as a web page on this address instead, e.g. 127.0.0.1:8765")
 	cmd.Flags().BoolVar(&auto, "auto", false, "find the upstream of each project in the release (names, versions and notices; see catalog/upstreams.yaml) and compare them all, one line each")
 	cmd.Flags().BoolVar(&heavy, "heavy", false, "with --auto, also compare projects whose upstream is large (the Linux kernel)")
 	cmd.Flags().StringVar(&upstream, "upstream", "", "upstream git repository, as url or url#ref (branch, tag, or commit id)")
@@ -203,7 +221,7 @@ func upstreamURL(c srcident.Candidate) string {
 
 // runSrcdiffAuto compares every identified project that has a ref to fetch, one
 // summary line each.
-func runSrcdiffAuto(input string, heavy bool) error {
+func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error {
 	cands, err := identifyUpstreams(input)
 	if err != nil {
 		return err
@@ -235,7 +253,7 @@ func runSrcdiffAuto(input string, heavy bool) error {
 		case c.Rule.Heavy && !heavy:
 			fmt.Printf("%s: %s %s is a large upstream; skipped (--heavy)\n", c.Root, c.Rule.ID, c.Ref)
 		default:
-			if err := runSrcdiff(input, c.Root, upstreamURL(c), "", false, 0, true); err != nil {
+			if err := runSrcdiff(input, c.Root, upstreamURL(c), "", false, 0, true, collect); err != nil {
 				fmt.Printf("%s: %s @ %s: %v\n", c.Root, c.Rule.ID, c.Ref, err)
 			}
 		}
@@ -243,12 +261,19 @@ func runSrcdiffAuto(input string, heavy bool) error {
 	return nil
 }
 
-func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit int, summary bool) error {
+func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit int, summary bool, collect func(*srcdiffTree)) error {
 	files, byRel, closeIn, err := treeFiles(input, root)
 	if err != nil {
 		return err
 	}
-	defer closeIn()
+	// A collector keeps the archive open (its files are read when it is browsed)
+	// and closes it itself.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			closeIn()
+		}
+	}()
 	if len(files) == 0 {
 		return fmt.Errorf("%s: no files under %q", infile.Base(input), root)
 	}
@@ -334,6 +359,10 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 			line += fmt.Sprintf(" (%d not declared)", undeclared)
 		}
 		fmt.Println(line)
+		if collect != nil {
+			collect(&srcdiffTree{label: label, res: res, byRel: byRel, snap: snap, prefix: prefix, ref: orHead(snap.Ref), closeIn: closeIn})
+			handedOff = true
+		}
 		return nil
 	}
 	fmt.Printf("%s vs %s @ %s (%s)\n", label, snap.URL, orHead(snap.Ref), snap.Commit[:12])

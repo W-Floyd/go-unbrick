@@ -109,3 +109,27 @@ func TestTagsAndRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSizes(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	origin := t.TempDir()
+	run(t, origin, "init", "-q", "-b", "main")
+	run(t, origin, "config", "uploadpack.allowFilter", "true")
+	run(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	if err := os.WriteFile(filepath.Join(origin, "a.c"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, origin, "add", ".")
+	run(t, origin, "commit", "-q", "-m", "one")
+	s, err := Open("file://"+origin, "main", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := s.Files["a.c"]
+	got, err := s.Sizes([]string{sha})
+	if err != nil || got[sha] != 6 {
+		t.Errorf("sizes %v %v", got, err)
+	}
+}
