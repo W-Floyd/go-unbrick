@@ -42,15 +42,17 @@ type Node struct {
 	Name string
 	Size int64 // -1 when unknown until read
 
-	mu     sync.Mutex // guards at, Size and head, which are filled in on first use
-	at     io.ReaderAt
-	stream func() (io.ReadCloser, error)
-	path   string // the input itself, for the root
-	id     string // names the content for caching; "" when it cannot be
-	claim  *Claim // what the container says this member digests to
-	src    *source
-	defl   *srcfile.Deflated
-	deflFn func() *srcfile.Deflated // finds defl on demand
+	mu      sync.Mutex // guards at, Size and head, which are filled in on first use
+	at      io.ReaderAt
+	stream  func() (io.ReadCloser, error)
+	path    string // the input itself, for the root
+	id      string // names the content for caching; "" when it cannot be
+	claim   *Claim // what the container says this member digests to
+	src     *source
+	defl    *srcfile.Deflated
+	deflFn  func() *srcfile.Deflated            // finds defl on demand
+	srcFn   func() (off, length int64, ok bool) // finds src on demand (guarded by mu)
+	srcPath string                              // the input srcFn's range is in
 
 	once    sync.Once
 	partial string
@@ -137,6 +139,16 @@ func (n *Node) Parent() *Node {
 // zip member, compressed or not). ok is false for anything derived, which has
 // no range of its own to fetch.
 func (n *Node) Source() (path string, off, length int64, ok bool) {
+	if n.src == nil && n.srcFn != nil {
+		n.mu.Lock()
+		if fn := n.srcFn; fn != nil {
+			n.srcFn = nil
+			if o, l, ok := fn(); ok {
+				n.src = &source{path: n.srcPath, off: o, length: l}
+			}
+		}
+		n.mu.Unlock()
+	}
 	if n.src != nil {
 		return n.src.path, n.src.off, n.src.length, true
 	}

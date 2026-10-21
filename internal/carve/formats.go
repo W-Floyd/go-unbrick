@@ -225,12 +225,19 @@ func expandInput(n *Node) ([]*Node, error) {
 		} else {
 			k = FromStream(e.Name, int64(e.Size), e.Open)
 			k.defl = e.Deflate
+			if e.DeflateFn != nil {
+				k.deflFn = e.DeflateFn
+			}
 		}
 		if e.HasCRC {
 			withClaim(k, "crc32", fmt.Sprintf("%08x", e.CRC32), int64(e.Size))
 		}
-		if e.HasSrc {
+		switch {
+		case e.HasSrc:
 			k.src = &source{path: n.path, off: e.SrcOff, length: e.SrcLen}
+		case e.SrcFn != nil: // where it sits is found when asked (see Node.Source)
+			k.srcFn = e.SrcFn
+			k.srcPath = n.path
 		}
 		k.Modified = e.Modified
 		out = append(out, k)

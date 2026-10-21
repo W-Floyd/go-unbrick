@@ -98,6 +98,10 @@ type entry struct {
 	srcOff, srcLen int64
 	hasSrc         bool
 	modified       time.Time // when the archive records the member last changed; zero if not
+	// srcFn and deflFn find what srcOff/srcLen and defl are, on demand, for an
+	// archive where that costs a read per member (a zip).
+	srcFn  func() (off, length int64, ok bool)
+	deflFn func() *Deflated
 }
 
 // Deflated locates a member stored as a raw deflate stream, for a reader
@@ -126,13 +130,32 @@ func openArchive(path string) (*archive, error) {
 				continue
 			}
 			e := entry{name: f.Name, size: f.UncompressedSize64, open: f.Open, crc: f.CRC32, hasCRC: true, modified: f.Modified}
-			if off, err := f.DataOffset(); err == nil {
-				e.srcOff, e.srcLen, e.hasSrc = off, int64(f.CompressedSize64), true
-				switch f.Method {
-				case zip.Store:
-					e.at = io.NewSectionReader(zr.Input(), off, int64(f.UncompressedSize64))
-				case zip.Deflate:
-					e.defl = &Deflated{R: zr.Input(), Start: off, End: off + int64(f.CompressedSize64)}
+			// Where a member's data starts is in its local header: a read of its own,
+			// which for a few hundred members of an APK read through a slow source (a
+			// file inside a compressed filesystem) is most of the time of listing it.
+			// So it is found when a member is read, not for every member up front.
+			// (A remote archive keeps looking up front: its headers are fetched into the
+			// chunk cache ahead of any member being streamed, which is what keeps a
+			// member's fetch to its own bytes.)
+			lo := &lazyOffset{f: f}
+			in := zr.Input()
+			if infile.IsRemote(path) {
+				lo.get()
+			}
+			e.srcFn = func() (int64, int64, bool) {
+				off, ok := lo.get()
+				return off, int64(f.CompressedSize64), ok
+			}
+			switch f.Method {
+			case zip.Store:
+				e.at = &lazyAt{lo: lo, ra: in, size: int64(f.UncompressedSize64)}
+			case zip.Deflate:
+				e.deflFn = func() *Deflated {
+					off, ok := lo.get()
+					if !ok {
+						return nil
+					}
+					return &Deflated{R: in, Start: off, End: off + int64(f.CompressedSize64)}
 				}
 			}
 			a.entries = append(a.entries, e)
@@ -267,6 +290,10 @@ type Entry struct {
 	HasSrc         bool
 	// Modified is when the archive records the member last changed; zero if not.
 	Modified time.Time
+	// SrcFn and DeflateFn are SrcOff/SrcLen and Deflate found on demand, for an archive
+	// where that costs a read per member (a zip): nil when the fields above are set.
+	SrcFn     func() (off, length int64, ok bool)
+	DeflateFn func() *Deflated
 }
 
 // Entries lists path's members for reading, which stays possible until close.
@@ -282,7 +309,7 @@ func Entries(path string) ([]Entry, io.Closer, error) {
 	out := make([]Entry, 0, len(a.entries))
 	for _, e := range a.entries {
 		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at, Deflate: e.defl, CRC32: e.crc, HasCRC: e.hasCRC,
-			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc, Modified: e.modified})
+			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc, Modified: e.modified, SrcFn: e.srcFn, DeflateFn: e.deflFn})
 	}
 	return out, closerFunc(a.close), nil
 }
@@ -347,4 +374,36 @@ func Open(path string, names ...string) (member string, data []byte, err error) 
 		return "", nil, fmt.Errorf("%s: none of %v found in the archive (%s)", infile.Base(path), names, a.partial)
 	}
 	return "", nil, fmt.Errorf("%s: none of %v found in the archive", infile.Base(path), names)
+}
+
+// lazyOffset finds where a zip member's data starts, once, when first asked.
+type lazyOffset struct {
+	f    *zip.File
+	once sync.Once
+	off  int64
+	ok   bool
+}
+
+func (l *lazyOffset) get() (int64, bool) {
+	l.once.Do(func() {
+		off, err := l.f.DataOffset()
+		l.off, l.ok = off, err == nil
+	})
+	return l.off, l.ok
+}
+
+// lazyAt reads a stored zip member at random, finding where its data starts on
+// first use.
+type lazyAt struct {
+	lo   *lazyOffset
+	ra   io.ReaderAt
+	size int64
+}
+
+func (a *lazyAt) ReadAt(p []byte, off int64) (int, error) {
+	start, ok := a.lo.get()
+	if !ok {
+		return 0, fmt.Errorf("srcfile: no data offset for %s", a.lo.f.Name)
+	}
+	return io.NewSectionReader(a.ra, start, a.size).ReadAt(p, off)
 }

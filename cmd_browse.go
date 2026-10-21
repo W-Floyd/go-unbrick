@@ -267,6 +267,8 @@ type browseModel struct {
 	list               list.Model
 	preview            viewport.Model
 	spin               spinner.Model
+	openSeq            int    // which request to open an entry is the latest: an answer for an older one is dropped
+	opening            string // the entry being listed in the background, "" for none
 	rq                 *reconQueue
 	skip               []string // --skip: directory frames leave these files out entirely (same values as 'recon --skip')
 	showRaw            bool     // 'p' toggle: a pretty-printable text file (JSON, ...) shows reformatted by default
@@ -426,8 +428,7 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter", "l", "right":
-				m.descend()
-				return m, nil
+				return m, m.descend()
 			case "backspace", "h", "left":
 				m.ascend()
 				return m, nil
@@ -452,9 +453,11 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.SetClipboard(stripANSI(m.preview.GetContent()))
 			}
 		}
-	case tea.MouseClickMsg:
-		m.handleClick(msg.Mouse())
+	case openedMsg:
+		m.opened(msg)
 		return m, nil
+	case tea.MouseClickMsg:
+		return m, m.handleClick(msg.Mouse())
 	case tea.MouseWheelMsg:
 		m.handleWheel(msg.Mouse())
 		return m, nil
@@ -572,7 +575,9 @@ func (m *browseModel) View() tea.View {
 	}
 
 	status := m.status
-	if name, ok := m.rq.inflightDisplay(); ok {
+	if m.opening != "" {
+		status = m.spin.View() + " opening " + m.opening + "..." // listing it can take long; the screen stays live
+	} else if name, ok := m.rq.inflightDisplay(); ok {
 		status = m.spin.View() + " reconning " + name + "..."
 	} else if status == "" {
 		status = strings.Join(m.breadcrumb(), " / ")
@@ -703,22 +708,23 @@ func (m *browseModel) onSelectionChanged() {
 // handleClick selects the entry under the pointer; clicking the entry that
 // was already selected activates it (same as pressing enter), matching the
 // usual file-manager convention of a second interaction to open.
-func (m *browseModel) handleClick(ms tea.Mouse) {
+func (m *browseModel) handleClick(ms tea.Mouse) tea.Cmd {
 	if ms.X >= m.listWidth() {
-		return
+		return nil
 	}
 	idx := m.list.Paginator.Page*m.list.Paginator.PerPage + ms.Y
 	items := m.list.Items()
 	if idx < 0 || idx >= len(items) {
-		return
+		return nil
 	}
 	already := idx == m.list.Index()
 	wasParent, _ := items[idx].(browseEntry)
 	m.list.Select(idx)
 	m.onSelectionChanged()
 	if already || wasParent.isParent {
-		m.descend() // a click on ".." activates immediately - a real back button, not "select then click again"
+		return m.descend() // a click on ".." activates immediately - a real back button, not "select then click again"
 	}
+	return nil
 }
 
 func (m *browseModel) handleWheel(ms tea.Mouse) {
@@ -1199,32 +1205,66 @@ func (m *browseModel) finishFrame(items []list.Item) {
 // current is the frame browse is showing the contents of.
 func (m *browseModel) current() browseFrame { return m.frames[len(m.frames)-1] }
 
-func (m *browseModel) descend() {
+// openedMsg is a level that was being listed in the background, ready. seq says
+// which request it answers: one the user has since moved on from is dropped.
+type openedMsg struct {
+	seq   int
+	entry browseEntry
+	level *analysis.BrowseLevel
+	err   error
+}
+
+// descend goes into the selected entry. Listing it can take long (a filesystem
+// inside a package is decompressed to be listed, and an entry that is being
+// reconned is being read by the worker at that moment), so it is done off the
+// UI's goroutine: the screen stays live, says it is opening, and moving on
+// (another entry, or back up) drops the request.
+func (m *browseModel) descend() tea.Cmd {
 	e, ok := m.selected()
 	if !ok {
-		return
+		return nil
 	}
 	if e.isParent {
 		m.ascend()
-		return
+		return nil
 	}
 	// Remember where we were in this frame so ascend can put the cursor back
 	// on the entry we came from, instead of always landing on the first item.
 	if len(m.frames) > 0 {
 		m.frames[len(m.frames)-1].selected = m.list.Index()
 	}
-	l, err := analysis.Open(e.core(), m.skip)
+	m.openSeq++
+	seq, skip := m.openSeq, m.skip
+	m.opening = e.name
+	// It is the entry the user wants now: ahead of the crawl, which lists it too.
+	if key, ok := reconKey(e); ok {
+		m.rq.bump(key)
+	}
+	return func() tea.Msg {
+		l, err := analysis.Open(e.core(), skip)
+		return openedMsg{seq: seq, entry: e, level: l, err: err}
+	}
+}
+
+// opened takes a listed level in, unless the request is stale.
+func (m *browseModel) opened(msg openedMsg) {
+	if msg.seq != m.openSeq {
+		return
+	}
+	m.opening = ""
 	switch {
-	case err != nil && e.dir:
-		m.setStatus(err.Error())
-	case err != nil:
-		m.setStatus(e.name + ": " + err.Error())
+	case msg.err != nil && msg.entry.dir:
+		m.setStatus(msg.err.Error())
+	case msg.err != nil:
+		m.setStatus(msg.entry.name + ": " + msg.err.Error())
 	default:
-		m.pushLevel(l)
+		m.pushLevel(msg.level)
 	}
 }
 
 func (m *browseModel) ascend() {
+	m.openSeq++ // whatever was being opened is no longer wanted
+	m.opening = ""
 	if len(m.frames) <= 1 {
 		return
 	}
