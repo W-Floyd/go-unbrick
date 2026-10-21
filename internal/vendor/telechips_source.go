@@ -18,6 +18,9 @@ var (
 	LKSourceBuild = facts.Key[string]("lk_source_build")
 	// LKSourceRecovery is the flashing and verification code the tree contains.
 	LKSourceRecovery = facts.Key[string]("lk_source_recovery")
+	// UBootSourceConfig is the recovery and image-trust features the tree's U-Boot
+	// defconfig for the target turns on.
+	UBootSourceConfig = facts.Key[string]("uboot_source_config")
 )
 
 // recoveryPaths are suffixes of tree members whose presence says what the
@@ -65,7 +68,7 @@ func (tcc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 		keys = append(keys, r)
 	}
 	sort.Strings(keys)
-	var targets, builds, rec []string
+	var targets, builds, rec, uboot []string
 	for _, root := range keys {
 		sort.Strings(roots[root])
 		found := false
@@ -91,6 +94,11 @@ func (tcc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 			if d := src.Describe(); len(d) > 0 {
 				builds = append(builds, strings.Join(d, ", "))
 			}
+			if cfg := pkg.Read(root + "/u-boot/configs/" + src.Target + "_defconfig"); cfg != nil {
+				if d := telechips.DescribeUBoot(telechips.ParseDefconfig(cfg)); len(d) > 0 {
+					uboot = append(uboot, src.Target+": "+strings.Join(d, ", "))
+				}
+			}
 		}
 		if !found {
 			continue
@@ -112,7 +120,7 @@ func (tcc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 	for _, f := range []struct {
 		key  facts.Fact[string]
 		vals []string
-	}{{LKSourceTarget, targets}, {LKSourceBuild, builds}, {LKSourceRecovery, rec}} {
+	}{{LKSourceTarget, targets}, {LKSourceBuild, builds}, {LKSourceRecovery, rec}, {UBootSourceConfig, uboot}} {
 		if len(f.vals) > 0 {
 			facts.Set(bag, f.key, strings.Join(f.vals, "; "), prov)
 		}

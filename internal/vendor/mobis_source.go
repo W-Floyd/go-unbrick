@@ -24,10 +24,16 @@ var (
 	// SourceSecurity is the modifications whose title or files concern signing,
 	// verification, keys, locks or update paths: what changed in the trust chain.
 	SourceSecurity = facts.Key[string]("source_security")
+	// SourceStorage is the modifications that concern partitions, formatting,
+	// erasing or factory reset: what the build does to the device's storage.
+	SourceStorage = facts.Key[string]("source_storage")
+	// SourceTickets counts the Jira projects the commit subjects cite, which
+	// names the teams and programmes behind the changes.
+	SourceTickets = facts.Key[string]("source_tickets")
 )
 
 var (
-	noticePath    = regexp.MustCompile(`(?im)^[\s*/]*File path\s*\d*\s*:`)
+	noticePath    = regexp.MustCompile(`(?im)^[\s*/]*File path\s*\d*\s*:[ \t]*(.*?)[ \t]*(?:\*/)?[ \t]*$`)
 	noticeLicense = regexp.MustCompile(`(?im)^[\s*/]*License Name[ \t]*:[ \t]*(.+?)[ \t]*$`)
 	noticeModInfo = regexp.MustCompile(`(?im)^[\s*/]*Modification Information[^:\n]*:[ \t]*(.+?)[ \t]*$`)
 	noticeDateRe  = regexp.MustCompile(`(?i)^\s*Date:\s*(.+?)\s*$`)
@@ -39,6 +45,8 @@ var (
 	// Bounded by non-alphanumerics, not \b: "_" joins words in identifiers
 	// (check_rsa_image).
 	security = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(rsa|verif[a-z]*|signature|signed|signing|secure ?boot|encrypt[a-z]*|decrypt[a-z]*|keys?|unlock[a-z]*|locked?|fastboot|rollback|anti-?rollback|tsbm|hash|certificate)(?:[^a-z0-9]|$)`)
+	storage  = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(partitions?|factory ?reset|securedata|sest|gpt|emmc|erase[a-z]*|wipe[a-z]*|mkfs|ptable|userdata)(?:[^a-z0-9]|$)`)
+	ticket   = regexp.MustCompile(`\b([A-Z][A-Z0-9]{2,})-\d+\b`)
 	dirName  = regexp.MustCompile(`^(\d{4})_([A-Za-z0-9]+)_([A-Za-z0-9]+)_.+$`)
 	noticeTx = regexp.MustCompile(`^\d{4}_.+\.txt$`)
 )
@@ -54,7 +62,11 @@ type NoticeMod struct {
 // their dates, and the licences they carry. Files is 0 for a notice that only
 // lists packages.
 type NoticeSummary struct {
-	Files    int
+	Files int
+	Paths []string // the files the notice declares modified, as it names them
+	// Import says a modification lists the whole project's tree: an initial
+	// import, so every file is declared and Paths cannot tell changes apart.
+	Import   bool
 	Licenses []string
 	Mods     []NoticeMod
 }
@@ -100,7 +112,15 @@ func duplicate(title string) bool {
 // or blocks of "Modification:" and "Date:" followed by the files changed.
 func ParseNotice(data []byte) NoticeSummary {
 	var s NoticeSummary
-	s.Files = len(noticePath.FindAll(data, -1))
+	paths := noticePath.FindAllSubmatch(data, -1)
+	s.Files = len(paths)
+	for _, m := range paths {
+		// "util/x.hh via kenlm_5bf7b46.patch": the file, then how it was changed.
+		p, _, _ := strings.Cut(string(m[1]), " via ")
+		if p = strings.TrimPrefix(strings.TrimSpace(p), "./"); p != "" {
+			s.Paths = append(s.Paths, p)
+		}
+	}
 	seen := map[string]bool{}
 	for _, m := range noticeLicense.FindAllSubmatch(data, -1) {
 		l := strings.TrimSpace(string(m[1]))
@@ -116,6 +136,7 @@ func ParseNotice(data []byte) NoticeSummary {
 		s.Mods = append(s.Mods, NoticeMod{Date: normDate(text), Title: cleanTitle(text)})
 	}
 	var cur *NoticeMod
+	pathStart, dump := 0, false
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		switch {
@@ -123,6 +144,16 @@ func ParseNotice(data []byte) NoticeSummary {
 			text := strings.TrimSpace(strings.TrimPrefix(line, "Modification:"))
 			s.Mods = append(s.Mods, NoticeMod{Date: normDate(text), Title: cleanTitle(text)})
 			cur = &s.Mods[len(s.Mods)-1]
+			pathStart, dump = len(s.Paths), false
+		case cur != nil && (strings.HasPrefix(line, "├") || strings.HasPrefix(line, "└") || strings.HasPrefix(line, "│")):
+			// A tree listing: the initial import of the whole project, not a change.
+			if !dump {
+				dump = true
+				s.Import = true
+				cur.Files = nil
+				s.Paths = s.Paths[:pathStart]
+			}
+		case dump:
 		case cur != nil && noticeDateRe.MatchString(line):
 			if d := normDate(noticeDateRe.FindStringSubmatch(line)[1]); d != "" {
 				cur.Date = d
@@ -130,7 +161,9 @@ func ParseNotice(data []byte) NoticeSummary {
 		case strings.HasPrefix(line, "===="):
 			cur = nil
 		case cur != nil && line != "" && !strings.ContainsAny(line, " \t") && strings.Contains(line, "/"):
-			cur.Files = append(cur.Files, strings.TrimPrefix(line, "./"))
+			f := strings.TrimPrefix(line, "./")
+			cur.Files = append(cur.Files, f)
+			s.Paths = append(s.Paths, f)
 		}
 	}
 	return s
@@ -150,6 +183,11 @@ func (s NoticeSummary) Span() (first, last string) {
 		}
 	}
 	return first, last
+}
+
+// IsNoticeName says a top-level member is one of a release's notices.
+func IsNoticeName(n string) bool {
+	return !strings.Contains(n, "/") && (strings.HasSuffix(n, "_notice.txt") || noticeTx.MatchString(n))
 }
 
 // sourceRelease reads a source release's shape from member names alone: the
@@ -228,7 +266,8 @@ func learnSourceRelease(pkg PackageAccess, bag *facts.Bag) {
 		return
 	}
 	var lines []string
-	var sec []secMod
+	var sec, sto []secMod
+	tickets := map[string]int{}
 	first, last := "", ""
 	for _, n := range notices {
 		s := ParseNotice(pkg.Read(n))
@@ -259,8 +298,18 @@ func learnSourceRelease(pkg PackageAccess, bag *facts.Bag) {
 		}
 		lines = append(lines, line)
 		for _, m := range s.Mods {
-			if !duplicate(m.Title) && security.MatchString(m.Title+" "+strings.Join(m.Files, " ")) {
+			if duplicate(m.Title) {
+				continue
+			}
+			text := m.Title + " " + strings.Join(m.Files, " ")
+			if security.MatchString(text) {
 				sec = append(sec, secMod{m.Date, securityLine(n, m)})
+			}
+			if storage.MatchString(text) {
+				sto = append(sto, secMod{m.Date, securityLine(n, m)})
+			}
+			for _, t := range ticket.FindAllStringSubmatch(m.Title, -1) {
+				tickets[t[1]]++
 			}
 		}
 	}
@@ -275,6 +324,31 @@ func learnSourceRelease(pkg PackageAccess, bag *facts.Bag) {
 	if len(sec) > 0 {
 		facts.Set(bag, SourceSecurity, strings.Join(recent(sec, securityMax), "; "), nprov)
 	}
+	if len(sto) > 0 {
+		facts.Set(bag, SourceStorage, strings.Join(recent(sto, securityMax), "; "), nprov)
+	}
+	if t := ticketCounts(tickets); t != "" {
+		facts.Set(bag, SourceTickets, t, nprov)
+	}
+}
+
+// ticketCounts is the Jira projects cited, most cited first: "AVNG5WIDE (212), OTAPLAT (30)".
+func ticketCounts(n map[string]int) string {
+	keys := make([]string, 0, len(n))
+	for k := range n {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if n[keys[i]] != n[keys[j]] {
+			return n[keys[i]] > n[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s (%d)", k, n[k])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // securityMax bounds the trust-chain changes listed: the most recent, which say

@@ -29,4 +29,7 @@ func (mobis) Assemble(*blankflash.Donor, *blankflash.Target, AssembleOptions) (*
 
 // LearnPackage implements PackageLearner: a source release's components,
 // product, dates and what its notices say Mobis changed.
-func (mobis) LearnPackage(pkg PackageAccess, bag *facts.Bag) { learnSourceRelease(pkg, bag) }
+func (mobis) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
+	learnSourceRelease(pkg, bag)
+	learnUpdateVerify(pkg, bag)
+}

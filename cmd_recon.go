@@ -425,8 +425,23 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.LKSourceRecovery); ok {
 		addList(&out, "LK source recovery", strings.Split(v, "; "))
 	}
+	if v, ok := facts.Get(b, vendor.UBootSourceConfig); ok {
+		addList(&out, "U-Boot source config", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.SourceUpdateVerify); ok {
+		add("Update verification (source): %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.SourceUpdateKey); ok {
+		add("Update verification key: %s", v)
+	}
 	if v, ok := facts.Get(b, vendor.SourceSecurity); ok {
 		addList(&out, "Source trust-chain changes", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.SourceStorage); ok {
+		addList(&out, "Source storage changes", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.SourceTickets); ok {
+		add("Source tickets: %s", v)
 	}
 	if v, ok := facts.Get(b, vendor.SourceComponents); ok {
 		addList(&out, "Source components", strings.Split(v, "; "))

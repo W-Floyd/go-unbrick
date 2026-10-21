@@ -266,3 +266,8 @@ func scanCerts(data []byte) []Cert {
 	}
 	return out
 }
+
+// Fingerprint is a key's canonical identity: the SHA-256 of its DER
+// SubjectPublicKeyInfo, as Scan reports for keys found in binaries, so a key
+// read from source can be matched against them.
+func Fingerprint(pub *rsa.PublicKey) string { return spkiFingerprint(pub) }

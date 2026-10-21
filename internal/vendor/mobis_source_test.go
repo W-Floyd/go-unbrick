@@ -105,3 +105,46 @@ func TestRecent(t *testing.T) {
 		t.Errorf("%v", got)
 	}
 }
+
+func TestStorageAndTickets(t *testing.T) {
+	if !storage.MatchString("[tcc803x][BSP][AVNG5WIDE-281732] add securedata partition format when factory reset") ||
+		storage.MatchString("Fix the status display") {
+		t.Error("storage filter")
+	}
+	got := ticketCounts(map[string]int{"OTAPLAT": 30, "AVNG5WIDE": 212, "BSP": 30})
+	if got != "AVNG5WIDE (212), BSP (30), OTAPLAT (30)" {
+		t.Errorf("tickets %q", got)
+	}
+	m := ticket.FindAllStringSubmatch("[G5W][OTAPLAT-1486] SecureBoot [AVNG5WIDE-1]", -1)
+	if len(m) != 2 || m[0][1] != "OTAPLAT" {
+		t.Errorf("ticket match %v", m)
+	}
+}
+
+func TestStorageIgnoresBareFormat(t *testing.T) {
+	if storage.MatchString("3GPP format for MO SMS shall be used") {
+		t.Error("bare format matched")
+	}
+}
+
+func TestNoticeDeclaredPaths(t *testing.T) {
+	s := ParseNotice([]byte("Kenneth Heafield\n/* File Path 1: util/bit_packing.hh via kenlm_5bf7b46.patch */\n/* Copyright (c) 2024 42dot Inc. */\n"))
+	if !reflect.DeepEqual(s.Paths, []string{"util/bit_packing.hh"}) {
+		t.Errorf("paths %v", s.Paths)
+	}
+	s = ParseNotice([]byte("/*\n * File path1 : ./a/b.c\n * File path2 : d.c\n */\n====================\nModification: x\nDate: 2020-01-01\n\nu-boot/x.c\n"))
+	if !reflect.DeepEqual(s.Paths, []string{"a/b.c", "d.c", "u-boot/x.c"}) {
+		t.Errorf("paths %v", s.Paths)
+	}
+}
+
+func TestNoticeTreeDumpIsNotChanges(t *testing.T) {
+	in := "====================\nModification: Initialize uboot\nDate: 2017-10\n\n./Makefile\n./README\n├── ./api/Makefile\n└── ./api/README\n====================\nModification: real change\nDate: 2018-11-27\n\nu-boot/HowToBuild\n"
+	s := ParseNotice([]byte(in))
+	if !s.Import || !reflect.DeepEqual(s.Paths, []string{"u-boot/HowToBuild"}) {
+		t.Errorf("paths %v", s.Paths)
+	}
+	if len(s.Mods) != 2 || s.Mods[0].Files != nil || len(s.Mods[1].Files) != 1 {
+		t.Errorf("mods %+v", s.Mods)
+	}
+}
