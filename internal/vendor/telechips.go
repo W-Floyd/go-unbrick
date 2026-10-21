@@ -1,10 +1,12 @@
 package vendor
 
 import (
-	"bytes"
+	"fmt"
+	"io"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/telechips"
 )
@@ -40,25 +42,102 @@ func tccArtifact(data []byte) (ArtifactInfo, bool) {
 			info.Detail = strings.TrimSpace(im.Name + " " + im.Version)
 		}
 		return info, true
-	case bytes.HasPrefix(data, []byte("ANDROID@")) && len(data) >= 0x20:
-		return ArtifactInfo{Label: "Telechips LK bootloader", Detail: strings.Join(strings.Fields(string(bytes.Trim(data[0x18:0x20], "\x00"))), " ")}, true
+	case telechips.IsLKROM(data):
+		info := ArtifactInfo{Label: "Telechips LK ROM (BL1+EL3+LK, packaged)"}
+		if lk, err := telechips.ParseLKROM(data); err == nil {
+			info.Detail = fmt.Sprintf("%s, %d components", strings.TrimSpace(lk.VersionTag), len(lk.Entries))
+		}
+		return info, true
 	}
 	return ArtifactInfo{}, false
 }
 
 // ArtifactReport implements ArtifactReporter: a boot stage's wrapper, build and
-// default environment.
+// default environment; an LK ROM's component table.
 func (tcc) ArtifactReport(path string, head []byte) []string {
-	if !telechips.IsImage(head) {
-		return nil
+	switch {
+	case telechips.IsImage(head):
+		data, err := infile.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		im, err := telechips.Parse(data)
+		if err != nil {
+			return nil
+		}
+		return im.Report()
+	case telechips.IsLKROM(head):
+		data, err := infile.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		lk, err := telechips.ParseLKROM(data)
+		if err != nil {
+			return nil
+		}
+		return lk.Report()
 	}
-	data, err := infile.ReadFile(path)
-	if err != nil {
-		return nil
+	return nil
+}
+
+// lkromChildName is a carve child's name for one of an LK ROM's 9 table
+// entries: a slug of its own found tag (e.g. "bl1c_tcc803x") if it has one,
+// otherwise its byte range -- always unique, always meaningful even where no
+// tag was found.
+func lkromChildName(e telechips.LKROMEntry) string {
+	if e.Tag != "" {
+		var b strings.Builder
+		for _, r := range strings.ToLower(e.Tag) {
+			switch {
+			case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+				b.WriteRune(r)
+			case b.Len() > 0 && b.String()[b.Len()-1] != '_':
+				b.WriteByte('_')
+			}
+			if b.Len() >= 16 {
+				break
+			}
+		}
+		if s := strings.Trim(b.String(), "_"); s != "" {
+			return s + ".bin"
+		}
 	}
-	im, err := telechips.Parse(data)
-	if err != nil {
-		return nil
-	}
-	return im.Report()
+	return fmt.Sprintf("0x%06x-0x%06x.bin", e.Offset, e.Offset+e.Size)
+}
+
+// CarveExpanders implements Carver: an LK ROM's 9 table entries as named
+// members, so `ls`/`extract` reach BL1/EL3/LK-proper/etc. directly instead
+// of needing their byte ranges looked up by hand each time.
+func (tcc) CarveExpanders() []carve.Expander {
+	return []carve.Expander{{
+		Kind:  "lkrom",
+		Match: func(_ *carve.Node, head []byte) bool { return telechips.IsLKROM(head) },
+		Expand: func(n *carve.Node) ([]*carve.Node, error) {
+			ra, err := n.ReaderAt()
+			if err != nil {
+				return nil, err
+			}
+			// The table itself (0xb0 bytes) is tiny, but tags can sit up to
+			// lkromTagScanWindow into an entry the table hasn't been read
+			// yet to locate -- so ParseLKROM needs the whole image, not
+			// just a head buffer. n.Size is already known from the
+			// container (the tar/carve layer), so one read covers it.
+			head := make([]byte, n.Size)
+			if _, err := ra.ReadAt(head, 0); err != nil && err != io.EOF {
+				return nil, err
+			}
+			lk, err := telechips.ParseLKROM(head)
+			if err != nil {
+				return nil, err
+			}
+			var out []*carve.Node
+			for _, e := range lk.Sorted() {
+				if int64(e.Offset)+int64(e.Size) > n.Size {
+					continue
+				}
+				out = append(out, carve.FromReaderAt(lkromChildName(e), io.NewSectionReader(ra, int64(e.Offset), int64(e.Size)), int64(e.Size)))
+			}
+			return out, nil
+		},
+	}}
 }
