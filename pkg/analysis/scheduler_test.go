@@ -134,3 +134,60 @@ func TestChainDistanceIsStepsThroughTheCommonAncestor(t *testing.T) {
 		t.Errorf("no focus is depth: %d", d)
 	}
 }
+
+// tarAt is a tar whose members carry the given time, so two tars of the same
+// members can differ in bytes alone.
+func tarAt(t *testing.T, when time.Time, members ...string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for i := 0; i+1 < len(members); i += 2 {
+		tw.WriteHeader(&tar.Header{Name: members[i], Mode: 0o644, Size: int64(len(members[i+1])), ModTime: when})
+		tw.Write([]byte(members[i+1]))
+	}
+	tw.Close()
+	return buf.Bytes()
+}
+
+// Listing the members of a pair the first pass stopped at compares them, and what
+// that found is the pair's: going back out must not say they were never compared.
+func TestListingMembersRecordsThatTheyWereCompared(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	members := []string{"x.txt", "same one", "y.txt", "same two", "z.txt", "same three"}
+	os.WriteFile(filepath.Join(a, "extra_pkg_old.tar"), tarAt(t, time.Unix(1_700_000_000, 0), members...), 0o644)
+	os.WriteFile(filepath.Join(b, "new_extra_pkg_new.tar"), tarAt(t, time.Unix(1_800_000_000, 0), members...), 0o644)
+	r := Start(Config{A: a, B: b, Depth: 1}) // no AutoDeepen: nothing goes deeper unasked
+	<-r.Done()
+	e := r.Entries(r.Root(), false)[0]
+	if e.Compared || !e.ContainerPair() {
+		t.Fatalf("setup: a pair the depth ran out on was expected: %+v", e)
+	}
+	before := r.Summary()
+
+	lvl, err := r.Open(r.Root(), e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the members to be listed", func() bool { return !lvl.Busy() })
+	if got := len(r.Entries(lvl, false)); got != 3 {
+		t.Errorf("listed %d members, want 3", got)
+	}
+
+	// Back out: the pair now says its members were compared, and the run's counts
+	// account for them.
+	waitFor(t, "the pair to be recorded", func() bool { return r.Entries(r.Root(), false)[0].Compared })
+	e = r.Entries(r.Root(), false)[0]
+	if e.Pending {
+		t.Errorf("still pending: %+v", e)
+	}
+	if after := r.Summary(); after == before {
+		t.Errorf("the run's summary did not take the members in: %q", after)
+	}
+	// And it is not compared a second time.
+	if _, err := r.Deepen(); err != nil {
+		t.Fatal(err)
+	}
+	if n := comparedCount(r); n != 1 {
+		t.Errorf("compared %d pairs, want 1", n)
+	}
+}

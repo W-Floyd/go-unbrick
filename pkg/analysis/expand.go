@@ -145,6 +145,19 @@ func (r *Run) Expand(e Entry) error {
 	return nil
 }
 
+// claimWith is claim, with the tally the comparison is already making, which is
+// then what the line shows while it runs.
+func (r *Run) claimWith(l *diffLine, t *treeDiffTally) bool {
+	ok := false
+	live(func() {
+		if l.subT == nil && len(l.sub) == 0 && !l.compared {
+			l.subT = t
+			ok = true
+		}
+	})
+	return ok
+}
+
 // claim marks a pair as being compared, if nothing has started on it.
 func (r *Run) claim(l *diffLine) bool {
 	ok := false
@@ -351,6 +364,13 @@ func (r *Run) expandLine(l *diffLine) {
 	}
 	sub.pairRenames()
 	sub.pairSimilar()
+	r.finishLine(l, sub)
+}
+
+// finishLine records on a pair's line that its members were compared, as sub
+// found them, and folds the counts into the run's. A pair renamed and changed
+// whose members all match is only renamed after all.
+func (r *Run) finishLine(l *diffLine, sub *treeDiffTally) {
 	same := sub.differences() == 0
 	root, _, _ := r.get()
 	live(func() {

@@ -476,7 +476,7 @@ func (r *Run) Open(cur *Level, e Entry) (*Level, error) {
 	}
 	switch {
 	case !e.HasKids: // two containers with nothing differing inside: list their members
-		return membersLevel(e), nil
+		return r.membersLevel(e), nil
 	case e.src == nil: // a directory made from the paths: the same lines, narrowed
 		return &Level{title: strings.TrimSuffix(e.Name, "/"), source: cur.source, strip: cur.strip, dir: cur.dir + e.Name}, nil
 	}
@@ -489,17 +489,30 @@ func (r *Run) Open(cur *Level, e Entry) (*Level, error) {
 // different inside: their members, all unchanged, listed by comparing them now.
 // It runs in the background and the level fills in as it goes. (Their digests
 // were taken, or stated, when they were first compared, so it is mostly lookups.)
-func membersLevel(e Entry) *Level {
+//
+// When the pair is one the first pass stopped at (the depth ran out before its
+// members were looked at), this is the comparison Expand would make, so it is
+// recorded on the pair's line: going back out must say the members were compared,
+// the run's counts must take them in, and nothing compares them a second time.
+func (r *Run) membersLevel(e Entry) *Level {
 	a, b := e.a, e.b
 	t := &treeDiffTally{depth: 1, verbose: true, claimsA: subClaims(a, ""), claimsB: subClaims(b, "")}
+	l := e.src
+	record := l != nil && l.a != nil && l.b != nil && (l.kind == '~' || l.kind == '≈') && r.claimWith(l, t)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		if err := diffNodes(a, b, "", "", 1, true, t); err != nil {
 			t.out("  (%v)", err)
+			if record {
+				live(func() { l.subT = nil }) // not compared after all: free to be tried again
+			}
 			return
 		}
 		t.pairRenames()
+		if record {
+			r.finishLine(l, t)
+		}
 	}()
 	return &Level{
 		title:  path.Base(strings.TrimSuffix(e.Name, "/")),
