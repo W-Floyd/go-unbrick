@@ -205,3 +205,97 @@ func TestPrefetchAndBlobLocal(t *testing.T) {
 		t.Errorf("after prefetch: %q %v", b, ok)
 	}
 }
+
+func TestPrefetchSkipsBlobsAlreadyHeld(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	origin := t.TempDir()
+	run(t, origin, "init", "-q", "-b", "main")
+	run(t, origin, "config", "uploadpack.allowFilter", "true")
+	run(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	if err := os.WriteFile(filepath.Join(origin, "a.c"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, origin, "add", ".")
+	run(t, origin, "commit", "-q", "-m", "one")
+	s, err := Open("file://"+origin, "main", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := s.Files["a.c"]
+	if m := s.missing([]string{sha}); len(m) != 1 {
+		t.Fatalf("missing before: %v", m)
+	}
+	if err := s.Prefetch("test", []string{sha}); err != nil {
+		t.Fatal(err)
+	}
+	if m := s.missing([]string{sha}); len(m) != 0 {
+		t.Fatalf("missing after: %v", m)
+	}
+	// With origin gone, a blob already held is no reason to fail: nothing is asked.
+	if _, err := s.git("remote", "set-url", "origin", "file:///nonexistent/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Prefetch("test", []string{sha}); err != nil {
+		t.Errorf("fetched a blob it already held: %v", err)
+	}
+}
+
+func TestBlobsLocalAndTagCache(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	origin := t.TempDir()
+	run(t, origin, "init", "-q", "-b", "main")
+	run(t, origin, "config", "uploadpack.allowFilter", "true")
+	run(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(origin, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.c", "alpha\r\nbeta\r\n")
+	write("b.c", "no trailing newline")
+	write("empty.c", "")
+	run(t, origin, "add", ".")
+	run(t, origin, "commit", "-q", "-m", "one")
+	run(t, origin, "tag", "v1")
+	cache := t.TempDir()
+	s, err := Open("file://"+origin, "v1", cache, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shas []string
+	for _, p := range []string{"a.c", "b.c", "empty.c"} {
+		shas = append(shas, s.Files[p])
+	}
+	if got := s.BlobsLocal(shas); len(got) != 0 {
+		t.Fatalf("blobs before they were fetched: %d", len(got))
+	}
+	if err := s.Prefetch("test", shas); err != nil {
+		t.Fatal(err)
+	}
+	got := s.BlobsLocal(append(shas, "0000000000000000000000000000000000000000"))
+	if string(got[s.Files["a.c"]]) != "alpha\r\nbeta\r\n" || string(got[s.Files["b.c"]]) != "no trailing newline" {
+		t.Errorf("content: %q", got)
+	}
+	if b, ok := got[s.Files["empty.c"]]; !ok || len(b) != 0 {
+		t.Errorf("empty blob: %q %v", b, ok)
+	}
+
+	// A tag resolved once is known the second time without asking the remote: with
+	// the remote gone, opening it still works.
+	home := t.TempDir() // matchcache.Default follows the user cache dir, which follows HOME (macOS) or XDG_CACHE_HOME
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if _, err := Open("file://"+origin, "v1", cache, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(origin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open("file://"+origin, "v1", cache, nil); err != nil {
+		t.Errorf("a resolved tag cost a round trip to a remote that is gone: %v", err)
+	}
+}

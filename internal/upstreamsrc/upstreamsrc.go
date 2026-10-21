@@ -7,6 +7,7 @@
 package upstreamsrc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -23,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/W-Floyd/go-unbrick/internal/matchcache"
 	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
@@ -246,7 +248,17 @@ func (s *Snapshot) resolve(ref string, say func(string, ...any)) (string, error)
 	case ref == "":
 		return s.lsRemote("HEAD")
 	}
-	if c, err := s.lsRemote("refs/tags/"+ref+"^{}", "refs/tags/"+ref, "refs/heads/"+ref); err == nil {
+	// A tag already resolved, whose commit is held, costs no round trip.
+	mc := matchcache.Default()
+	key := matchcache.Key("tagcommit", s.URL, ref)
+	var known struct{ Commit string }
+	if mc.Get(key, &known) && fullSHA.MatchString(known.Commit) && s.has(known.Commit) {
+		return known.Commit, nil
+	}
+	if c, found, err := s.lsRemoteRef("refs/tags/"+ref+"^{}", "refs/tags/"+ref, "refs/heads/"+ref); err == nil {
+		if strings.HasPrefix(found, "refs/tags/") {
+			mc.Put(key, tagTTL, struct{ Commit string }{c})
+		}
 		return c, nil
 	}
 	if shortSHA.MatchString(ref) {
@@ -265,17 +277,27 @@ func (s *Snapshot) resolve(ref string, say func(string, ...any)) (string, error)
 // lsRemote is the first of patterns the remote has, as a commit id (a peeled tag
 // preferred, being listed first).
 func (s *Snapshot) lsRemote(patterns ...string) (string, error) {
+	c, _, err := s.lsRemoteRef(patterns...)
+	return c, err
+}
+
+// lsRemoteRef is lsRemote that also says which ref it found.
+func (s *Snapshot) lsRemoteRef(patterns ...string) (commit, ref string, err error) {
 	out, err := s.git(append([]string{"ls-remote", "origin"}, patterns...)...)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if f := strings.Fields(line); len(f) == 2 && fullSHA.MatchString(f[0]) {
-			return f[0], nil
+			return f[0], f[1], nil
 		}
 	}
-	return "", fmt.Errorf("%s: not found", strings.Join(patterns, ", "))
+	return "", "", fmt.Errorf("%s: not found", strings.Join(patterns, ", "))
 }
+
+// tagTTL is how long a tag's commit is remembered: a tag is a release, and does not
+// move. (A branch does, so a branch is always asked for.)
+const tagTTL = 30 * 24 * time.Hour
 
 // gitPhase picks the phase and percent out of a git progress line
 // ("Receiving objects:  63% (1234/1960), 5.2 MiB | 2.1 MiB/s").
@@ -294,7 +316,17 @@ func shortURL(u string) string {
 // reports (receiving objects, resolving deltas) to the shared tracker as a task of
 // its own, so a waiting front end can show percent and time left.
 func (s *Snapshot) gitProgress(label string, args ...string) error {
-	cmd := exec.Command("git", append([]string{"--git-dir", s.dir, args[0], "--progress"}, args[1:]...)...)
+	return s.gitProgressWith(nil, label, args...)
+}
+
+// gitProgressWith is gitProgress with configuration for the command, as -c
+// key=value pairs placed before the subcommand.
+func (s *Snapshot) gitProgressWith(cfg []string, label string, args ...string) error {
+	pre := []string{"--git-dir", s.dir}
+	for _, c := range cfg {
+		pre = append(pre, "-c", c)
+	}
+	cmd := exec.Command("git", append(append(pre, args[0], "--progress"), args[1:]...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -386,15 +418,46 @@ func (s *Snapshot) gitEnv(env []string, args ...string) ([]byte, error) {
 // first batch the server will not send (many will not send an object by id),
 // leaving the blobs unfetched; Blob would then fetch them one at a time, which is
 // BlobLocal's reason to exist.
+//
+// Blobs already held are not asked for, and the fetch skips negotiation: it tells
+// the server what the repository has so that less is sent, which for a blob sent
+// by id saves nothing, and against a repository holding a long history costs
+// tens of seconds, and can end with some of the blobs not sent at all.
 func (s *Snapshot) Prefetch(label string, shas []string) error {
+	shas = s.missing(shas)
 	for len(shas) > 0 {
 		chunk := shas[:min(len(shas), 100)]
 		shas = shas[len(chunk):]
-		if err := s.gitProgress(label, append([]string{"fetch", "--no-tags", "origin"}, chunk...)...); err != nil {
+		err := s.gitProgressWith([]string{"fetch.negotiationAlgorithm=noop"}, label,
+			append([]string{"fetch", "--no-tags", "origin"}, chunk...)...)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// missing is the blobs among shas that the repository does not hold.
+func (s *Snapshot) missing(shas []string) []string {
+	if len(shas) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "--git-dir", s.dir, "cat-file", "--batch-check")
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = strings.NewReader(strings.Join(shas, "\n") + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return shas // cannot tell: ask for all
+	}
+	var miss []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == "missing" {
+			miss = append(miss, f[0])
+		}
+	}
+	return miss
 }
 
 // BlobLocal is the content of a blob already held, without ever fetching it: ok is
@@ -413,7 +476,7 @@ func (s *Snapshot) Sizes(shas []string) (map[string]int64, error) {
 	for len(shas) > 0 {
 		chunk := shas[:min(len(shas), 100)]
 		shas = shas[len(chunk):]
-		s.gitProgress("fetching changed files", append([]string{"fetch", "--no-tags", "origin"}, chunk...)...) //nolint:errcheck // best effort; see above
+		s.Prefetch("fetching changed files", chunk) //nolint:errcheck // best effort; see above
 		cmd := exec.Command("git", "--git-dir", s.dir, "cat-file", "--batch-check=%(objectname) %(objectsize)")
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		cmd.Stdin = strings.NewReader(strings.Join(chunk, "\n") + "\n")
@@ -464,3 +527,45 @@ func (r *Repo) Describe(commit string) (date, subject string) {
 
 // Has says the repository already holds commit.
 func (r *Repo) Has(commit string) bool { return r.s.has(commit) }
+
+// BlobsLocal is the content of each blob among shas that the repository holds,
+// read through one git process and without fetching anything.
+func (s *Snapshot) BlobsLocal(shas []string) map[string][]byte {
+	out := map[string][]byte{}
+	if len(shas) == 0 {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "--git-dir", s.dir, "cat-file", "--batch")
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = strings.NewReader(strings.Join(shas, "\n") + "\n")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil || cmd.Start() != nil {
+		return out
+	}
+	r := bufio.NewReader(stdout)
+	for {
+		header, err := r.ReadString('\n')
+		if err != nil {
+			break
+		}
+		f := strings.Fields(header) // "<sha> <type> <size>", or "<sha> missing"
+		if len(f) != 3 {
+			continue
+		}
+		n, err := strconv.Atoi(f[2])
+		if err != nil {
+			break
+		}
+		body := make([]byte, n+1) // the content, and the newline git adds after it
+		if _, err := io.ReadFull(r, body); err != nil {
+			break
+		}
+		if f[1] == "blob" {
+			out[f[0]] = body[:n]
+		}
+	}
+	cmd.Wait() //nolint:errcheck // what was read is what there is
+	return out
+}

@@ -254,7 +254,9 @@ func upstreamURL(c srcident.Candidate) string {
 // runSrcdiffAuto compares every identified project that has a ref to fetch, one
 // summary line each.
 func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error {
+	done := trace("identify upstreams (+ git history scan)")
 	cands, err := identifyUpstreams(input)
+	done()
 	if err != nil {
 		return err
 	}
@@ -266,7 +268,9 @@ func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error 
 		if c.Ref == "" && !(c.Rule.Heavy && !heavy) {
 			// No version stated: the tag whose files match the tree's is the one.
 			stop := showProgress(c.Root)
+			done := trace("best tag " + c.Root)
 			ref, note, err := bestTag(input, c)
+			done()
 			stop()
 			switch {
 			case err != nil:
@@ -294,7 +298,9 @@ func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error 
 			// A snapshot is usually of some commit between releases: look there, unless
 			// a notice has already named the commit.
 			if srcdiffSweep && !strings.HasPrefix(c.Evidence, "pinned") {
+				done := trace("sweep " + c.Root)
 				commit, note, err := sweepCommits(input, c.Root, c.Rule.Repo, c.Rule, c.Ref)
+				done()
 				switch {
 				case err != nil:
 					fmt.Printf("%s: sweep failed: %v\n", c.Root, err)
@@ -308,7 +314,9 @@ func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error 
 			if err := runSrcdiff(input, c.Root, upstreamURL(c), "", false, 0, true, collect); err != nil {
 				fmt.Printf("%s: %s @ %s: %v\n", c.Root, c.Rule.ID, c.Ref, err)
 			} else if srcdiffCVEs {
+				done := trace("cves " + c.Root)
 				printCVEs(input, c.Rule.OSVRepo(), tag)
+				done()
 			}
 		}
 	}
@@ -316,7 +324,9 @@ func runSrcdiffAuto(input string, heavy bool, collect func(*srcdiffTree)) error 
 }
 
 func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit int, summary bool, collect func(*srcdiffTree)) error {
+	done := trace("compare " + root + ": list tree")
 	files, byRel, closeIn, err := treeFiles(input, root)
+	done()
 	if err != nil {
 		return err
 	}
@@ -344,7 +354,9 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 		label = infile.Base(input)
 	}
 	stop := showProgress(label)
+	done = trace("compare " + root + ": open upstream")
 	snap, err := upstreamsrc.Open(src.URL, src.Ref, cache, nil)
+	done()
 	stop()
 	if err != nil {
 		return err
@@ -376,16 +388,22 @@ func runSrcdiff(input, root, upstream, upstreamPath string, showDiff bool, limit
 		}
 	}
 	stop = showProgress(label)
+	done = trace(fmt.Sprintf("compare %s: hash %d files", root, len(files)))
 	res, err := srcdiff.Compare(files, snap.Files, prefix, nil)
+	done()
 	stop()
 	task.End()
 	if err != nil {
 		return err
 	}
 	stop = showProgress(label)
+	done = trace(fmt.Sprintf("compare %s: line endings of %d files", root, len(res.Modified)))
 	markLineEndings(&res, files, snap)
+	done()
 	stop()
+	done = trace("compare " + root + ": read notices")
 	declared, imports := declaredPaths(input, root)
+	done()
 	// A notice that lists the whole tree (an initial import) declares every file, so
 	// what it declares cannot be told from what it changed.
 	if len(imports) > 0 {
@@ -574,7 +592,13 @@ func markLineEndings(res *srcdiff.Result, files []srcdiff.File, snap *upstreamsr
 			shas = append(shas, m.UpstreamSHA)
 		}
 	}
-	if len(shas) == 0 || snap.Prefetch("fetching changed files", shas) != nil {
+	if len(shas) == 0 {
+		return
+	}
+	done := trace(fmt.Sprintf("  prefetch %d blobs", len(shas)))
+	err := snap.Prefetch("fetching changed files", shas)
+	done()
+	if err != nil {
 		return
 	}
 	byPath := make(map[string]srcdiff.File, len(res.Modified))
@@ -584,10 +608,11 @@ func markLineEndings(res *srcdiff.Result, files []srcdiff.File, snap *upstreamsr
 	task := work.Begin("checking line endings", int64(len(res.Modified)))
 	defer task.End()
 	lf := func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")) }
+	held := snap.BlobsLocal(shas) // one git process for all, not one per file
 	for i := range res.Modified {
 		task.Add(1)
 		m := &res.Modified[i]
-		up, ok := snap.BlobLocal(m.UpstreamSHA)
+		up, ok := held[m.UpstreamSHA]
 		if !ok {
 			continue
 		}
