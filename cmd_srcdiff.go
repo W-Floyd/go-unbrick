@@ -227,7 +227,19 @@ func identifyUpstreams(input string) ([]srcident.Candidate, error) {
 		b, _ := io.ReadAll(rc)
 		return b
 	}
-	return srcident.Find(names, read, activeCatalog().Upstreams()), nil
+	cands := srcident.Find(names, read, activeCatalog().Upstreams())
+	// A vendor's own history, left in the tree, says exactly what it began from; a
+	// commit a notice already pinned stands.
+	for i := range cands {
+		c := &cands[i]
+		if strings.HasPrefix(c.Evidence, "pinned") {
+			continue
+		}
+		if commit, evidence, ok := pinFromGitLog(entries, c.Root); ok {
+			c.Ref, c.Evidence = commit, evidence
+		}
+	}
+	return cands, nil
 }
 
 // upstreamURL is the --upstream value a candidate stands for.

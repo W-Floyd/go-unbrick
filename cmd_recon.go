@@ -1224,6 +1224,7 @@ func reconArchive(path string, bag *facts.Bag) error {
 	if names, _ := srcfile.Names(path); srcfile.IsSourceTree(names) {
 		fmt.Printf("  Kind:   source release (%d files)\n", len(names))
 		printUpstreamCandidates(path)
+		printGitLogs(path)
 		return nil
 	}
 	// Cascade through the members, descending into nested containers.
