@@ -268,3 +268,67 @@ func containsNorm(names []string, n string) bool {
 	}
 	return false
 }
+
+// TagVersion is the version a tag names under the rule's tag template ("v1.42.9" is
+// 1.42.9 for "v{version}"); ok is false for a tag of some other shape (a
+// release candidate, a branch-point marker).
+func (r *Rule) TagVersion(tag string) (string, bool) {
+	t := r.Tag
+	if t == "" {
+		t = "{version}"
+	}
+	const ver = `(\d+(?:\.\d+)*[a-z]?)`
+	pat := regexp.QuoteMeta(t)
+	pat = strings.ReplaceAll(pat, regexp.QuoteMeta("{version_}"), `(\d+(?:_\d+)*[a-z]?)`)
+	pat = strings.ReplaceAll(pat, regexp.QuoteMeta("{version}"), ver)
+	re, err := regexp.Compile("^" + pat + "$")
+	if err != nil {
+		return "", false
+	}
+	m := re.FindStringSubmatch(tag)
+	if m == nil {
+		return "", false
+	}
+	return strings.ReplaceAll(m[1], "_", "."), true
+}
+
+// CompareVersions orders two dotted versions, numerically by part (1.9 < 1.10),
+// with a trailing letter (1.0.1e) after the number it follows.
+func CompareVersions(a, b string) int {
+	pa, pb := versionParts(a), versionParts(b)
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var x, y [2]int
+		if i < len(pa) {
+			x = pa[i]
+		}
+		if i < len(pb) {
+			y = pb[i]
+		}
+		for k := range x {
+			if x[k] != y[k] {
+				if x[k] < y[k] {
+					return -1
+				}
+				return 1
+			}
+		}
+	}
+	return 0
+}
+
+var versionPart = regexp.MustCompile(`(\d+)([a-z]?)`)
+
+// versionParts reads each dotted part as its number and its trailing letter.
+func versionParts(v string) [][2]int {
+	var out [][2]int
+	for _, m := range versionPart.FindAllStringSubmatch(v, -1) {
+		n := 0
+		fmt.Sscanf(m[1], "%d", &n)
+		letter := 0
+		if m[2] != "" {
+			letter = int(m[2][0]-'a') + 1
+		}
+		out = append(out, [2]int{n, letter})
+	}
+	return out
+}

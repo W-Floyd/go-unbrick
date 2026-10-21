@@ -107,3 +107,32 @@ func TestStrictAndNesting(t *testing.T) {
 		t.Errorf("got %q want %q", s, want)
 	}
 }
+
+func TestTagVersion(t *testing.T) {
+	r := &Rule{Tag: "v{version}"}
+	for tag, want := range map[string]string{"v1.42.9": "1.42.9", "v1.43-rc1": "", "e2fsprogs-1.42.9": "", "v1.0.1e": "1.0.1e"} {
+		if v, ok := r.TagVersion(tag); v != want || ok != (want != "") {
+			t.Errorf("%s: %q %v", tag, v, ok)
+		}
+	}
+	o := &Rule{Tag: "OpenSSL_{version_}"}
+	if v, ok := o.TagVersion("OpenSSL_1_0_0a"); !ok || v != "1.0.0a" {
+		t.Errorf("openssl tag: %q %v", v, ok)
+	}
+	if v, ok := (&Rule{}).TagVersion("3.1.7"); !ok || v != "3.1.7" {
+		t.Errorf("default tag: %q %v", v, ok)
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"1.9", "1.10", -1}, {"1.42.9", "1.42.9", 0}, {"2.0", "1.99.9", 1}, {"1.0.1e", "1.0.1d", 1}, {"1.0", "1.0.1", -1}, {"1.0.1", "1.0.1a", -1},
+	} {
+		if got := CompareVersions(c.a, c.b); got != c.want {
+			t.Errorf("%s vs %s: %d want %d", c.a, c.b, got, c.want)
+		}
+	}
+}

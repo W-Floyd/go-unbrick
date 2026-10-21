@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,13 +65,30 @@ func Open(url, ref, cache string, progress io.Writer) (*Snapshot, error) {
 	s.Commit = commit
 	if !s.has(commit) {
 		say("fetching %s at %s", url, commit[:12])
-		if err := s.gitProgress("fetching "+shortURL(url), "fetch", "--depth", "1", "--filter=blob:none", "origin", commit); err != nil {
+		err := s.gitProgress("fetching "+shortURL(url), "fetch", "--depth", "1", "--filter=blob:none", "origin", commit)
+		if err != nil && ref != "" && !fullSHA.MatchString(ref) {
+			// A server that will not send a commit by id is asked for the name.
+			err = s.gitProgress("fetching "+shortURL(url), "fetch", "--depth", "1", "--filter=blob:none", "origin",
+				"+refs/tags/"+ref+":refs/tags/"+ref, "+refs/heads/"+ref+":refs/heads/"+ref)
+			if err != nil {
+				err = s.gitProgress("fetching "+shortURL(url), "fetch", "--depth", "1", "--filter=blob:none", "origin", "+refs/tags/"+ref+":refs/tags/"+ref)
+			}
+		}
+		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", commit[:12], err)
 		}
 	}
+	if err := s.listTree(commit); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// listTree reads the files of a commit held in the repository.
+func (s *Snapshot) listTree(commit string) error {
 	out, err := s.git("ls-tree", "-r", "-z", "--full-tree", commit)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	s.Files, s.Symlinks = map[string]string{}, map[string]bool{}
 	for _, rec := range bytes.Split(out, []byte{0}) {
@@ -86,7 +104,104 @@ func Open(url, ref, cache string, progress io.Writer) (*Snapshot, error) {
 			s.Files[string(path)] = f[2]
 		}
 	}
-	return s, nil
+	return nil
+}
+
+// Tag is a remote tag and the commit it names.
+type Tag struct {
+	Name   string
+	Commit string
+}
+
+// ListTags lists url's tags, an annotated tag as the commit it points to.
+func ListTags(url string) ([]Tag, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, errors.New("upstream comparison needs the git binary")
+	}
+	cmd := exec.Command("git", "ls-remote", "--tags", url)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-remote %s: %w", url, err)
+	}
+	commits := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 || !fullSHA.MatchString(f[0]) {
+			continue
+		}
+		name := strings.TrimPrefix(f[1], "refs/tags/")
+		if peeled, ok := strings.CutSuffix(name, "^{}"); ok {
+			commits[peeled] = f[0] // the commit, over the tag object's own id
+		} else if _, seen := commits[name]; !seen {
+			commits[name] = f[0]
+		}
+	}
+	tags := make([]Tag, 0, len(commits))
+	for n, c := range commits {
+		tags = append(tags, Tag{n, c})
+	}
+	sort.Slice(tags, func(i, j int) bool { return tags[i].Name < tags[j].Name })
+	return tags, nil
+}
+
+// Repo is an origin's cached repository, for reading several commits of it.
+type Repo struct{ s *Snapshot }
+
+// OpenRepo makes the origin's repository ready, fetching nothing.
+func OpenRepo(url, cache string) (*Repo, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, errors.New("upstream comparison needs the git binary")
+	}
+	sum := sha256.Sum256([]byte(url))
+	s := &Snapshot{URL: url, dir: filepath.Join(cache, "upstreams", hex.EncodeToString(sum[:8])+".git")}
+	if err := s.init(); err != nil {
+		return nil, err
+	}
+	return &Repo{s}, nil
+}
+
+// Fetch brings in the trees of commits (one shallow fetch for all of them, so
+// what they share is sent once), skipping those already held.
+//
+// A server that will not send a commit by id (many do not) is asked for the tags
+// by name instead.
+func (r *Repo) Fetch(label string, tags []Tag) error {
+	var need []Tag
+	for _, t := range tags {
+		if !r.s.has(t.Commit) {
+			need = append(need, t)
+		}
+	}
+	for len(need) > 0 {
+		chunk := need[:min(len(need), 40)]
+		need = need[len(chunk):]
+		byID := []string{"fetch", "--depth", "1", "--filter=blob:none", "origin"}
+		byName := append([]string(nil), byID...)
+		for _, t := range chunk {
+			byID = append(byID, t.Commit)
+			byName = append(byName, "+refs/tags/"+t.Name+":refs/tags/"+t.Name)
+		}
+		if err := r.s.gitProgress(label, byID...); err != nil {
+			if err2 := r.s.gitProgress(label, byName...); err2 != nil {
+				return fmt.Errorf("%v; by name: %w", err, err2)
+			}
+		}
+	}
+	return nil
+}
+
+// Blobs is the set of blob ids in a commit's tree, which must have been fetched.
+func (r *Repo) Blobs(commit string) (map[string]bool, error) {
+	t := &Snapshot{URL: r.s.URL, dir: r.s.dir}
+	if err := t.listTree(commit); err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(t.Files))
+	for _, sha := range t.Files {
+		set[sha] = true
+	}
+	return set, nil
 }
 
 // Blob is the content of a file by blob id, fetched from origin if not held.

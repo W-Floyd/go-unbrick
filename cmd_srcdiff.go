@@ -213,9 +213,25 @@ func runSrcdiffAuto(input string, heavy bool) error {
 		return nil
 	}
 	for _, c := range cands {
+		if c.Ref == "" && !(c.Rule.Heavy && !heavy) {
+			// No version stated: the tag whose files match the tree's is the one.
+			stop := showProgress(c.Root)
+			ref, note, err := bestTag(input, c)
+			stop()
+			switch {
+			case err != nil:
+				fmt.Printf("%s: %s, version not stated; tag search failed: %v\n", c.Root, c.Rule.ID, err)
+				continue
+			case ref == "":
+				fmt.Printf("%s: %s, version not stated; %s\n", c.Root, c.Rule.ID, note)
+				continue
+			}
+			fmt.Printf("%s: %s\n", c.Root, note)
+			c.Ref, c.Evidence = ref, note
+		}
 		switch {
 		case c.Ref == "":
-			fmt.Printf("%s: %s, version not stated; skipped\n", c.Root, c.Rule.ID)
+			fmt.Printf("%s: %s, version not stated; skipped (--heavy)\n", c.Root, c.Rule.ID)
 		case c.Rule.Heavy && !heavy:
 			fmt.Printf("%s: %s %s is a large upstream; skipped (--heavy)\n", c.Root, c.Rule.ID, c.Ref)
 		default:

@@ -57,3 +57,55 @@ func TestOpen(t *testing.T) {
 		t.Error("missing ref resolved")
 	}
 }
+
+func TestTagsAndRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	origin := t.TempDir()
+	run(t, origin, "init", "-q", "-b", "main")
+	run(t, origin, "config", "uploadpack.allowFilter", "true")
+	run(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(origin, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.c", "one\n")
+	run(t, origin, "add", ".")
+	run(t, origin, "commit", "-q", "-m", "one")
+	run(t, origin, "tag", "v1")
+	c1 := run(t, origin, "rev-parse", "HEAD")
+	write("a.c", "two\n")
+	write("b.c", "b\n")
+	run(t, origin, "add", ".")
+	run(t, origin, "commit", "-q", "-m", "two")
+	run(t, origin, "tag", "-a", "-m", "release two", "v2")
+	c2 := run(t, origin, "rev-parse", "HEAD")
+
+	tags, err := ListTags("file://" + origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 2 || tags[0] != (Tag{"v1", c1}) || tags[1] != (Tag{"v2", c2}) {
+		t.Fatalf("tags %+v (an annotated tag must give its commit)", tags)
+	}
+	r, err := OpenRepo("file://"+origin, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Fetch("test", tags); err != nil {
+		t.Fatal(err)
+	}
+	b1, err := r.Blobs(c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := r.Blobs(c2)
+	if len(b1) != 1 || len(b2) != 2 {
+		t.Errorf("blobs %d %d", len(b1), len(b2))
+	}
+	if err := r.Fetch("test", tags); err != nil { // already held: no fetch
+		t.Fatal(err)
+	}
+}
