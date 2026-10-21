@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
 type kind int
@@ -245,6 +246,11 @@ func Members(path string, headLen int) ([]Member, error) {
 	}
 	defer a.close()
 	out := make([]Member, len(a.entries))
+	var task *progress.Task
+	if headLen > 0 && len(a.entries) > progressMin {
+		task = progress.Begin("reading "+infile.Base(path)+" members", int64(len(a.entries)))
+		defer task.End()
+	}
 	// Concurrently: over HTTP each head is a round trip, and a package can
 	// have a hundred members.
 	var wg sync.WaitGroup
@@ -262,6 +268,9 @@ func Members(path string, headLen int) ([]Member, error) {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
+			if task != nil {
+				defer task.Add(1)
+			}
 			if rc, err := e.open(); err == nil {
 				head := make([]byte, headLen)
 				n, _ := io.ReadFull(rc, head)
@@ -276,6 +285,9 @@ func Members(path string, headLen int) ([]Member, error) {
 
 // headReaders bounds the member heads read at once.
 const headReaders = 8
+
+// progressMin is the member count above which reading heads is reported.
+const progressMin = 500
 
 // Entry is an archive member as a walker of nested containers needs it.
 type Entry struct {

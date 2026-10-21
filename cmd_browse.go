@@ -30,6 +30,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	work "github.com/W-Floyd/go-unbrick/internal/progress"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
@@ -340,6 +341,8 @@ func newBrowseModel(input string, skip []string, crawl bool) (*browseModel, erro
 		}
 		return m, nil
 	}
+	stop := showProgress("opening " + infile.Base(input))
+	defer stop()
 	root, err := carveRoot(input)
 	if err != nil {
 		return nil, err
@@ -578,6 +581,9 @@ func (m *browseModel) View() tea.View {
 	status := m.status
 	if m.opening != "" {
 		status = m.spin.View() + " opening " + m.opening + "..." // listing it can take long; the screen stays live
+		if p := work.Text(); p != "" {
+			status = m.spin.View() + " opening " + m.opening + ": " + p
+		}
 	} else if name, ok := m.rq.inflightDisplay(); ok {
 		status = m.spin.View() + " reconning " + name + "..."
 	} else if status == "" {

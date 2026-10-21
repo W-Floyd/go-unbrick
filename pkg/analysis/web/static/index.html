@@ -56,14 +56,14 @@
       <label><input type="checkbox" x-model="wrap"> wrap</label>
       <label><input type="checkbox" x-model="words" @change="reload()"> words</label>
       <label x-show="view === 'hex'"><input type="checkbox" x-model="hexMore" @change="reload()"> more</label>
-      <span class="loading" x-show="loading"><span x-text="loadInfo ? 'reading ' + size(loadInfo.read) + (loadInfo.total ? ' of ' + size(loadInfo.total) + ' (' + progress() + '%)' : '') : 'reading…'"></span></span>
+      <span class="loading" x-show="loading"><span x-text="loadInfo ? 'reading ' + size(loadInfo.read) + (loadInfo.total ? ' of ' + size(loadInfo.total) + ' (' + progress() + '%)' : '') : (progText || 'reading…')"></span></span>
     </div>
 
     <div class="detail" :class="{wrap: wrap}">
       <template x-if="!cur && !loadInfo"><p class="empty">Select an entry.</p></template>
       <template x-if="!cur && loadInfo">
         <div class="reading">
-          <p>Reading <span x-text="trim(sel)"></span>…</p>
+          <p>Reading <span x-text="trim(sel)"></span>…<span class="dim" x-show="progText" x-text="' ' + progText"></span></p>
           <div class="meter" role="progressbar" :aria-valuenow="progress()" aria-valuemin="0" aria-valuemax="100"><i :style="'width:' + progress() + '%'"></i></div>
           <p class="dim" x-text="size(loadInfo.read) + (loadInfo.total ? ' of ' + size(loadInfo.total) : '')"></p>
         </div>

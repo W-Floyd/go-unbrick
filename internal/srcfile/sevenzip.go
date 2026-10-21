@@ -9,6 +9,7 @@ import (
 	"github.com/bodgit/sevenzip"
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
 // spoolMax bounds how much a solid 7z is decoded to disk for random access.
@@ -19,6 +20,7 @@ const spoolMax = 8 << 30
 // on every read, seconds each for a browser that reads one per keystroke.
 type spool struct {
 	once sync.Once
+	name string // shown while it is built
 	f    *os.File
 	offs []int64 // start of each regular member, by its index in the archive
 	err  error
@@ -36,6 +38,12 @@ func (s *spool) build(files []*sevenzip.File) {
 			return
 		}
 		os.Remove(f.Name()) // gone with the process, whatever way it ends
+		var total int64
+		for _, m := range files {
+			total += int64(m.UncompressedSize)
+		}
+		task := progress.Begin("unpacking "+s.name, total)
+		defer task.End()
 		var pos int64
 		for _, m := range files {
 			s.offs = append(s.offs, pos)
@@ -44,7 +52,7 @@ func (s *spool) build(files []*sevenzip.File) {
 				s.err = err
 				return
 			}
-			n, err := io.Copy(f, rc)
+			n, err := io.Copy(countWriter{f, task}, rc)
 			rc.Close()
 			if err != nil {
 				s.err = err
@@ -103,7 +111,7 @@ func openSevenZip(path string) (*archive, error) {
 	}
 	var sp *spool
 	if solid && total <= spoolMax && !infile.IsRemote(path) {
-		v, _ := spools.LoadOrStore(fmt.Sprintf("%s\x00%d", path, f.Size()), &spool{})
+		v, _ := spools.LoadOrStore(fmt.Sprintf("%s\x00%d", path, f.Size()), &spool{name: infile.Base(path)})
 		sp = v.(*spool)
 	}
 	a := &archive{close: f.Close}
@@ -123,4 +131,16 @@ func openSevenZip(path string) (*archive, error) {
 		a.entries = append(a.entries, e)
 	}
 	return a, nil
+}
+
+// countWriter reports what it writes to a task.
+type countWriter struct {
+	w io.Writer
+	t *progress.Task
+}
+
+func (c countWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.t.Add(int64(n))
+	return n, err
 }

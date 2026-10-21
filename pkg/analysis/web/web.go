@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/W-Floyd/go-unbrick/internal/progress"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
@@ -85,6 +86,7 @@ func Handler(run *analysis.Run, opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", s.state)
 	mux.HandleFunc("/api/level", s.level)
+	mux.HandleFunc("/api/progress", progressHandler(s.redact))
 	mux.HandleFunc("/api/entry", s.entry)
 	mux.HandleFunc("/api/raw", s.raw)
 	mux.HandleFunc("/api/deepen", s.deepen)
@@ -365,4 +367,16 @@ func (s *server) raw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serveRaw(w, r, be, s.opts.ImageCap, s.opts.AllowDownload, s.fail)
+}
+
+// progressHandler lists the long-running work in flight (unpacking an archive,
+// reading its members) so a page that is waiting can say how far and how long.
+func progressHandler(redact func(string) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tasks := progress.Active()
+		for i := range tasks {
+			tasks[i].Label = redact(tasks[i].Label)
+		}
+		writeJSON(w, tasks)
+	}
 }

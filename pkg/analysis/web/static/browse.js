@@ -27,6 +27,7 @@ function browse() {
     async init() {
       this.$watch('wrap', (v) => u.store.set('browse-wrap', v));
       this.startUrl();
+      u.watchProgress(this);
       try { this.info = await u.get('api/info'); document.title = this.info.title || 'Browse'; } catch (e) { this.error = String(e.message || e); }
       await this.loadLevel();
     },

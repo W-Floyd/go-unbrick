@@ -51,6 +51,7 @@ function app() {
       this.$watch('words', (v) => u.store.set('words', v));
       // A link opens the same level, entry and view, and back/forward move through levels.
       this.startUrl();
+      u.watchProgress(this);
       await this.poll();
       this._timer = setInterval(() => this.poll(), 700);
     },

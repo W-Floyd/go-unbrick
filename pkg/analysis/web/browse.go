@@ -56,6 +56,7 @@ func BrowseHandler(b *analysis.Browser, opts BrowseOptions) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/info", s.info)
 	mux.HandleFunc("/api/level", s.level)
+	mux.HandleFunc("/api/progress", progressHandler(s.redact))
 	mux.HandleFunc("/api/preview", s.preview)
 	mux.HandleFunc("/api/raw", s.raw)
 	mux.HandleFunc("/chroma.css", chromaCSS)

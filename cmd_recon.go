@@ -410,6 +410,24 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.ModemFirmware); ok {
 		addList(&out, "Modem firmware", strings.Split(v, "; "))
 	}
+	if v, ok := facts.Get(b, vendor.SourceProduct); ok {
+		add("Source product: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.SourceDates); ok {
+		add("Source dates: %s", v)
+	}
+	if v, ok := facts.Get(b, vendor.LKSourceTarget); ok {
+		addList(&out, "LK source target", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.LKSourceBuild); ok {
+		addList(&out, "LK source build", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.LKSourceRecovery); ok {
+		addList(&out, "LK source recovery", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.SourceSecurity); ok {
+		addList(&out, "Source trust-chain changes", strings.Split(v, "; "))
+	}
 	if v, ok := facts.Get(b, vendor.SourceComponents); ok {
 		addList(&out, "Source components", strings.Split(v, "; "))
 	}

@@ -43,7 +43,7 @@
       <label x-show="cur && cur.canPretty"><input type="checkbox" x-model="pretty" @change="reload()"> pretty</label>
       <label x-show="cur && cur.kind === 'text'"><input type="checkbox" x-model="wrap"> wrap</label>
       <a class="dl" x-show="cur && cur.kind !== 'dir'" :href="rawUrl(true)" download>download</a>
-      <span class="loading" x-show="loading">reading…</span>
+      <span class="loading" x-show="loading" x-text="progText || 'reading…'">reading…</span>
     </div>
     <div class="detail" :class="{wrap: wrap}">
       <template x-if="!cur"><p class="empty">Select an entry.</p></template>

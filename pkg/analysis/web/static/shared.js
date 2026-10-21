@@ -128,8 +128,28 @@ window.unbrick = (() => {
       (p.truncated ? '<p class="mid">preview truncated; download for the whole file</p>' : '');
   };
 
+  // progressLine is the newest running task as "unpacking x 45% · 12s left".
+  const progressLine = (tasks) => {
+    const t = tasks && tasks[tasks.length - 1];
+    if (!t) return '';
+    let s = t.label;
+    if (t.percent >= 0) s += ' ' + t.percent + '%';
+    if (t.eta >= 0) s += ' · ' + (t.eta >= 90 ? Math.round(t.eta / 60) + 'm' : Math.round(t.eta) + 's') + ' left';
+    return s;
+  };
+
+  // watchProgress keeps c.progText current while c.loading, so a wait that has no
+  // byte count of its own (listing an archive, unpacking it) still says how far.
+  const watchProgress = (c) => {
+    c.progText = '';
+    setInterval(async () => {
+      if (!c.loading) { c.progText = ''; return; }
+      try { c.progText = progressLine(await get('api/progress')); } catch { /* the next tick asks again */ }
+    }, 600);
+  };
+
   return {
-    q, store, size, get, escapeHTML, previewHTML, nav,
+    q, store, size, get, escapeHTML, previewHTML, nav, progressLine, watchProgress,
     trim: (n) => n.replace(/\/$/, ''),
     count: (n) => n + (n === 1 ? ' byte' : ' bytes'),
     pct: (part, whole) => (whole ? Math.round(100 * part / whole) + '%' : '—'),

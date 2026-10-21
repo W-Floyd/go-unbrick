@@ -9,7 +9,9 @@ import (
 // runBrowseWeb serves browse as a web page: the same levels, previews and recon
 // reports as the terminal browser.
 func runBrowseWeb(input string, skip []string, addr string) error {
+	stop := showProgress("opening " + infile.Base(input))
 	b, err := analysis.NewBrowser(input, skip)
+	stop()
 	if err != nil {
 		return err
 	}

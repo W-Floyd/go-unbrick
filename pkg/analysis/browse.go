@@ -13,6 +13,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
 // Browsing: a directory on disk (local or ssh://), or anything carve can open
@@ -112,6 +113,9 @@ func ListDir(dir string, skip []string) (*BrowseLevel, error) {
 // headCacheMax is the listing size above which member heads are not kept.
 const headCacheMax = 5000
 
+// progressMin is the number of files in a level above which listing it is reported.
+const progressMin = 500
+
 // Group is a directory a container's members imply by their slash-separated
 // names: the members under it, and the prefix that names it.
 type Group struct {
@@ -165,7 +169,15 @@ func ListGroup(g Group) *BrowseLevel {
 	// Each node caches its head (up to 64 KiB); across a source tree's hundreds of
 	// thousands of members that is gigabytes, for a label read once.
 	dropHeads := len(files) > headCacheMax
+	var task *progress.Task
+	if len(files) > progressMin {
+		task = progress.Begin("listing "+title, int64(len(files)))
+		defer task.End()
+	}
 	for _, k := range files {
+		if task != nil {
+			task.Add(1)
+		}
 		name := strings.TrimPrefix(k.Name, g.Prefix)
 		label := TypeLabel(k.Name, k.Head())
 		isContainer := false
