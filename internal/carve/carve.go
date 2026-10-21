@@ -294,9 +294,19 @@ func (n *Node) Head() []byte {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.head == nil { // another reader may have got there first
-		n.head = buf[:k]
+		// Trimmed: buf[:k] would pin the whole headLen buffer for a small
+		// file, and a listing caches one per member.
+		n.head = append(make([]byte, 0, k), buf[:k]...)
 	}
 	return n.head
+}
+
+// DropHead forgets the cached head; the next Head reads it again. For a caller
+// that touched the heads of a very large listing once and should not keep them.
+func (n *Node) DropHead() {
+	n.mu.Lock()
+	n.head = nil
+	n.mu.Unlock()
 }
 
 // Expander turns a node of one format into its children.

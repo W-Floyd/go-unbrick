@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -26,13 +27,30 @@ var v = viper.New()
 func catalogDir() string { return v.GetString("catalog") }
 func libraryDir() string { return v.GetString("library") }
 
+var (
+	catalogMu    sync.Mutex
+	catalogDirAt string
+	catalogCache *catalog.Catalog
+)
+
+// activeCatalog is loaded once per directory: callers ask per file (a listing
+// of a large archive asks per member), and reparsing the YAML each time dominates.
 func activeCatalog() *catalog.Catalog {
+	dir := catalogDir()
+	catalogMu.Lock()
+	defer catalogMu.Unlock()
+	if catalogCache == nil || catalogDirAt != dir {
+		catalogCache, catalogDirAt = loadCatalog(dir), dir
+	}
+	return catalogCache
+}
+
+func loadCatalog(dir string) *catalog.Catalog {
 	// Load("dir") glob-matches *.yaml under dir and succeeds with zero files
 	// when dir doesn't exist relative to the cwd — the flag's default is the
 	// relative "catalog", so running from anywhere but the repo root would
 	// otherwise return an empty catalog instead of falling through to
 	// Default()'s FindCatalogDir() search.
-	dir := catalogDir()
 	if files, _ := filepath.Glob(filepath.Join(dir, "*.yaml")); len(files) > 0 {
 		if c, err := catalog.Load(dir); err == nil {
 			return c

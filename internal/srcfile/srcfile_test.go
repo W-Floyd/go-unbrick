@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -157,5 +158,16 @@ func TestRemoteTGZ(t *testing.T) {
 	}
 	if _, data, err := Open(u, "vbmeta.img"); err != nil || !bytes.Equal(data, vb) {
 		t.Fatalf("Open vbmeta.img: %d bytes, %v", len(data), err)
+	}
+}
+
+func TestIsSourceTree(t *testing.T) {
+	var src, fw []string
+	for i := 0; i < sourceTreeMin; i++ {
+		src = append(src, fmt.Sprintf("tree/d%d/f.c", i))
+		fw = append(fw, fmt.Sprintf("img%d.bin", i))
+	}
+	if !IsSourceTree(src) || IsSourceTree(fw) || IsSourceTree(src[:10]) {
+		t.Error("source tree detection")
 	}
 }

@@ -410,6 +410,12 @@ func identityFactLines(b *facts.Bag) []string {
 	if v, ok := facts.Get(b, vendor.ModemFirmware); ok {
 		addList(&out, "Modem firmware", strings.Split(v, "; "))
 	}
+	if v, ok := facts.Get(b, vendor.SourceComponents); ok {
+		addList(&out, "Source components", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.SourceNotices); ok {
+		addList(&out, "Source notices", strings.Split(v, "; "))
+	}
 	if v, ok := facts.Get(b, vendor.KernelVersion); ok {
 		add("Kernel: %s", v)
 	}
@@ -1171,6 +1177,11 @@ func reconArchive(path string, bag *facts.Bag) error {
 	// cid_value) and the HAB signing CID (vbmeta HAB_META) are different facts,
 	// which is why their legitimate difference is not a disagreement.
 	printIdentityFacts(bag, "  ")
+	// A source release has nothing to cascade into: its identity facts are all.
+	if names, _ := srcfile.Names(path); srcfile.IsSourceTree(names) {
+		fmt.Printf("  Kind:   source release (%d files)\n", len(names))
+		return nil
+	}
 	// Cascade through the members, descending into nested containers.
 	members, err := srcfile.Members(path, 8192)
 	if err != nil || len(members) == 0 {

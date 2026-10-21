@@ -13,13 +13,13 @@ import (
 
 // learnPackageFacts lets each vendor read its own package members into the bag.
 func learnPackageFacts(path string, bag *facts.Bag) {
-	members, err := srcfile.Members(path, 0)
+	list, err := srcfile.Names(path)
 	if err != nil {
 		return
 	}
-	names := map[string]bool{}
-	for _, m := range members {
-		names[m.Name] = true
+	names := make(map[string]bool, len(list))
+	for _, n := range list {
+		names[n] = true
 	}
 	access := vendor.PackageAccess{
 		Names: names,

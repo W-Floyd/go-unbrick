@@ -437,6 +437,9 @@ func LearnPackage(pkg PackageAccess, bag *facts.Bag) {
 
 // DetectStock returns the driver whose stock-package format matches the path.
 func DetectStock(path string) (Driver, StockPackager, bool) {
+	if isSourceRelease(path) {
+		return nil, nil, false
+	}
 	for _, id := range ids() {
 		sp, ok := registry[id].(StockPackager)
 		if ok && sp.CanIngestStock(path) {
@@ -494,6 +497,9 @@ func ForOEMID(oem string) (Driver, bool) {
 
 // Detect returns the driver whose package format matches the path.
 func Detect(path string) (Driver, bool) {
+	if isSourceRelease(path) {
+		return nil, false
+	}
 	for _, id := range ids() {
 		if d := registry[id]; d.CanIngest(path) {
 			return d, true

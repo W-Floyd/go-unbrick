@@ -40,12 +40,15 @@ type BrowseEntry struct {
 
 	OSPath string      `json:"-"` // a file or directory on disk (or ssh://)
 	Node   *carve.Node `json:"-"` // a member of a container
+	Group  *Group      `json:"-"` // a directory implied by a container's member names
 }
 
 // Key identifies the entry among its level's: two members can share a name, the
 // node cannot.
 func (e BrowseEntry) Key() string {
 	switch {
+	case e.Group != nil:
+		return fmt.Sprintf("group:%p:%s", e.Group.Container, e.Group.Prefix)
 	case e.OSPath != "":
 		return "os:" + e.OSPath
 	case e.Node != nil:
@@ -60,6 +63,8 @@ type BrowseLevel struct {
 	Dir     string      // set for a directory on disk
 	Node    *carve.Node // set for a container
 	Entries []BrowseEntry
+
+	group *Group // the directory of a container's members this level lists
 }
 
 // ListDir lists a directory on disk: directories, then files with their type
@@ -104,27 +109,76 @@ func ListDir(dir string, skip []string) (*BrowseLevel, error) {
 	return l, nil
 }
 
-// ListNode lists the members of a container.
+// headCacheMax is the listing size above which member heads are not kept.
+const headCacheMax = 5000
+
+// Group is a directory a container's members imply by their slash-separated
+// names: the members under it, and the prefix that names it.
+type Group struct {
+	Container *carve.Node
+	Kids      []*carve.Node
+	Prefix    string // "" for the container itself, else "dir/sub/"
+}
+
+// ListNode lists the members of a container, folding names with slashes into
+// directories so a tree of thousands of files is browsed a level at a time.
 func ListNode(n *carve.Node) (*BrowseLevel, error) {
 	_, kids, err := n.Children()
 	if err != nil {
 		return nil, err
 	}
-	title := n.Name
+	return ListGroup(Group{Container: n, Kids: kids}), nil
+}
+
+// ListGroup lists one directory level of a container's members.
+func ListGroup(g Group) *BrowseLevel {
+	title := strings.TrimSuffix(g.Prefix, "/")
+	if i := strings.LastIndexByte(title, '/'); i >= 0 {
+		title = title[i+1:]
+	}
+	if title == "" {
+		title = g.Container.Name
+	}
 	if title == "" {
 		title = "/"
 	}
-	l := &BrowseLevel{Title: title, Node: n}
-	for _, k := range kids {
+	l := &BrowseLevel{Title: title, Node: g.Container, group: &g}
+	var dirs []string
+	byDir := map[string][]*carve.Node{}
+	var files []*carve.Node
+	for _, k := range g.Kids {
+		rel := strings.TrimPrefix(k.Name, g.Prefix)
+		if seg, _, nested := strings.Cut(rel, "/"); nested && seg != "" {
+			if _, seen := byDir[seg]; !seen {
+				dirs = append(dirs, seg)
+			}
+			byDir[seg] = append(byDir[seg], k)
+			continue
+		}
+		files = append(files, k)
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		sub := Group{Container: g.Container, Kids: byDir[d], Prefix: g.Prefix + d + "/"}
+		l.Entries = append(l.Entries, BrowseEntry{Name: d, Size: -1, Dir: true, Openable: true, Group: &sub})
+	}
+	// Each node caches its head (up to 64 KiB); across a source tree's hundreds of
+	// thousands of members that is gigabytes, for a label read once.
+	dropHeads := len(files) > headCacheMax
+	for _, k := range files {
+		name := strings.TrimPrefix(k.Name, g.Prefix)
 		label := TypeLabel(k.Name, k.Head())
 		isContainer := false
 		if sub, ok := carve.Format(k); ok {
 			label, isContainer = sub.Kind, true
 		}
-		l.Entries = append(l.Entries, BrowseEntry{Name: k.Name, Size: k.Size, Label: label, Container: isContainer,
+		l.Entries = append(l.Entries, BrowseEntry{Name: name, Size: k.Size, Label: label, Container: isContainer,
 			Text: LooksLikeText(k.Name, k.Head()), Image: LooksLikeImage(k.Head()), Openable: isContainer, Node: k})
+		if dropHeads {
+			k.DropHead()
+		}
 	}
-	return l, nil
+	return l
 }
 
 // ErrNotContainer is the answer for opening something carve does not open.
@@ -134,6 +188,8 @@ var ErrNotContainer = errors.New("not a container")
 // through carve, or a container's members.
 func Open(e BrowseEntry, skip []string) (*BrowseLevel, error) {
 	switch {
+	case e.Group != nil:
+		return ListGroup(*e.Group), nil
 	case e.Dir:
 		return ListDir(e.OSPath, skip)
 	case e.OSPath != "":
@@ -150,6 +206,9 @@ func Open(e BrowseEntry, skip []string) (*BrowseLevel, error) {
 
 // Refresh lists a level again.
 func (l *BrowseLevel) Refresh(skip []string) (*BrowseLevel, error) {
+	if l.group != nil {
+		return ListGroup(*l.group), nil
+	}
 	if l.Node != nil {
 		return ListNode(l.Node)
 	}

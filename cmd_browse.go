@@ -148,6 +148,7 @@ type browseEntry struct {
 	isParent    bool // the synthetic ".." row - clicking or entering it ascends, same as backspace/h/left
 	osPath      string
 	node        *carve.Node
+	group       *analysis.Group // a directory implied by a container's member names
 }
 
 func (e browseEntry) FilterValue() string { return e.name }
@@ -1173,13 +1174,13 @@ func (m *browseModel) pushLevel(l *analysis.BrowseLevel) {
 // entryOf is a listed entry as the list holds it.
 func entryOf(e analysis.BrowseEntry) browseEntry {
 	return browseEntry{name: e.Name, size: e.Size, label: e.Label, dir: e.Dir, isContainer: e.Container,
-		isText: e.Text, isImage: e.Image, osPath: e.OSPath, node: e.Node}
+		isText: e.Text, isImage: e.Image, osPath: e.OSPath, node: e.Node, group: e.Group}
 }
 
 // core is the entry as the analysis package knows it.
 func (e browseEntry) core() analysis.BrowseEntry {
 	return analysis.BrowseEntry{Name: e.name, Size: e.size, Label: e.label, Dir: e.dir, Container: e.isContainer,
-		Text: e.isText, Image: e.isImage, OSPath: e.osPath, Node: e.node}
+		Text: e.isText, Image: e.isImage, OSPath: e.osPath, Node: e.node, Group: e.group}
 }
 
 // finishFrame prepends the synthetic ".." row (every frame but the root one

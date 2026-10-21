@@ -120,6 +120,9 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 		return nil
 	}
 	facts.Set(b, facts.SourceStockZip, path, facts.Provenance{Source: base, Authority: facts.Attested})
+	if names, _ := srcfile.Names(path); srcfile.IsSourceTree(names) {
+		return nil
+	}
 	// Read a head first, decide the budget from what the member is: a boot image
 	// is the one large member worth reading in full, because the OTA key lives in
 	// recovery's ramdisk and nothing smaller carries it. The bulk images (super,
@@ -173,12 +176,29 @@ func Ingest(b *facts.Bag, rs []facts.Recognizer, path string, p Progress) error 
 	for i := range fetched {
 		fetched[i] = make(chan []byte, 1)
 	}
+	// One archive handle for all members: opening per member re-parses the
+	// whole directory each time, quadratic in the member count.
+	entries, closer, err := srcfile.Entries(path)
+	if err != nil {
+		return err
+	}
+	defer closer.Close()
+	byName := make(map[string]srcfile.Entry, len(entries))
+	for _, e := range entries {
+		byName[e.Name] = e
+	}
 	window := make(chan struct{}, memberReaders)
 	go func() {
 		for i, m := range read {
 			window <- struct{}{}
 			go func() {
-				_, data, _ := srcfile.Open(path, filepath.Base(m.Name))
+				var data []byte
+				if e, ok := byName[m.Name]; ok {
+					if rc, err := e.Open(); err == nil {
+						data, _ = io.ReadAll(rc)
+						rc.Close()
+					}
+				}
 				fetched[i] <- data
 			}()
 		}

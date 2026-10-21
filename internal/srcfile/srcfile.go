@@ -318,6 +318,51 @@ type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }
 
+// Names lists path's member names without reading any member, so it is cheap
+// however many there are. nil (no error) when path is not an archive.
+func Names(path string) ([]string, error) {
+	if !IsArchive(path) {
+		return nil, nil
+	}
+	a, err := openArchive(path)
+	if err != nil {
+		return nil, err
+	}
+	defer a.close()
+	out := make([]string, len(a.entries))
+	for i, e := range a.entries {
+		out[i] = e.name
+	}
+	return out, nil
+}
+
+// sourceTreeMin is how many members make an archive a source tree rather than a
+// firmware package, which holds tens of images.
+const sourceTreeMin = 2000
+
+var sourceExts = map[string]bool{
+	".c": true, ".h": true, ".cc": true, ".cpp": true, ".hh": true, ".hpp": true, ".cxx": true,
+	".S": true, ".s": true, ".py": true, ".js": true, ".java": true, ".kt": true, ".rs": true,
+	".go": true, ".sh": true, ".txt": true, ".html": true, ".css": true, ".json": true,
+	".xml": true, ".dts": true, ".dtsi": true, ".mk": true, ".cmake": true, ".md": true,
+}
+
+// IsSourceTree says names are a source release: thousands of members, mostly
+// source files. Reading each member of one for firmware facts finds nothing and
+// costs a directory parse per member.
+func IsSourceTree(names []string) bool {
+	if len(names) < sourceTreeMin {
+		return false
+	}
+	src := 0
+	for _, n := range names {
+		if i := strings.LastIndexByte(n, '.'); i >= 0 && sourceExts[n[i:]] {
+			src++
+		}
+	}
+	return src*2 > len(names)
+}
+
 // Glob returns the base names of members whose base name matches pattern
 // (filepath.Match syntax), in archive order. It returns nil (no error) when path
 // is not an archive, so a caller can fall back to treating path as the artifact
