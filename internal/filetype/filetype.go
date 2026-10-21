@@ -15,6 +15,7 @@ type Kind string
 
 const (
 	Zip               Kind = "zip"
+	SevenZip          Kind = "7z"
 	ELF               Kind = "elf"
 	ARM64Image        Kind = "arm64-image" // AArch64 Linux "Image": "ARM\x64" at 0x38 (it often has an EFI stub too, so before PE)
 	SparseImage       Kind = "android-sparse"
@@ -58,6 +59,8 @@ func Detect(head []byte) Kind {
 	switch {
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("PK\x03\x04")):
 		return Zip
+	case len(head) >= 6 && bytes.Equal(head[:6], []byte("7z\xbc\xaf\x27\x1c")):
+		return SevenZip
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("\x7fELF")):
 		return ELF
 	case len(head) >= 262 && bytes.Equal(head[257:262], []byte("ustar")):

@@ -78,14 +78,24 @@ func sourceRelease(names map[string]bool) (comps []string, notices []string) {
 	return comps, notices
 }
 
-// learnSourceRelease folds a source release's layout and notices into the bag. A
-// package is one only if it carries notices, so a firmware package adds nothing.
+// learnSourceRelease folds a source release's layout and any notices into the
+// bag. A firmware package is not a source tree and adds nothing.
 func learnSourceRelease(pkg PackageAccess, bag *facts.Bag) {
+	names := make([]string, 0, len(pkg.Names))
+	for n := range pkg.Names {
+		names = append(names, n)
+	}
+	if !srcfile.IsSourceTree(names) {
+		return
+	}
 	comps, notices := sourceRelease(pkg.Names)
-	if len(notices) == 0 || len(comps) == 0 {
+	if len(comps) == 0 {
 		return
 	}
 	facts.Set(bag, SourceComponents, strings.Join(comps, "; "), facts.Provenance{Source: "top-level directories", Authority: facts.Attested})
+	if len(notices) == 0 {
+		return
+	}
 	var lines []string
 	for _, n := range notices {
 		s := ParseNotice(pkg.Read(n))

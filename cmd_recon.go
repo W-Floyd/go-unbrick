@@ -855,8 +855,15 @@ func runFileRecon(path string) error {
 	size := f.Size()
 	f.Close()
 
+	// The vendors' expanders and zip passwords must be registered before anything opens
+	// the input: carve keeps one tree per path, and a member expanded without them stays
+	// as it was read (an encrypted zip as ciphertext).
+	if _, err := carveRoot(path); err != nil {
+		return err
+	}
+
 	kind := filetype.Detect(head)
-	archive := (kind == filetype.Zip || kind == filetype.Tar || kind == filetype.Gzip) && srcfile.IsArchive(path)
+	archive := (kind == filetype.Zip || kind == filetype.SevenZip || kind == filetype.Tar || kind == filetype.Gzip) && srcfile.IsArchive(path)
 	// Every non-archive branch reads the input whole; over HTTP that is the
 	// full download this route exists to avoid, so only a modest file is
 	// accepted.
@@ -1283,6 +1290,9 @@ func reconArchive(path string, bag *facts.Bag) error {
 			// states when it can be read in place.
 			bar.Clear()
 			if isRangeWalkable(kind) && printLargeFS(path, base, m, "    ") {
+				break
+			}
+			if kind == filetype.Zip && printNestedZip(path, m, "    ") {
 				break
 			}
 			fp := ""
@@ -1967,6 +1977,8 @@ func typeLabel(name string, head []byte) string {
 		return "gzip"
 	case filetype.Zip:
 		return "zip"
+	case filetype.SevenZip:
+		return "7z"
 	}
 	if l, ok := kernelLabel(name, head); ok {
 		return l

@@ -28,6 +28,7 @@ const (
 	zipKind
 	tarKind
 	tgzKind
+	sevenZipKind
 )
 
 // kindOf sniffs the container format from content, not the extension.
@@ -43,6 +44,8 @@ func kindOf(path string) kind {
 	switch {
 	case bytes.HasPrefix(head, []byte("PK\x03\x04")):
 		return zipKind
+	case bytes.HasPrefix(head, []byte("7z\xbc\xaf\x27\x1c")):
+		return sevenZipKind
 	case isTarHeader(head):
 		return tarKind
 	case bytes.HasPrefix(head, []byte{0x1f, 0x8b}):
@@ -161,6 +164,8 @@ func openArchive(path string) (*archive, error) {
 			a.entries = append(a.entries, e)
 		}
 		return a, nil
+	case sevenZipKind:
+		return openSevenZip(path)
 	case tarKind:
 		return openTar(path)
 	case tgzKind:
@@ -246,6 +251,9 @@ func Members(path string, headLen int) ([]Member, error) {
 	sem := make(chan struct{}, headReaders)
 	for i, e := range a.entries {
 		out[i] = Member{Name: e.name, Size: e.size}
+		if headLen <= 0 {
+			continue // names and sizes only: opening each member would decode it for nothing
+		}
 		if e.head != nil {
 			out[i].Head = e.head[:min(len(e.head), headLen)]
 			continue
