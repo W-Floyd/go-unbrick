@@ -5,8 +5,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/gitsrc"
+	"github.com/W-Floyd/go-unbrick/internal/matchcache"
 	work "github.com/W-Floyd/go-unbrick/internal/progress"
 	"github.com/W-Floyd/go-unbrick/internal/srcdiff"
 	"github.com/W-Floyd/go-unbrick/internal/srcident"
@@ -186,6 +188,12 @@ func bestTag(input string, c srcident.Candidate) (ref, note string, err error) {
 	if n == 0 {
 		return "", "no files to match tags with", nil
 	}
+	mc := matchcache.Default()
+	key := matchcache.Key("besttag", matchParams(), c.Rule.Repo, c.Rule.Tag, matchcache.SetKey(local))
+	var hit matchAnswer
+	if mc.Get(key, &hit) {
+		return hit.Ref, hit.Note + " [cached]", nil
+	}
 	tags, err := upstreamsrc.ListTags(c.Rule.Repo)
 	if err != nil {
 		return "", "", err
@@ -215,13 +223,40 @@ func bestTag(input string, c srcident.Candidate) (ref, note string, err error) {
 	}
 	share := float64(scores[b]) / float64(len(local))
 	if share < tagConfident {
-		return "", fmt.Sprintf("no confident match: closest is %s with %d%% of %d sampled files", vt[b].Name, int(share*100), len(local)), nil
+		note = fmt.Sprintf("no confident match: closest is %s with %d%% of %d sampled files", vt[b].Name, int(share*100), len(local))
+		mc.Put(key, tagAnswerTTL, matchAnswer{Note: note})
+		return "", note, nil
 	}
 	note = fmt.Sprintf("best-matching tag %s: %d%% of %d sampled files identical", vt[b].Name, int(share*100), len(local))
 	if ties > 0 {
 		note += fmt.Sprintf(" (%d other tag(s) match as well; the latest is taken)", ties)
 	}
+	mc.Put(key, tagAnswerTTL, matchAnswer{Ref: vt[b].Name, Note: note})
 	return vt[b].Name, note, nil
+}
+
+// matchAnswer is what a search found, as kept: the ref it chose (a tag, or a
+// commit for a sweep; "" for none) and what to say of it.
+type matchAnswer struct {
+	Ref  string
+	Note string
+}
+
+const (
+	// tagAnswerTTL is how long a best-tag answer is kept: a tree's closest release
+	// does not change when later releases are made, only if it was a tie.
+	tagAnswerTTL = 30 * 24 * time.Hour
+	// sweepSettledTTL is for a sweep between two releases already made: the history
+	// between them is fixed. A sweep of the newest release's tree has no later
+	// release to bound it yet, so is kept a day.
+	sweepSettledTTL = 90 * 24 * time.Hour
+	sweepOpenTTL    = 24 * time.Hour
+)
+
+// matchParams names the search's own settings, so a change to how it searches
+// does not serve answers it would no longer give.
+func matchParams() string {
+	return fmt.Sprint("v1/", tagSampleFiles, "/", tagSampleMax, "/", tagCoarse, "/", sweepGain)
 }
 
 // sweepCommits looks between releases for what a tag only approximates. A vendor
@@ -242,6 +277,22 @@ func sweepCommits(input, root, repoURL string, rule *srcident.Rule, tag string) 
 	if n == 0 {
 		return "", "no files to sweep with", nil
 	}
+	gitCache, err := gitsrc.DefaultCache()
+	if err != nil {
+		return "", "", err
+	}
+	mc := matchcache.Default()
+	key := matchcache.Key("sweep", matchParams(), repoURL, tag, matchcache.SetKey(local))
+	var hit matchAnswer
+	if mc.Get(key, &hit) {
+		if hit.Ref == "" {
+			return "", hit.Note + " [cached]", nil
+		}
+		// A commit is only as good as the repository still holding it.
+		if r, err := upstreamsrc.OpenRepo(repoURL, gitCache); err == nil && r.Has(hit.Ref) {
+			return hit.Ref, hit.Note + " [cached]", nil
+		}
+	}
 	tags, err := upstreamsrc.ListTags(repoURL)
 	if err != nil {
 		return "", "", err
@@ -260,11 +311,13 @@ func sweepCommits(input, root, repoURL string, rule *srcident.Rule, tag string) 
 		return "", "no earlier release to bound a sweep from", nil
 	}
 	from, to := vt[at-1].Name, vt[min(at+1, len(vt)-1)].Name
-	cache, err := gitsrc.DefaultCache()
-	if err != nil {
-		return "", "", err
+	// With a later release to bound it the range is settled history; for the newest
+	// release it is not, as the next one may yet be made.
+	ttl := sweepSettledTTL
+	if at == len(vt)-1 {
+		ttl = sweepOpenTTL
 	}
-	repo, err := upstreamsrc.OpenRepo(repoURL, cache)
+	repo, err := upstreamsrc.OpenRepo(repoURL, gitCache)
 	if err != nil {
 		return "", "", err
 	}
@@ -294,7 +347,9 @@ func sweepCommits(input, root, repoURL string, rule *srcident.Rule, tag string) 
 	tagShare := float64(scores[len(history)]) / float64(len(local))
 	share := float64(scores[b]) / float64(len(local))
 	if share < tagShare+sweepGain {
-		return "", fmt.Sprintf("no commit between %s and %s matches better than %s (%d%% of %d sampled files)", from, to, tag, int(tagShare*100), len(local)), nil
+		note = fmt.Sprintf("no commit between %s and %s matches better than %s (%d%% of %d sampled files)", from, to, tag, int(tagShare*100), len(local))
+		mc.Put(key, ttl, matchAnswer{Note: note})
+		return "", note, nil
 	}
 	// Commits that match equally are indistinguishable by this sample; the earliest
 	// is taken and the span said.
@@ -310,6 +365,7 @@ func sweepCommits(input, root, repoURL string, rule *srcident.Rule, tag string) 
 	if last != first {
 		note += fmt.Sprintf(" (commits %s to %s match equally)", history[first][:12], history[last][:12])
 	}
+	mc.Put(key, ttl, matchAnswer{Ref: history[first], Note: note})
 	return history[first], note, nil
 }
 

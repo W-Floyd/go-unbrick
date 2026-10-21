@@ -422,3 +422,6 @@ func (r *Repo) Describe(commit string) (date, subject string) {
 	date, subject, _ = strings.Cut(strings.TrimSpace(string(out)), "\n")
 	return date, subject
 }
+
+// Has says the repository already holds commit.
+func (r *Repo) Has(commit string) bool { return r.s.has(commit) }
