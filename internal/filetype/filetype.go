@@ -16,6 +16,7 @@ type Kind string
 const (
 	Zip               Kind = "zip"
 	ELF               Kind = "elf"
+	ARM64Image        Kind = "arm64-image" // AArch64 Linux "Image": "ARM\x64" at 0x38 (it often has an EFI stub too, so before PE)
 	SparseImage       Kind = "android-sparse"
 	Ext4              Kind = "ext4"
 	EROFS             Kind = "erofs"
@@ -65,6 +66,8 @@ func Detect(head []byte) Kind {
 		return Gzip
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x184d2204: // frame format
 		return LZ4
+	case len(head) >= 0x3c && le.Uint32(head[0x38:0x3c]) == 0x644d5241:
+		return ARM64Image
 	case isPE(head):
 		return PE
 	case len(head) >= 8 && bytes.Equal(head[:8], []byte("ANDROID!")):

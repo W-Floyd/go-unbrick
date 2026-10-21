@@ -32,8 +32,8 @@ func addSecrets(c *cobra.Command) *cobra.Command {
 // readImage reads path, joining a PIL split image (.mdt with sibling .bNN
 // files) into one ELF. missing lists segments whose .bNN was absent.
 func readImage(path string) (data []byte, missing []int, err error) {
-	data, err = os.ReadFile(path)
-	if err != nil || !strings.EqualFold(filepath.Ext(path), ".mdt") || !bootelf.IsELF(data) {
+	data, err = infile.ReadFile(path) // a path on disk, or a member read in place (infile.RegisterVirtual)
+	if err != nil || infile.IsVirtual(path) || !strings.EqualFold(filepath.Ext(path), ".mdt") || !bootelf.IsELF(data) {
 		return data, nil, err
 	}
 	stem := strings.TrimSuffix(path, filepath.Ext(path))

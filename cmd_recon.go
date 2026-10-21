@@ -34,6 +34,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 	"github.com/W-Floyd/go-unbrick/internal/fastboot"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
+	"github.com/W-Floyd/go-unbrick/internal/fill"
 	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/lenovo"
@@ -897,6 +898,8 @@ func runFileRecon(path string) error {
 		rerr = reconGPT(path)
 	case kind == filetype.DTBOTable, kind == filetype.DeviceTree:
 		rerr = reconDTBO(path)
+	case kind == filetype.ARM64Image, bootimg.IsZImage(head):
+		_, rerr = reconKernel(path, true)
 	case kind == filetype.SparseImage:
 		rerr = reconSparse(path)
 	case kind == filetype.Ext4, kind == filetype.FAT:
@@ -1954,8 +1957,8 @@ func typeLabel(name string, head []byte) string {
 	case filetype.Zip:
 		return "zip"
 	}
-	if bootimg.IsZImage(head) {
-		return "ARM zImage"
+	if l, ok := kernelLabel(name, head); ok {
+		return l
 	}
 	if lp.IsSuper(head) {
 		return "super metadata"
@@ -1979,6 +1982,13 @@ func typeLabel(name string, head []byte) string {
 		return "script"
 	} else if ok {
 		return "text"
+	}
+	if p := fill.Period(head); p == 1 {
+		// Only the start is known here (recon reads the rest): a file that starts as a
+		// fill is nearly always a blank region.
+		return fmt.Sprintf("fill 0x%02x", head[0])
+	} else if p > 1 {
+		return fmt.Sprintf("fill %x", head[:p])
 	}
 	if highEntropy(head) {
 		if l, ok := decryptLabel(head); ok {
@@ -2229,6 +2239,25 @@ func reconContainer(path string) error {
 }
 
 func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
+	// A kernel with no header (the raw ARM Image a zImage unpacks to) is known by its
+	// name and the version banner inside it.
+	if kernelNamed(path) {
+		if ok, err := reconKernel(path, true); ok || err != nil {
+			return err
+		}
+	}
+	// Content that is one pattern from end to end (zeros, 0xff, a fill word) has
+	// nothing else to recognize.
+	if reconFill(path, head) {
+		return nil
+	}
+	// A kernel with no header (the raw ARM Image a zImage unpacks to) is known by its
+	// name and the version banner inside it.
+	if kernelNamed(path) {
+		if ok, err := reconKernel(path, true); ok || err != nil {
+			return err
+		}
+	}
 	// Vendor-specific content with no neutral magic (CID image, MotoLogo, SLCF).
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), filepath.Base(path), head); ok {
 		line := "  " + info.Label
@@ -2297,4 +2326,43 @@ func erofsSummary(data []byte) string {
 		s += ", " + fp
 	}
 	return s
+}
+
+// reconFill says what a file is when it is one short pattern repeated: all zeros,
+// all 0xff (an erased flash region), a fill word. It reads past the head only
+// when the head is such a pattern, and stops at the first byte that breaks it.
+// true means the whole file is that fill and there is nothing more to say; a file
+// that starts with a long fill and then changes gets a line and recon goes on.
+func reconFill(path string, head []byte) bool {
+	if fill.Period(head) == 0 {
+		// A short file has too little to call a pattern, but if it is all one byte
+		// and that is all of it, say so.
+		if len(head) >= 16 && len(head) < fill.MinHead && fill.Uniform(head) {
+			if st, err := infile.Stat(path); err == nil && st.Size() == int64(len(head)) {
+				fmt.Printf("  Fill: every byte is 0x%02x, %s\n", head[0], humanBytes(int64(len(head))))
+				return true
+			}
+		}
+		return false
+	}
+	f, err := infile.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.Seek(int64(len(head)), io.SeekStart); err != nil {
+		return false
+	}
+	res, err := fill.Scan(f, head, f.Size())
+	if err != nil || res.Pattern == nil {
+		return false
+	}
+	if res.Whole {
+		fmt.Printf("  Fill: %s, %s\n", res.Describe(), humanBytes(res.Size))
+		return true
+	}
+	if res.Break >= 4096 {
+		fmt.Printf("  Leading fill: %s, the first %s of %s\n", res.Describe(), humanBytes(res.Break), humanBytes(res.Size))
+	}
+	return false
 }

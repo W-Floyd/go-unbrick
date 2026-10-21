@@ -26,6 +26,7 @@ func TestDetect(t *testing.T) {
 		want Kind
 	}{
 		{"zip", []byte("PK\x03\x04rest"), Zip},
+		{"arm64 image", func() []byte { b := make([]byte, 0x40); copy(b, "MZ"); copy(b[0x38:], "ARM\x64"); return b }(), ARM64Image},
 		{"elf", []byte("\x7fELFrest"), ELF},
 		{"snl", []byte("SINGLE_N_LONELY\x00more"), SingleNLonely},
 		{"avb", []byte("AVB0xxxx"), VBMeta},
