@@ -949,6 +949,8 @@ func runFileRecon(path string) error {
 		rerr = reconDTBO(path)
 	case kind == filetype.ARM64Image, bootimg.IsZImage(head):
 		_, rerr = reconKernel(path, true)
+	case kind == filetype.LZ4Legacy, kind == filetype.LZ4:
+		rerr = reconLZ4(path)
 	case kind == filetype.SparseImage:
 		rerr = reconSparse(path)
 	case kind == filetype.Ext4, kind == filetype.FAT:
@@ -1477,7 +1479,7 @@ func printNestedTar(path, name, indent string, bar *barSink) {
 // describes it from its head.
 func nestedMember(k *carve.Node) (line string, data []byte) {
 	inner := k
-	if filetype.Detect(k.Head()) == filetype.LZ4 {
+	if kd := filetype.Detect(k.Head()); kd == filetype.LZ4 || kd == filetype.LZ4Legacy {
 		if _, c, err := k.Children(); err == nil && len(c) == 1 {
 			inner = c[0]
 		}
@@ -1985,6 +1987,8 @@ func typeLabel(name string, head []byte) string {
 		return "tar"
 	case filetype.LZ4:
 		return "lz4"
+	case filetype.LZ4Legacy:
+		return "lz4 (legacy format)"
 	case filetype.PE:
 		return "PE executable"
 	case filetype.F2FS:

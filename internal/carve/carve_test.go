@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"testing"
 
@@ -138,5 +139,51 @@ func TestOdinPackage(t *testing.T) {
 	tarNode, _ := root.Walk("BL_TEST.tar.md5")
 	if tarNode.defl == nil || tarNode.Partial() != "" {
 		t.Errorf("deflated tar: span %v, partial %q", tarNode.defl, tarNode.Partial())
+	}
+}
+
+// An LZ4 legacy stream in a padded partition opens as its decompressed content, which
+// is itself a container (a cpio ramdisk).
+func TestLZ4LegacyOpensToItsCpio(t *testing.T) {
+	cpio := func(name, body string) []byte {
+		hdr := fmt.Sprintf("070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x", 1, 0o100644, 0, 0, 1, 0, len(body), 0, 0, 0, 0, len(name)+1, 0)
+		b := append([]byte(hdr+name), 0)
+		for len(b)%4 != 0 {
+			b = append(b, 0)
+		}
+		b = append(b, body...)
+		for len(b)%4 != 0 {
+			b = append(b, 0)
+		}
+		return b
+	}
+	archive := append(append(cpio("etc/os-release", "NAME=test\n"), cpio("init", "#!/bin/sh\n")...), cpio("TRAILER!!!", "")...)
+	block := make([]byte, lz4.CompressBlockBound(len(archive)))
+	n, err := lz4.CompressBlock(archive, block, nil)
+	if err != nil || n == 0 {
+		t.Fatalf("compress: %d %v", n, err)
+	}
+	stream := []byte{0x02, 0x21, 0x4c, 0x18, byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)}
+	stream = append(append(stream, block[:n]...), make([]byte, 3000)...) // the partition's padding
+
+	root := FromBytes("a7s_root", stream)
+	e, ok := Format(root)
+	if !ok || e.Kind != "lz4 (legacy)" {
+		t.Fatalf("format: %v %v", e.Kind, ok)
+	}
+	_, kids, err := root.Children()
+	if err != nil || len(kids) != 1 || kids[0].Name != "a7s_root.out" {
+		t.Fatalf("children: %v %v", kids, err)
+	}
+	if e2, ok := Format(kids[0]); !ok || e2.Kind != "ramdisk" {
+		t.Fatalf("the decompressed content is not a ramdisk: %v %v", e2.Kind, ok)
+	}
+	_, files, err := kids[0].Children()
+	if err != nil || len(files) != 2 {
+		t.Fatalf("cpio members: %d %v", len(files), err)
+	}
+	got, _ := files[1].Bytes()
+	if string(got) != "#!/bin/sh\n" {
+		t.Errorf("content %q", got)
 	}
 }

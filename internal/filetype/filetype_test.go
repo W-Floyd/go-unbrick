@@ -96,3 +96,16 @@ func TestDetectODEXAndQCDT(t *testing.T) {
 		t.Error("qcdt")
 	}
 }
+
+func TestDetectLZ4Formats(t *testing.T) {
+	if Detect([]byte{0x04, 0x22, 0x4d, 0x18, 0x64, 0x40}) != LZ4 {
+		t.Error("lz4 frame")
+	}
+	if Detect([]byte{0x02, 0x21, 0x4c, 0x18, 0xb3, 0x41, 0x3f, 0x00}) != LZ4Legacy {
+		t.Error("lz4 legacy")
+	}
+	// The magic with no block after it is not a stream.
+	if Detect([]byte{0x02, 0x21, 0x4c, 0x18, 0, 0, 0, 0}) == LZ4Legacy {
+		t.Error("lz4 legacy magic with a zero block size")
+	}
+}

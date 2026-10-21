@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -76,6 +78,15 @@ func DecompressRamdisk(b []byte) ([]byte, Codec, error) {
 		}
 		r = zr
 	case CodecLZ4:
+		if IsLZ4Legacy(b) {
+			// Read by our own decoder, which ends a stream at its padding; the library's
+			// reader fails on the zeros a partition holding one is padded with.
+			out, _, err := DecompressLZ4Legacy(b)
+			if err != nil {
+				return nil, codec, err
+			}
+			return out, codec, nil
+		}
 		r = lz4.NewReader(bytes.NewReader(b))
 	case CodecXZ:
 		xr, err := xz.NewReader(bytes.NewReader(b))
@@ -118,4 +129,58 @@ func decompressLZMA(b []byte) ([]byte, Codec, error) {
 		return nil, CodecLZMA, fmt.Errorf("lzma decompress: %w", err)
 	}
 	return out, CodecLZMA, nil
+}
+
+const lz4LegacyMagic = 0x184c2102
+
+const (
+	// lz4LegacyChunk is what each block of a legacy stream decompresses to at most.
+	lz4LegacyChunk = 8 << 20
+	// lz4LegacyBlockMax is the most a block of that can occupy compressed: LZ4's bound
+	// for incompressible input.
+	lz4LegacyBlockMax = lz4LegacyChunk + lz4LegacyChunk/255 + 16
+)
+
+// IsLZ4Legacy says b starts an LZ4 legacy stream (the older format Linux's own
+// kernels and some Android ramdisks use), whose magic is not the frame format's.
+func IsLZ4Legacy(b []byte) bool {
+	return len(b) >= 4 && binary.LittleEndian.Uint32(b) == lz4LegacyMagic
+}
+
+// DecompressLZ4Legacy decompresses a legacy LZ4 stream: its magic, then blocks each
+// a 4-byte little-endian size and that much compressed data, up to 8 MiB of output
+// apiece. The format has no end marker, so a stream ends where the data does or at
+// a size that cannot be a block (the zeros a partition is padded with); used is how
+// much of b the stream took, so the caller can see what is left after it. A stream
+// that begins again (concatenated, as the kernel allows) is followed.
+func DecompressLZ4Legacy(b []byte) (out []byte, used int, err error) {
+	if !IsLZ4Legacy(b) {
+		return nil, 0, errors.New("not an LZ4 legacy stream")
+	}
+	le := binary.LittleEndian
+	dst := make([]byte, lz4LegacyChunk)
+	pos := 4
+	for pos+4 <= len(b) {
+		size := int(le.Uint32(b[pos:]))
+		if size == lz4LegacyMagic {
+			pos += 4
+			continue
+		}
+		if size == 0 || size > lz4LegacyBlockMax || pos+4+size > len(b) {
+			break
+		}
+		n, derr := lz4.UncompressBlock(b[pos+4:pos+4+size], dst)
+		if derr != nil {
+			if len(out) == 0 {
+				return nil, 0, fmt.Errorf("lz4 legacy: %w", derr)
+			}
+			break // what follows is not a block: the stream ended before it
+		}
+		out = append(out, dst[:n]...)
+		pos += 4 + size
+	}
+	if len(out) == 0 {
+		return nil, 0, errors.New("lz4 legacy: no block decoded")
+	}
+	return out, pos, nil
 }

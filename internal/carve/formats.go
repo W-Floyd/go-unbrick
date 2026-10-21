@@ -52,6 +52,7 @@ func init() {
 		Expander{Kind: "ramdisk", Match: isRamdisk, Expand: expandRamdisk},
 		Expander{Kind: "gzip", Match: kind(filetype.Gzip), Expand: expandGzip},
 		Expander{Kind: "lz4", Match: kind(filetype.LZ4), Expand: expandLZ4},
+		Expander{Kind: "lz4 (legacy)", Match: kind(filetype.LZ4Legacy), Expand: expandLZ4Legacy},
 		Expander{Kind: "payload", Match: kind(filetype.OTAPayload), Expand: expandPayload},
 		Expander{Kind: "sparse", Match: kind(filetype.SparseImage), Expand: expandSparse},
 		Expander{Kind: "super", Match: func(_ *Node, h []byte) bool { return lp.IsSuper(h) }, Expand: expandSuper},
@@ -361,6 +362,25 @@ func expandLZ4(n *Node) ([]*Node, error) {
 		}{lz4.NewReader(rc), rc}, nil
 	}
 	return []*Node{FromStream(name, size, open)}, nil
+}
+
+// expandLZ4Legacy has one child, the decompressed stream. The legacy format has no
+// end marker, so a stream in a partition is followed by padding that the frame
+// decoder fails on; bootimg's decoder ends the stream there.
+func expandLZ4Legacy(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	out, _, err := bootimg.DecompressLZ4Legacy(b)
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSuffix(path.Base(n.Name), ".lz4")
+	if name == path.Base(n.Name) {
+		name += ".out"
+	}
+	return []*Node{FromBytes(name, out)}, nil
 }
 
 // expandTar indexes a tar: tar.Reader seeks past each body, so every member

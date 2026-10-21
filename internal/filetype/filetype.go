@@ -34,6 +34,7 @@ const (
 	Tar               Kind = "tar"
 	Gzip              Kind = "gzip"
 	LZ4               Kind = "lz4"
+	LZ4Legacy         Kind = "lz4-legacy" // the older LZ4 stream format: blocks with no frame header or end
 	PE                Kind = "pe"
 	F2FS              Kind = "f2fs"
 	JPEG              Kind = "jpeg"
@@ -69,6 +70,8 @@ func Detect(head []byte) Kind {
 		return Gzip
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x184d2204: // frame format
 		return LZ4
+	case len(head) >= 8 && le.Uint32(head[:4]) == 0x184c2102 && le.Uint32(head[4:8]) != 0: // legacy: magic, then a first block size
+		return LZ4Legacy
 	case len(head) >= 0x3c && le.Uint32(head[0x38:0x3c]) == 0x644d5241:
 		return ARM64Image
 	case isPE(head):
