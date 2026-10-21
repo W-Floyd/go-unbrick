@@ -2312,10 +2312,11 @@ func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 	if reconFill(path, head) {
 		return nil
 	}
-	// A kernel with no header (the raw ARM Image a zImage unpacks to) is known by its
-	// name and the version banner inside it.
-	if kernelNamed(path) {
-		if ok, err := reconKernel(path, true); ok || err != nil {
+	// The same kernel under a name that does not say so (a partition called
+	// a7s_boot): it starts with ARM code, and read in full it has the version banner
+	// and a message only a kernel carries.
+	if bootimg.StartsLikeARMKernel(head) && !highEntropy(head) {
+		if ok, err := reconKernel(path, false); ok || err != nil {
 			return err
 		}
 	}

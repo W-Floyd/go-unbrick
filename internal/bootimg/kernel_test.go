@@ -3,6 +3,7 @@ package bootimg
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -78,5 +79,91 @@ func TestARM64Image(t *testing.T) {
 	}
 	if _, ok := ParseARM64(make([]byte, 0x40)); ok {
 		t.Error("zeros are not an arm64 image")
+	}
+}
+
+// armKernel is the shape of a raw 32-bit ARM kernel: a branch to start, then data
+// with the banner and a kernel message in it.
+func armKernel(banner, message string) []byte {
+	b := []byte{0x46, 0x12, 0x04, 0xeb} // bl, always
+	b = append(b, make([]byte, 64)...)
+	b = append(b, banner+"\n"...)
+	b = append(b, 0)
+	b = append(b, message...)
+	return append(b, make([]byte, 64)...)
+}
+
+const rawBanner = "Linux version 4.14.202-tcc (oe-user@oe-host) (gcc version 9.2.1 20191025 (GCC)) #1 PREEMPT Fri Jan 6 05:40:02 UTC 2023"
+
+func TestIsRawKernel(t *testing.T) {
+	if !IsRawKernel(armKernel(rawBanner, "Kernel panic - not syncing: ")) {
+		t.Error("a raw ARM kernel was not recognised")
+	}
+	for name, data := range map[string][]byte{
+		"banner in a log, no ARM start": append([]byte("log: "), armKernel(rawBanner, "Kernel panic - not syncing")...),
+		"ARM start, no banner":          append([]byte{0x46, 0x12, 0x04, 0xeb}, []byte("Kernel panic - not syncing")...),
+		"ARM start, banner, no message": armKernel(rawBanner, "nothing else of a kernel"),
+		"empty":                         nil,
+	} {
+		if IsRawKernel(data) {
+			t.Errorf("%s: recognised", name)
+		}
+	}
+	for _, w := range [][]byte{{0x46, 0x12, 0x04, 0xeb}, {0x01, 0x00, 0x00, 0xea}, {0x00, 0x00, 0xa0, 0xe1}} {
+		if !StartsLikeARMKernel(w) {
+			t.Errorf("% x not taken as a kernel's start", w)
+		}
+	}
+	if StartsLikeARMKernel([]byte{0x7f, 'E', 'L', 'F'}) || StartsLikeARMKernel([]byte{1, 2}) {
+		t.Error("something else taken as a kernel's start")
+	}
+}
+
+// newc is one cpio (newc) member.
+func newc(name string, mode int, content string) []byte {
+	var b bytes.Buffer
+	pad := func() {
+		for b.Len()%4 != 0 {
+			b.WriteByte(0)
+		}
+	}
+	fmt.Fprintf(&b, "070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x", 1, mode, 0, 0, 1, 0, len(content), 0, 0, 0, 0, len(name)+1, 0)
+	b.WriteString(name)
+	b.WriteByte(0)
+	pad()
+	b.WriteString(content)
+	pad()
+	return b.Bytes()
+}
+
+func TestBuiltinInitramfs(t *testing.T) {
+	// Each member is padded as it would be in a whole archive, so build them in one buffer.
+	build := func(members ...[]byte) []byte {
+		var all []byte
+		for _, m := range members {
+			all = append(all, m...)
+			for len(all)%4 != 0 {
+				all = append(all, 0)
+			}
+		}
+		return all
+	}
+	def := build(newc("dev", 0o40755, ""), newc("dev/console", 0o20600, ""), newc("root", 0o40700, ""), newc("TRAILER!!!", 0, ""))
+	kernel := append(append([]byte("junk 070701 not a header "), make([]byte, 40)...), def...)
+	fs, ok := BuiltinInitramfs(kernel)
+	if !ok || !fs.Default() || len(fs.Entries) != 4 {
+		t.Fatalf("default initramfs: %+v %v", fs, ok)
+	}
+	real := build(newc("init", 0o100755, "#!/bin/sh\n"), newc("bin", 0o40755, ""), newc("TRAILER!!!", 0, ""))
+	fs, ok = BuiltinInitramfs(append([]byte("xx"), real...))
+	if !ok || fs.Default() || fs.Bytes != len("#!/bin/sh\n") {
+		t.Errorf("real initramfs: %+v %v", fs, ok)
+	}
+	if _, ok := BuiltinInitramfs([]byte("no archive here, only 070701 and text")); ok {
+		t.Error("found an initramfs in text")
+	}
+	lines := strings.Join(Describe(armKernel(rawBanner, "Kernel panic - not syncing")), "\n")
+	if !strings.Contains(lines, "Kernel: Linux 4.14.202-tcc") || !strings.Contains(lines, "Initramfs: none built in") {
+		t.Errorf("describe:\n%s", lines)
 	}
 }

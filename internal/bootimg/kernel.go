@@ -219,6 +219,16 @@ func Describe(file []byte) []string {
 	if b, ok := FindBanner(kernel); ok {
 		out = append([]string{"Kernel: Linux " + b.Release, "  built by " + b.Builder + ", " + b.Compiler, "  " + b.Build}, out...)
 	}
+	if fs, ok := BuiltinInitramfs(kernel); ok {
+		switch {
+		case fs.Default():
+			out = append(out, "Initramfs: built in, the empty default (/dev/console, /root): the root filesystem comes from elsewhere, named by the boot arguments")
+		default:
+			out = append(out, fmt.Sprintf("Initramfs: built in, %d entries, %s of files", len(fs.Entries)-1, kib(fs.Bytes)))
+		}
+	} else if kernel != nil {
+		out = append(out, "Initramfs: none built in")
+	}
 	if cfg, ok := KernelConfig(kernel); ok {
 		out = append(out, fmt.Sprintf("Config: embedded (IKCONFIG), %s", kib(len(cfg))))
 		for _, l := range ConfigHighlights(cfg) {
@@ -240,4 +250,131 @@ func orNone(s string) string {
 		return "no known compressor"
 	}
 	return s
+}
+
+// StartsLikeARMKernel says the first word is what a raw 32-bit ARM kernel starts
+// with: an ARM-mode branch (B or BL, always) or the no-operation MOV r0, r0. It
+// proves nothing alone, since any ARM firmware starts so; it is the cheap test that
+// says whether the file is worth reading in full for the rest of IsRawKernel.
+func StartsLikeARMKernel(head []byte) bool {
+	if len(head) < 4 {
+		return false
+	}
+	w := binary.LittleEndian.Uint32(head)
+	return w>>24 == 0xea || w>>24 == 0xeb || w == 0xe1a00000
+}
+
+// kernelMessages are text only a kernel carries, which a file that merely mentions
+// the version banner (a log, a documentation page) does not.
+var kernelMessages = [][]byte{
+	[]byte("Kernel panic - not syncing"),
+	[]byte("Unable to mount root fs"),
+	[]byte("No working init found"),
+	[]byte("Freeing unused kernel memory"),
+}
+
+// IsRawKernel says data is a Linux kernel with no header: the raw image an ARM
+// zImage unpacks to, or one built uncompressed. Nothing at its start names it, so it
+// is known by what it starts with (ARM code), its version banner, and a message that
+// only a kernel contains.
+func IsRawKernel(data []byte) bool {
+	if !StartsLikeARMKernel(data) {
+		return false
+	}
+	if _, ok := FindBanner(data); !ok {
+		return false
+	}
+	for _, m := range kernelMessages {
+		if bytes.Contains(data, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// Initramfs is what a kernel carries as its built-in initial root filesystem: a
+// cpio archive linked into the image.
+type Initramfs struct {
+	Offset  int
+	Entries []string // member names, in archive order
+	Bytes   int      // the files' contents together
+}
+
+// Default says it is the empty one the kernel build makes when given no root
+// filesystem to embed (a /dev/console node and a /root directory), so the real root
+// comes from elsewhere: the boot arguments name it.
+func (r Initramfs) Default() bool {
+	if len(r.Entries) > 4 || r.Bytes != 0 {
+		return false
+	}
+	for _, n := range r.Entries {
+		if n != "dev" && n != "dev/console" && n != "root" && n != "TRAILER!!!" {
+			return false
+		}
+	}
+	return len(r.Entries) > 0
+}
+
+// BuiltinInitramfs finds the largest complete cpio (newc) archive in a kernel: the
+// built-in initramfs. A kernel may well have none.
+func BuiltinInitramfs(kernel []byte) (Initramfs, bool) {
+	var best Initramfs
+	found := false
+	for off := 0; ; {
+		i := bytes.Index(kernel[off:], []byte("070701"))
+		if i < 0 {
+			break
+		}
+		start := off + i
+		off = start + 1
+		r, ok := walkCpio(kernel, start)
+		if ok && (!found || len(r.Entries) > len(best.Entries)) {
+			best, found = r, true
+		}
+	}
+	return best, found
+}
+
+// walkCpio reads a newc archive from start through its TRAILER!!!; ok is false if
+// anything on the way is not one.
+func walkCpio(d []byte, start int) (Initramfs, bool) {
+	r := Initramfs{Offset: start}
+	hex := func(b []byte) (int, bool) {
+		n := 0
+		for _, c := range b {
+			switch {
+			case c >= '0' && c <= '9':
+				n = n<<4 | int(c-'0')
+			case c >= 'a' && c <= 'f':
+				n = n<<4 | int(c-'a'+10)
+			case c >= 'A' && c <= 'F':
+				n = n<<4 | int(c-'A'+10)
+			default:
+				return 0, false
+			}
+		}
+		return n, true
+	}
+	// Padding is to four bytes from the start of the archive, not of the file.
+	align := func(n int) int { return start + (n-start+3)&^3 }
+	off := start
+	for len(r.Entries) < 1<<16 {
+		if off+110 > len(d) || string(d[off:off+6]) != "070701" {
+			return r, false
+		}
+		size, ok1 := hex(d[off+54 : off+62])
+		namesz, ok2 := hex(d[off+94 : off+102])
+		if !ok1 || !ok2 || namesz < 1 || namesz > 4096 || off+110+namesz > len(d) {
+			return r, false
+		}
+		name := string(d[off+110 : off+110+namesz-1])
+		r.Entries = append(r.Entries, name)
+		body := align(off + 110 + namesz)
+		if name == "TRAILER!!!" {
+			return r, true
+		}
+		r.Bytes += size
+		off = align(body + size)
+	}
+	return r, false
 }

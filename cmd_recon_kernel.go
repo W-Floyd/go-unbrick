@@ -43,7 +43,8 @@ func reconKernel(path string, forced bool) (bool, error) {
 	lines := bootimg.Describe(data)
 	known := bootimg.IsZImage(data) || bootimg.IsAArch64Image(data)
 	if !known {
-		if _, ok := bootimg.FindBanner(data); !ok || !forced {
+		// No header: a kernel by its name (forced), or by what is in it.
+		if _, ok := bootimg.FindBanner(data); !ok || !(forced || bootimg.IsRawKernel(data)) {
 			return false, nil
 		}
 	}
