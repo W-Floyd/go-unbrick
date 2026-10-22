@@ -21,11 +21,12 @@ import (
 // spans of many blocks per request instead, which is what keeps the link full.
 const (
 	blockSize   = 64 << 10
-	spanBlocks  = 16  // blocks per request once a reader is sequential, or warmed
-	idleBlocks  = 64  // blocks kept for a file nobody warmed, beyond its read-ahead
-	maxAhead    = 128 // read-ahead depth of a sequential reader, in blocks
-	seqReads    = 3   // contiguous reads in a row before a reader counts as sequential
-	warmFetches = 4   // background (warm) requests in flight, across all files
+	spanBlocks  = 16        // blocks per request once a reader is sequential, or warmed
+	idleBlocks  = 64        // blocks kept for a file nobody warmed, beyond its read-ahead
+	maxAhead    = 128       // read-ahead depth of a sequential reader, in blocks
+	seqReads    = 3         // contiguous reads in a row before a reader counts as sequential
+	seqBytes    = 256 << 10 // and the bytes they must cover
+	warmFetches = 4         // background (warm) requests in flight, across all files
 )
 
 // warmSem bounds Warm's requests, so warming the next files cannot crowd out
@@ -43,13 +44,14 @@ type sshFile struct {
 	f    *sftp.File
 	size int64
 
-	mu      sync.Mutex
-	blocks  map[int64]*blk
-	lastEnd int64          // where the last read ended
-	run     int            // contiguous reads in a row
-	ahead   int            // current read-ahead depth, in blocks
-	aheadTo int64          // the last block read-ahead has requested
-	pinned  map[int64]bool // warmed blocks: kept until Evict, whatever else is read
+	mu       sync.Mutex
+	blocks   map[int64]*blk
+	lastEnd  int64          // where the last read ended
+	run      int            // contiguous reads in a row
+	runBytes int64          // bytes in that run
+	ahead    int            // current read-ahead depth, in blocks
+	aheadTo  int64          // the last block read-ahead has requested
+	pinned   map[int64]bool // warmed blocks: kept until Evict, whatever else is read
 }
 
 func (s *sshFile) nblocks() int64 { return (s.size + blockSize - 1) / blockSize }
@@ -191,11 +193,20 @@ func (s *sshFile) ReadAt(p []byte, off int64) (int, error) {
 	s.mu.Lock()
 	if off == s.lastEnd {
 		s.run++
+		s.runBytes += int64(len(p))
 	} else {
-		s.run = 1
+		s.run, s.runBytes = 1, int64(len(p))
 	}
-	sequential := s.run >= seqReads
+	// A zip member's local header and its first bytes are contiguous reads too;
+	// reading ahead on those would fetch megabytes past every member's start.
+	sequential := s.run >= seqReads && s.runBytes >= seqBytes
 	s.lastEnd = min(off+int64(len(p)), s.size)
+	if !sequential && len(p) > 0 && off < s.size {
+		// A random read of several blocks asks for them together, in spans fetched
+		// in parallel, not one round trip per block.
+		lo := off / blockSize
+		s.fetch(lo, min((off+int64(len(p))-1)/blockSize, lo+idleBlocks-1), false)
+	}
 	s.mu.Unlock()
 
 	n := 0

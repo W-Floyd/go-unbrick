@@ -121,7 +121,33 @@ type archive struct {
 	partial string // why entries may not be all of them; "" when they are
 }
 
+type sshArchive struct {
+	once sync.Once
+	a    *archive
+	err  error
+}
+
+var sshArchives sync.Map // ssh:// URL -> *sshArchive
+
+// openArchive indexes the archive at path. An ssh:// archive is indexed once per
+// process and shared: indexing it is round trips over the link, and callers open
+// it once per member read.
 func openArchive(path string) (*archive, error) {
+	if !infile.IsSSH(path) {
+		return openArchiveUncached(path)
+	}
+	e, _ := sshArchives.LoadOrStore(path, &sshArchive{})
+	sa := e.(*sshArchive)
+	sa.once.Do(func() { sa.a, sa.err = openArchiveUncached(path) })
+	if sa.err != nil {
+		return nil, sa.err
+	}
+	shared := *sa.a
+	shared.close = func() error { return nil } // the index lives as long as the process
+	return &shared, nil
+}
+
+func openArchiveUncached(path string) (*archive, error) {
 	switch kindOf(path) {
 	case zipKind:
 		zr, err := infile.OpenZip(path)
@@ -140,10 +166,11 @@ func openArchive(path string) (*archive, error) {
 			// So it is found when a member is read, not for every member up front.
 			// (A remote archive keeps looking up front: its headers are fetched into the
 			// chunk cache ahead of any member being streamed, which is what keeps a
-			// member's fetch to its own bytes.)
+			// member's fetch to its own bytes. Over ssh each is a round trip fetching a
+			// block, which would read hundreds of blocks to use a few: it waits.)
 			lo := &lazyOffset{f: f}
 			in := zr.Input()
-			if infile.IsRemote(path) {
+			if infile.IsRemote(path) && !infile.IsSSH(path) {
 				lo.get()
 			}
 			e.srcFn = func() (int64, int64, bool) {

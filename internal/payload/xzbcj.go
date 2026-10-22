@@ -35,6 +35,9 @@ func newXZReader(r io.Reader) (io.ReadCloser, error) {
 		return nil, err
 	}
 	if !xzHasFilterChain(data) {
+		if out, ok := decodeNativeXZ(data); ok {
+			return readCloser{Reader: bytes.NewReader(out)}, nil
+		}
 		xr, err := xz.NewReader(bytes.NewReader(data))
 		if err != nil {
 			return nil, fmt.Errorf("creating xz reader: %w", err)
