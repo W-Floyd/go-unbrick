@@ -63,7 +63,7 @@ import (
 func newReconCmd() *cobra.Command {
 	var depth, sweepWorkers int
 	var carve, why, with, secrets string
-	var verify, learn, exhaustive bool
+	var verify, learn, exhaustive, credsAudit bool
 	c := &cobra.Command{
 		Use:   "recon <file | directory | http(s) url | ssh://[user@]host[:port]/path>",
 		Short: "identify any file (stock zip, image, container, config) and report what it is",
@@ -96,6 +96,13 @@ func newReconCmd() *cobra.Command {
 				}
 				return runKeySweep(args[0], d, sweepWorkers)
 			}
+			if credsAudit {
+				d := 100
+				if cmd.Flags().Changed("depth") {
+					d = depth
+				}
+				return runCredsAudit(args[0], d)
+			}
 			if isDir {
 				if with != "" {
 					fmt.Fprintf(os.Stderr, "note: --with is ignored in directory mode; each file resolves its own companion\n")
@@ -115,6 +122,7 @@ func newReconCmd() *cobra.Command {
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
 	c.Flags().BoolVar(&exhaustive, "exhaustive-key-learn", false, "instead of a recon: search every byte of every file (through nested containers, after decryption; --depth defaults to unlimited here) for each loaded key and IV, raw and as hex text, and report where they are embedded; --skip applies")
 	c.Flags().IntVar(&sweepWorkers, "workers", 0, "with --exhaustive-key-learn, how many files are searched at once (default: the CPUs, at most 8; 1 = one at a time)")
+	c.Flags().BoolVar(&credsAudit, "creds-audit", false, "instead of a recon: find every passwd/shadow/gshadow and PPP chap-secrets/pap-secrets file (through nested containers, after decryption; --depth defaults to unlimited here), report which accounts have a usable password and how weak the scheme is, and flag any hash or secret that is identical across more than one file (a fixed credential shared across variants, not per-device) — never the value itself; --skip applies")
 	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach; found automatically when a vendor can name it, \"none\" to skip")
 	return addFullDownload(c)
 }
