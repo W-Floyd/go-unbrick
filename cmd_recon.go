@@ -50,6 +50,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // newReconCmd is the file counterpart to `fastboot recon`: hand it any file and
@@ -415,6 +416,12 @@ func identityFactLines(b *facts.Bag) []string {
 	}
 	if v, ok := facts.Get(b, vendor.ModemFirmware); ok {
 		addList(&out, "Modem firmware", strings.Split(v, "; "))
+	}
+	if v, ok := facts.Get(b, vendor.ImageKey); ok {
+		add("Image key (etc/image.dat): %s", datStatus(v))
+	}
+	if v, ok := facts.Get(b, vendor.ImageIV); ok {
+		add("Image IV (etc/iv.dat): %s", datStatus(v))
 	}
 	if v, ok := facts.Get(b, vendor.SourceProduct); ok {
 		add("Source product: %s", v)
@@ -2353,6 +2360,15 @@ func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 	// the file turned out to be rather than that nothing read it.
 	if srcs := recognizedSources(bag); len(srcs) > 0 {
 		fmt.Printf("  Recognized: %s\n", strings.Join(srcs, ", "))
+		return nil
+	}
+	if data, err := infile.ReadFile(path); err == nil && len(data) >= 1024 {
+		p := analysis.Entropy(data)
+		fmt.Printf("  Entropy: %.4f bits/byte, %s\n", p.Bits, p.Describe())
+		fmt.Printf("  Per %s: %s\n", humanBytes(int64(p.Block)), p.Spark())
+		if p.Class == "random" && len(data)%16 == 0 {
+			fmt.Printf("  Size is a multiple of 16: consistent with a block cipher (AES), 16 bytes could be an IV or tag\n")
+		}
 		return nil
 	}
 	fmt.Printf("  (no deeper recognizer; try `inspect` for ELF/blankflash detail)\n")

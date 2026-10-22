@@ -13,6 +13,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/vendor"
 )
 
 // A secrets directory holds hex files: *key* (AES key) and *iv* (16-byte IV), found by the
@@ -133,4 +134,25 @@ func printEncryptedFS(path string, m srcfile.Member, indent string, clear func()
 		fmt.Printf("%s  %-24s %d files\n", indent, d+"/", count[d])
 	}
 	return true
+}
+
+// knownSecret names the loaded secret whose key or IV is b.
+func knownSecret(b []byte) (string, bool) {
+	if len(b) == 0 {
+		return "", false
+	}
+	for _, s := range aeskeys.Secrets() {
+		if bytes.Equal(s.Key, b) || bytes.Equal(s.IV, b) {
+			return strings.TrimSuffix(s.Name, " (zero IV)"), true
+		}
+	}
+	return "", false
+}
+
+// datStatus marks a value from the package as known (and as which secret) or as new.
+func datStatus(v string) string {
+	if name, ok := knownSecret(vendor.DatBytes(v)); ok {
+		return v + " — known: " + name
+	}
+	return render(styleGood.Bold(true), v+" — NEW")
 }

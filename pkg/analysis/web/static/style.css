@@ -78,3 +78,5 @@ pre.text { background: var(--panel); padding: 8px 12px; border-radius: 6px; }
 pre.recon { border-left: 3px solid var(--line); padding-left: 10px; }
 img.preview-img { max-width: 100%; max-height: 70vh; margin: 8px 0; background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 50% / 16px 16px; }
 a.dl { color: var(--dim); font-size: 12px; margin-left: auto; }
+
+.entropy-bars { display: block; width: 100%; max-width: 40rem; height: 4rem; margin: 0 0 .75rem; fill: currentColor; opacity: .75; }

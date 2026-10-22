@@ -35,6 +35,7 @@ func (hkmc) Assemble(*blankflash.Donor, *blankflash.Target, AssembleOptions) (*b
 // GPS sheets, and — when a key opens enc_boot.img — the boot image's kernel,
 // cmdline and ramdisk default.prop.
 func (hkmc) LearnPackage(pkg PackageAccess, bag *facts.Bag) {
+	learnImageDat(pkg, bag)
 	if !pkg.Names["update.info"] {
 		return
 	}

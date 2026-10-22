@@ -114,14 +114,29 @@ window.unbrick = (() => {
 
   const attr = (s) => escapeHTML(s).replace(/"/g, '&quot;');
 
+  const bars = (vals, max, title) => '<svg class="entropy-bars" viewBox="0 0 ' + vals.length + ' 32" preserveAspectRatio="none" role="img" aria-label="' + attr(title) + '">' +
+    vals.map((v, i) => { const h = Math.max(0.5, 32 * v / max); return '<rect x="' + i + '" y="' + (32 - h) + '" width="0.85" height="' + h + '"><title>' + attr(title) + ' ' + i + ': ' + (+v.toFixed(3)) + '</title></rect>'; }).join('') + '</svg>';
+
+  // entropyHTML rates how random a binary looks: entropy along the file, and the
+  // byte-value histogram (flat for ciphertext).
+  const entropyHTML = (p) => {
+    const e = p.entropy;
+    if (!e) return '';
+    const hist = p.byteHist || [];
+    const hmax = Math.max(1, ...hist);
+    return '<div class="entropy"><p class="dim">entropy ' + e.bits.toFixed(4) + ' bits/byte: ' + escapeHTML(e.class) + '</p>' +
+      '<p class="dim">entropy per ' + Math.round(e.block / 1024) + ' KiB block (full height = 8 bits)</p>' + bars(e.blocks, 8, 'block') +
+      (hist.length ? '<p class="dim">byte values (bins of 4)</p>' + bars(hist, hmax, 'bin') : '') + '</div>';
+  };
+
   // previewHTML is how both pages show one file on its own: its text, highlighted by
   // the server (already escaped), or an image fetched from the raw route.
   const previewHTML = (p, rawUrl) => {
     if (p.kind === 'image') return `<img class="preview-img" src="${attr(rawUrl(false))}" alt="${attr(p.entry.name)}" loading="lazy">`;
     if (p.kind === 'binary') {
-      return p.strings && p.strings.length
+      return entropyHTML(p) + (p.strings && p.strings.length
         ? '<p class="dim">binary; the printable strings in its start:</p><pre class="text">' + p.strings.map(escapeHTML).join('\n') + '</pre>'
-        : '';
+        : '');
     }
     if (p.kind !== 'text') return '';
     return `<pre class="chroma text">${p.html || escapeHTML(p.text)}</pre>` +

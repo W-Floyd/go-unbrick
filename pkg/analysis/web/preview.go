@@ -16,16 +16,18 @@ import (
 
 // previewResp is what to show for an entry.
 type previewResp struct {
-	Entry     analysis.BrowseEntry `json:"entry"`
-	Kind      string               `json:"kind"` // text, image, binary, dir
-	Text      string               `json:"text,omitempty"`
-	HTML      string               `json:"html,omitempty"` // Text, syntax-highlighted
-	CanPretty bool                 `json:"canPretty"`      // the text can be shown reformatted
-	Pretty    bool                 `json:"pretty"`         // ... and is
-	Truncated bool                 `json:"truncated"`
-	Strings   []string             `json:"strings,omitempty"` // for a binary: the printable strings in its start
-	Err       string               `json:"err,omitempty"`
-	Recon     *reconResp           `json:"recon,omitempty"`
+	Entry     analysis.BrowseEntry     `json:"entry"`
+	Kind      string                   `json:"kind"` // text, image, binary, dir
+	Text      string                   `json:"text,omitempty"`
+	HTML      string                   `json:"html,omitempty"` // Text, syntax-highlighted
+	CanPretty bool                     `json:"canPretty"`      // the text can be shown reformatted
+	Pretty    bool                     `json:"pretty"`         // ... and is
+	Truncated bool                     `json:"truncated"`
+	Strings   []string                 `json:"strings,omitempty"`  // for a binary: the printable strings in its start
+	Entropy   *analysis.EntropyProfile `json:"entropy,omitempty"`  // for a binary: how random its start looks
+	ByteHist  []int                    `json:"byteHist,omitempty"` // ... and its byte-value histogram
+	Err       string                   `json:"err,omitempty"`
+	Recon     *reconResp               `json:"recon,omitempty"`
 }
 
 type reconResp struct {
@@ -68,6 +70,11 @@ func buildPreview(e analysis.BrowseEntry, raw bool, previewCap int64, redact fun
 	if resp.Kind == "binary" && (e.OSPath != "" || e.Node != nil) {
 		if data, trunc, err := analysis.ReadEntry(e, previewCap); err == nil {
 			resp.Truncated = trunc
+			if len(data) >= 1024 {
+				p := analysis.Entropy(data)
+				resp.Entropy = &p
+				resp.ByteHist = analysis.ByteHistogram(data)
+			}
 			for i, s := range analysis.Strings(data, 6) {
 				if i >= maxPreviewStrings {
 					break
