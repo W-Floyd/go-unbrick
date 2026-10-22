@@ -374,7 +374,10 @@ func reconParts(label string, parts []string) (failed []string) {
 // skipGroups name sets of files --skip can leave out of a directory recon.
 // Any other --skip value is a glob on the file's base name.
 var skipGroups = map[string]func(base string) bool{
-	"navi": func(base string) bool { return partName.MatchString(base) && strings.HasPrefix(base, "navi_backup.") },
+	// The split parts (navi_backup.tar1, …) and the whole file (navi_backup.tar).
+	"navi": func(base string) bool {
+		return base == "navi_backup.tar" || partName.MatchString(base) && strings.HasPrefix(base, "navi_backup.")
+	},
 }
 
 // skipMatch reports whether one --skip value names the file with this base name.

@@ -77,7 +77,7 @@ func (s *sweepScreen) draw(p analysis.KeySweepProgress) {
 }
 
 // runKeySweep searches input for every loaded secret.
-func runKeySweep(input string, depth int) error {
+func runKeySweep(input string, depth, workers int) error {
 	if secretsLoaded() == 0 {
 		return fmt.Errorf("--exhaustive-key-learn: no keys or IVs loaded (--secrets)")
 	}
@@ -89,7 +89,8 @@ func runKeySweep(input string, depth int) error {
 	hits := map[string][]string{}
 	newHits := 0
 	res, err := analysis.SweepKeys(context.Background(), input, analysis.KeySweepOptions{
-		Depth: depth,
+		Depth:   depth,
+		Workers: workers,
 		Skip: func(name string) bool {
 			return nameSkipped(reconSkip, name)
 		},

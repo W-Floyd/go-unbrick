@@ -58,7 +58,7 @@ import (
 // generic (internal/filetype); vendor meaning (which OEM, CID, subsidy) is
 // resolved through the vendor seam and vendor parsers.
 func newReconCmd() *cobra.Command {
-	var depth int
+	var depth, sweepWorkers int
 	var carve, why, with, secrets string
 	var verify, learn, exhaustive bool
 	c := &cobra.Command{
@@ -90,7 +90,7 @@ func newReconCmd() *cobra.Command {
 				if cmd.Flags().Changed("depth") {
 					d = depth
 				}
-				return runKeySweep(args[0], d)
+				return runKeySweep(args[0], d, sweepWorkers)
 			}
 			if isDir {
 				if with != "" {
@@ -110,6 +110,7 @@ func newReconCmd() *cobra.Command {
 	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
 	c.Flags().BoolVar(&exhaustive, "exhaustive-key-learn", false, "instead of a recon: search every byte of every file (through nested containers, after decryption; --depth defaults to unlimited here) for each loaded key and IV, raw and as hex text, and report where they are embedded; --skip applies, and defaults to navi here (--skip= searches everything)")
+	c.Flags().IntVar(&sweepWorkers, "workers", 0, "with --exhaustive-key-learn, how many files are searched at once (default: the CPUs, at most 8; 1 = one at a time)")
 	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach; found automatically when a vendor can name it, \"none\" to skip")
 	return addFullDownload(c)
 }

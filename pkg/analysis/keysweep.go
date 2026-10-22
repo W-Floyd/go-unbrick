@@ -6,7 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
@@ -77,15 +81,22 @@ type KeySweepOptions struct {
 	Values []KeyValue
 	// Depth is how many container levels to open. Default: unlimited.
 	Depth int
+	// Workers is how many files are searched at once: those read at random (a
+	// file in a decrypted filesystem, in a tar on disk); a file that can only be
+	// read in order is searched as the listing reaches it. Default: the CPUs, at
+	// most 8; 1 searches one at a time.
+	Workers int
 	// Skip, if set, leaves out an entry by its name; it is asked of every
 	// slash-separated segment of a member's name, and a skipped container is not opened.
 	Skip func(name string) bool
 	// Known, if set, says whether a path is where a value is already known to be.
 	Known func(path string) bool
-	// OnHit is called for each hit as it is found.
+	// OnHit is called for each hit as it is found, one call at a time (from any
+	// goroutine), in no fixed order.
 	OnHit func(KeyHit)
-	// OnProgress is called while files are read, at most every 100 ms, and as each
-	// file starts and ends. It runs on the sweeping goroutine.
+	// OnProgress is called while files are read, at most every 100 ms per file, and
+	// as each file starts and ends; one call at a time, from any goroutine, about
+	// whichever file is reporting.
 	OnProgress func(KeySweepProgress)
 }
 
@@ -123,7 +134,24 @@ func SweepKeys(ctx context.Context, input string, opt KeySweepOptions) (*KeySwee
 		depth = 1 << 20
 	}
 	s := &keySweeper{ctx: ctx, m: m, opt: opt, res: &KeySweepResult{Searched: len(m.pats)}}
+	workers := opt.Workers
+	if workers <= 0 {
+		workers = min(runtime.NumCPU(), 8)
+	}
+	if workers > 1 {
+		s.sem = make(chan struct{}, workers)
+	}
 	s.walk(root, "", depth)
+	s.wg.Wait()
+	s.res.Files, s.res.Bytes = int(s.files.Load()), s.bytes.Load()
+	sort.Slice(s.res.Hits, func(i, j int) bool {
+		a, b := s.res.Hits[i], s.res.Hits[j]
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.Offset < b.Offset
+	})
+	sort.Strings(s.res.Unreadable)
 	if err := ctx.Err(); err != nil {
 		return s.res, err
 	}
@@ -135,6 +163,19 @@ type keySweeper struct {
 	m   *keyMatcher
 	opt KeySweepOptions
 	res *KeySweepResult
+
+	sem   chan struct{} // a token per file being searched in the background; nil for one at a time
+	wg    sync.WaitGroup
+	mu    sync.Mutex // guards res.Hits and res.Unreadable
+	cbMu  sync.Mutex // one callback at a time
+	files atomic.Int64
+	bytes atomic.Int64
+}
+
+func (s *keySweeper) unreadable(msg string) {
+	s.mu.Lock()
+	s.res.Unreadable = append(s.res.Unreadable, msg)
+	s.mu.Unlock()
 }
 
 func (s *keySweeper) skipped(name string) bool {
@@ -153,48 +194,76 @@ func (s *keySweeper) skipped(name string) bool {
 // A container with a member that could not be read is searched whole as well, so
 // those bytes are not lost to it.
 func (s *keySweeper) walk(n *carve.Node, path string, depth int) bool {
+	return <-s.visit(n, path, depth)
+}
+
+// visit is walk, with the answer delivered when it is known: a file read at random
+// is searched in the background while the listing goes on.
+func (s *keySweeper) visit(n *carve.Node, path string, depth int) <-chan bool {
+	done := make(chan bool, 1)
 	if s.ctx.Err() != nil {
-		return false
+		done <- false
+		return done
 	}
 	if n.IsDirNode() {
 		_, kids, err := n.Children()
 		if err != nil {
-			s.res.Unreadable = append(s.res.Unreadable, path+": "+err.Error())
-			return false
+			s.unreadable(path + ": " + err.Error())
+			done <- false
+			return done
 		}
-		ok := true
-		for _, k := range kids {
-			if !s.skipped(k.Name) {
-				ok = s.walk(k, path+"/"+k.Name, depth) && ok
-			}
-		}
-		return ok
+		done <- s.members(kids, path, depth)
+		return done
 	}
 	if depth > 0 {
 		if _, isContainer := carve.Format(n); isContainer {
 			if _, kids, err := n.Children(); err == nil {
-				ok := true
-				for _, k := range kids {
-					if !s.skipped(k.Name) {
-						ok = s.walk(k, path+"/"+k.Name, depth-1) && ok
-					}
-				}
+				ok := s.members(kids, path, depth-1)
 				if !ok && s.ctx.Err() == nil {
 					s.scanFile(n, strings.TrimPrefix(path, "/")+" (as bytes)")
 				}
-				return true // its own bytes are covered
+				done <- true // its own bytes are covered
+				return done
 			}
 			// Not readable as the container it looks like: its bytes are all there is.
 		}
 	}
-	return s.scanFile(n, strings.TrimPrefix(path, "/"))
+	name := strings.TrimPrefix(path, "/")
+	if s.sem != nil && n.RandomAccess() {
+		s.sem <- struct{}{} // held back while every worker is busy
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			ok := s.scanFile(n, name)
+			<-s.sem
+			done <- ok
+		}()
+		return done
+	}
+	done <- s.scanFile(n, name)
+	return done
+}
+
+// members searches kids and reports whether every byte of them was read.
+func (s *keySweeper) members(kids []*carve.Node, path string, depth int) bool {
+	var pending []<-chan bool
+	for _, k := range kids {
+		if !s.skipped(k.Name) {
+			pending = append(pending, s.visit(k, path+"/"+k.Name, depth))
+		}
+	}
+	ok := true
+	for _, c := range pending {
+		ok = <-c && ok
+	}
+	return ok
 }
 
 // scanFile searches one file's bytes and reports whether they were all read.
 func (s *keySweeper) scanFile(n *carve.Node, path string) bool {
 	r, err := n.Reader()
 	if err != nil {
-		s.res.Unreadable = append(s.res.Unreadable, path+": "+err.Error())
+		s.unreadable(path + ": " + err.Error())
 		return false
 	}
 	defer r.Close()
@@ -203,16 +272,20 @@ func (s *keySweeper) scanFile(n *carve.Node, path string) bool {
 	err = s.m.scan(cr, func(h keyHit) {
 		kh := KeyHit{Path: path, Offset: h.off, Name: h.pat.name, Encoding: h.pat.enc,
 			Known: s.opt.Known != nil && s.opt.Known(path)}
+		s.mu.Lock()
 		s.res.Hits = append(s.res.Hits, kh)
+		s.mu.Unlock()
 		if s.opt.OnHit != nil {
+			s.cbMu.Lock()
 			s.opt.OnHit(kh)
+			s.cbMu.Unlock()
 		}
 	})
-	s.res.Files++
+	s.files.Add(1)
 	cr.report()
 	if err != nil {
 		if s.ctx.Err() == nil {
-			s.res.Unreadable = append(s.res.Unreadable, fmt.Sprintf("%s: read stopped after %d bytes: %v", path, cr.n, err))
+			s.unreadable(fmt.Sprintf("%s: read stopped after %d bytes: %v", path, cr.n, err))
 		}
 		return false
 	}
@@ -236,7 +309,7 @@ func (c *sweepReader) Read(p []byte) (int, error) {
 	}
 	n, err := c.r.Read(p)
 	c.n += int64(n)
-	c.s.res.Bytes += int64(n)
+	c.s.bytes.Add(int64(n))
 	if time.Since(c.last) >= 100*time.Millisecond {
 		c.report()
 	}
@@ -246,7 +319,9 @@ func (c *sweepReader) Read(p []byte) (int, error) {
 func (c *sweepReader) report() {
 	c.last = time.Now()
 	if c.s.opt.OnProgress != nil {
-		c.s.opt.OnProgress(KeySweepProgress{Path: c.path, Size: c.size, Done: c.n, TotalBytes: c.s.res.Bytes, Files: c.s.res.Files})
+		c.s.cbMu.Lock()
+		c.s.opt.OnProgress(KeySweepProgress{Path: c.path, Size: c.size, Done: c.n, TotalBytes: c.s.bytes.Load(), Files: int(c.s.files.Load())})
+		c.s.cbMu.Unlock()
 	}
 }
 
@@ -326,10 +401,22 @@ type keyHit struct {
 	off int64
 }
 
+const scanChunk = 4 << 20
+
+var scanBufs sync.Pool
+
 // scan reads r through and reports every match, at its offset in the stream.
 func (m *keyMatcher) scan(r io.Reader, emit func(keyHit)) error {
-	const chunk = 4 << 20
-	buf := make([]byte, 0, chunk+m.maxLen+1)
+	// A buffer per file would be tens of gigabytes of garbage over a package's tens of
+	// thousands of small files.
+	bp, _ := scanBufs.Get().(*[]byte)
+	if bp == nil || cap(*bp) < scanChunk+m.maxLen+1 {
+		b := make([]byte, 0, scanChunk+m.maxLen+1)
+		bp = &b
+	}
+	defer scanBufs.Put(bp)
+	const chunk = scanChunk
+	buf := (*bp)[:0]
 	var base int64 // offset in the stream of buf[0]
 	start := 0     // the first position not yet searched
 	for {
