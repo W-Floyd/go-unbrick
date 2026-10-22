@@ -92,7 +92,11 @@ func Check(header []byte, password []byte, check byte) bool {
 // checkpointEvery is the plaintext bytes between saved cipher states. The cipher
 // has no way to start in the middle, so reading at random means decrypting forward
 // from the nearest state at or before the offset.
-const checkpointEvery = 4 << 20
+//
+// Small, because a random read costs up to this much decrypting and, over a network,
+// fetching: 256 KiB is 12 bytes of state per 256 KiB of member, and a read in the
+// middle of a payload costs a block or two rather than megabytes.
+const checkpointEvery = 256 << 10
 
 // ReaderAt decrypts a member at random. The first read far into it decrypts
 // everything before it (once, the states along the way kept); after that any
@@ -104,6 +108,9 @@ type ReaderAt struct {
 	ext sync.Mutex // one pass extending the checkpoints at a time
 	mu  sync.Mutex // guards cps and cursor
 	cps []keys     // cps[i]: the state after decrypting plaintext [0, i*checkpointEvery)
+	// file and saved are Persist's: where the checkpoints are kept, and how many are there.
+	file  string
+	saved int
 	// cursor is the state after the last byte read: where a sequential reader is.
 	cursor struct {
 		pos int64
@@ -141,6 +148,7 @@ func (r *ReaderAt) Size() int64 { return r.size }
 func (r *ReaderAt) extend(i int) error {
 	r.ext.Lock()
 	defer r.ext.Unlock()
+	defer r.save(true)
 	buf := make([]byte, 1<<20)
 	for {
 		r.mu.Lock()
@@ -207,6 +215,7 @@ func (r *ReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("zipcrypto: negative offset")
 	}
+	defer r.save(false)
 	if off >= r.size {
 		return 0, io.EOF
 	}

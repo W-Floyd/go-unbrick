@@ -5,6 +5,8 @@ import (
 	"compress/flate"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/zipcrypto"
@@ -59,8 +61,10 @@ func decryptedZipMember(zn *Node, f *zip.File, ra io.ReaderAt) *Node {
 				if strings.HasSuffix(strings.ToLower(f.Name), ".zip") && !startsLikeZip(r) {
 					continue
 				}
+				persistCheckpoints(r)
 				k = FromReaderAt(f.Name, r, size)
 			} else {
+				persistCheckpoints(r)
 				k = FromStream(f.Name, size, func() (io.ReadCloser, error) {
 					return flate.NewReader(io.NewSectionReader(r, 0, r.Size())), nil
 				})
@@ -80,4 +84,15 @@ func startsLikeZip(r io.ReaderAt) bool {
 		return false
 	}
 	return string(b[:]) == "PK\x03\x04" || string(b[:]) == "PK\x05\x06"
+}
+
+// persistCheckpoints keeps an opened member's cipher checkpoints in the user cache,
+// so reopening it (the next run, or a browse descending into it again) does not
+// decrypt everything before the part it reads.
+func persistCheckpoints(r *zipcrypto.ReaderAt) {
+	d, err := os.UserCacheDir()
+	if err != nil {
+		return
+	}
+	r.Persist(filepath.Join(d, "go-unbrick", "zipcrypto", r.ID()))
 }
