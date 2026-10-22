@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -40,7 +41,8 @@ import (
 // directory on disk, and anything carve can open inside a file.
 func newBrowseCmd() *cobra.Command {
 	var skip []string
-	var webAddr string
+	var webAddr, match string
+	var depth int
 	var noCrawl bool
 	c := &cobra.Command{
 		Use:   "browse <file | dir | url>",
@@ -80,6 +82,13 @@ There is no flat/non-interactive mode for this command; it requires a real
 terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if match != "" {
+				re, err := regexp.Compile(match)
+				if err != nil {
+					return fmt.Errorf("--match: %w", err)
+				}
+				analysis.BrowseMatch, analysis.BrowseDepth = re, depth
+			}
 			if webAddr != "" {
 				return runBrowseWeb(args[0], skip, webAddr)
 			}
@@ -118,6 +127,8 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 		},
 	}
 	c.Flags().StringSliceVar(&skip, "skip", nil, "directory listings: leave files out (they're never listed, so never preemptively reconned either): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated - same values as 'recon --skip'")
+	c.Flags().StringVarP(&match, "match", "m", "", "list only entries whose full path (from the input's root, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression, and the directories and containers that hold one; containers are opened to look, down to --depth")
+	c.Flags().IntVar(&depth, "depth", 3, "with --match, how many container levels to open looking for matches, the first included")
 	c.Flags().BoolVar(&noCrawl, "no-auto-recon", false, "recon only what is listed and highlighted; by default the rest is reconned too, to any depth, in the background and behind whatever you navigate to")
 	c.Flags().StringVar(&webAddr, "web", "", "serve the browser as a web page on this address instead, e.g. 127.0.0.1:8765 (port 0 picks one)")
 	return addSecrets(addFullDownload(c))
@@ -143,10 +154,11 @@ type browseEntry struct {
 	size        int64 // -1 unknown
 	label       string
 	dir         bool
-	isContainer bool // carve-recognized container (meaningless when osPath != "": that's resolved lazily on Enter)
-	isText      bool // previewed as syntax-highlighted content instead of reconned - see reconKey
-	isImage     bool // previewed inline via the terminal's graphics protocol, if it has one - see imagePreview
-	isParent    bool // the synthetic ".." row - clicking or entering it ascends, same as backspace/h/left
+	isContainer bool   // carve-recognized container (meaningless when osPath != "": that's resolved lazily on Enter)
+	isText      bool   // previewed as syntax-highlighted content instead of reconned - see reconKey
+	isImage     bool   // previewed inline via the terminal's graphics protocol, if it has one - see imagePreview
+	isParent    bool   // the synthetic ".." row - clicking or entering it ascends, same as backspace/h/left
+	path        string // from the input's root (analysis.BrowseEntry.Path)
 	osPath      string
 	node        *carve.Node
 	group       *analysis.Group // a directory implied by a container's member names
@@ -1152,6 +1164,7 @@ func (m *browseModel) pushDirFrame(dir string) error {
 	if err != nil {
 		return err
 	}
+	l.Place("", m.skip)
 	m.pushLevel(l)
 	return nil
 }
@@ -1162,6 +1175,7 @@ func (m *browseModel) pushNodeFrame(n *carve.Node) error {
 	if err != nil {
 		return err
 	}
+	l.Place("", m.skip)
 	m.pushLevel(l)
 	return nil
 }
@@ -1180,13 +1194,13 @@ func (m *browseModel) pushLevel(l *analysis.BrowseLevel) {
 // entryOf is a listed entry as the list holds it.
 func entryOf(e analysis.BrowseEntry) browseEntry {
 	return browseEntry{name: e.Name, size: e.Size, label: e.Label, dir: e.Dir, isContainer: e.Container,
-		isText: e.Text, isImage: e.Image, osPath: e.OSPath, node: e.Node, group: e.Group}
+		isText: e.Text, isImage: e.Image, path: e.Path, osPath: e.OSPath, node: e.Node, group: e.Group}
 }
 
 // core is the entry as the analysis package knows it.
 func (e browseEntry) core() analysis.BrowseEntry {
 	return analysis.BrowseEntry{Name: e.name, Size: e.size, Label: e.label, Dir: e.dir, Container: e.isContainer,
-		Text: e.isText, Image: e.isImage, OSPath: e.osPath, Node: e.node, Group: e.group}
+		Text: e.isText, Image: e.isImage, Path: e.path, OSPath: e.osPath, Node: e.node, Group: e.group}
 }
 
 // finishFrame prepends the synthetic ".." row (every frame but the root one

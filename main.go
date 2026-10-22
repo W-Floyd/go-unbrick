@@ -70,7 +70,7 @@ func main() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "unbrick",
-		Short:         "Build a device blankflash from a same-SoC sibling's signed loader",
+		Short:         "Firmware and device toolkit: identify, browse and diff any package or image; forge blankflashes; drive fastboot, EDL and adb; draft Linux ports",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -37,7 +38,43 @@ func carveRoot(input string) (*carve.Node, error) {
 			}
 		}
 	}
+	if !infile.IsRemote(input) {
+		if fi, err := os.Stat(input); err == nil && fi.IsDir() {
+			return carveDir(input)
+		}
+	}
 	return carve.Open(input)
+}
+
+// carveDir is a directory on disk as a container, its files and subdirectories
+// the children; files are opened where they are looked into, not here.
+func carveDir(dir string) (*carve.Node, error) {
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var kids []*carve.Node
+	for _, e := range es {
+		full := filepath.Join(dir, e.Name())
+		fi, err := os.Stat(full) // follows links; a dangling one is left out
+		if err != nil {
+			continue
+		}
+		if fi.IsDir() {
+			k, err := carveDir(full)
+			if err != nil {
+				return nil, err
+			}
+			kids = append(kids, k)
+			continue
+		}
+		k, err := carve.Open(full)
+		if err != nil {
+			return nil, err
+		}
+		kids = append(kids, k)
+	}
+	return carve.Dir(filepath.Base(filepath.Clean(dir)), kids), nil
 }
 
 // carvePath opens input and walks to p inside it.
@@ -100,15 +137,21 @@ func listNode(n *carve.Node, indent string, depth int) error {
 		if k.Size >= 0 {
 			size = humanBytes(k.Size)
 		}
-		label := typeLabel(k.Name, k.Head())
-		if k.Size == 0 {
-			label = "empty"
-		}
+		label := "directory"
 		name := k.Name
-		sub, isContainer := carve.Format(k)
+		isContainer := k.IsDirNode()
 		if isContainer {
 			name += "/"
-			label = sub.Kind
+		} else {
+			label = typeLabel(k.Name, k.Head())
+			if k.Size == 0 {
+				label = "empty"
+			}
+			var sub carve.Expander
+			if sub, isContainer = carve.Format(k); isContainer {
+				name += "/"
+				label = sub.Kind
+			}
 		}
 		fmt.Printf("%s  %-40s %10s  [%s]\n", indent, name, size, label)
 		if isContainer && depth > 1 {
@@ -123,6 +166,8 @@ func listNode(n *carve.Node, indent string, depth int) error {
 func newTreeCmd() *cobra.Command {
 	var depth int
 	var types bool
+	var skip []string
+	var match string
 	c := &cobra.Command{
 		Use:   "tree <file | url> [path]",
 		Short: "draw what is inside anything as a tree, through nested containers",
@@ -152,15 +197,26 @@ name its format, which over a URL means fetching it.
 			if kind == "" {
 				return fmt.Errorf("%s is not a container (%s)", n.Name, typeLabel(n.Name, n.Head()))
 			}
-			t := &treePrinter{types: types}
+			t := &treePrinter{types: types, skip: skip}
+			if match != "" {
+				if t.match, err = regexp.Compile(match); err != nil {
+					return fmt.Errorf("--match: %w", err)
+				}
+			}
 			fmt.Printf("%s  [%s]\n", n.Name, kind)
-			t.print(kids, "", depth-1)
-			fmt.Printf("\n%d containers, %d files\n", t.containers, t.files)
+			t.print(kids, "", "", depth-1)
+			fmt.Printf("\n%d containers, %d files", t.containers, t.files)
+			if t.left > 0 {
+				fmt.Printf(", %d skipped", t.left)
+			}
+			fmt.Println()
 			return nil
 		},
 	}
 	c.Flags().IntVar(&depth, "depth", 3, "how many container levels to open, the first included")
 	c.Flags().BoolVarP(&types, "types", "t", false, "name each file's format (reads every head)")
+	c.Flags().StringSliceVar(&skip, "skip", nil, "leave out files and directories (a skipped container is not opened): \"navi\" for the navigation map parts, or a glob on the name; repeatable or comma-separated - same values as 'recon --skip'")
+	c.Flags().StringVarP(&match, "match", "m", "", "draw only entries whose full path (from the tree's root, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression, with the directories above them; containers are opened to look, down to --depth")
 	return addSecrets(addFullDownload(c))
 }
 
@@ -195,28 +251,114 @@ func buildTreeDir(kids []*carve.Node) *treeDir {
 
 type treePrinter struct {
 	types             bool
+	skip              []string       // names left out, files and directories alike (see skipMatch)
+	match             *regexp.Regexp // when set, only entries that are or hold a match are drawn
 	containers, files int
+	left              int // entries a skip left out
+}
+
+func (t *treePrinter) skipped(base string) bool {
+	for _, s := range t.skip {
+		if skipMatch(s, base) {
+			return true
+		}
+	}
+	return false
 }
 
 // print draws kids under prefix, opening containers while depth > 0.
-func (t *treePrinter) print(kids []*carve.Node, prefix string, depth int) {
-	t.printDir(buildTreeDir(kids), prefix, depth)
+func (t *treePrinter) print(kids []*carve.Node, prefix, at string, depth int) {
+	t.printDir(buildTreeDir(kids), prefix, at, depth)
 }
 
-func (t *treePrinter) printDir(d *treeDir, prefix string, depth int) {
-	type item struct {
-		name string
-		dir  *treeDir
-		file *carve.Node
-	}
-	var items []item
+type treeItem struct {
+	name string // with a trailing slash for a directory
+	dir  *treeDir
+	file *carve.Node
+}
+
+// items is d's entries in order, less those a skip leaves out (counted when count).
+func (t *treePrinter) items(d *treeDir, count bool) []treeItem {
+	var items []treeItem
 	for name, sub := range d.dirs {
-		items = append(items, item{name: name + "/", dir: sub})
+		items = append(items, treeItem{name: name + "/", dir: sub})
 	}
 	for _, f := range d.files {
-		items = append(items, item{name: d.base[f], file: f})
+		items = append(items, treeItem{name: d.base[f], file: f})
+	}
+	if len(t.skip) > 0 {
+		kept := items[:0]
+		for _, it := range items {
+			if t.skipped(strings.TrimSuffix(it.name, "/")) {
+				if count {
+					t.left++
+				}
+				continue
+			}
+			kept = append(kept, it)
+		}
+		items = kept
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].name < items[j].name })
+	return items
+}
+
+// opens is what the tree shows under f: a directory's entries, or a container's
+// while depth allows opening it. Nil for a file.
+func (t *treePrinter) opens(f *carve.Node, depth int) []*carve.Node {
+	if f.IsDirNode() {
+		_, ks, _ := f.Children()
+		return ks
+	}
+	if depth > 0 {
+		if _, ok := carve.Format(f); ok {
+			_, ks, _ := f.Children()
+			return ks
+		}
+	}
+	return nil
+}
+
+// hits reports whether d, at path at, holds an entry whose path matches --match.
+func (t *treePrinter) hits(d *treeDir, at string, depth int) bool {
+	for _, it := range t.items(d, false) {
+		if t.matches(it, at, depth) {
+			return true
+		}
+	}
+	return false
+}
+
+// matches reports whether an entry is, or holds, a match.
+func (t *treePrinter) matches(it treeItem, at string, depth int) bool {
+	p := at + strings.TrimSuffix(it.name, "/")
+	if it.dir != nil {
+		return t.match.MatchString(p) || t.hits(it.dir, p+"/", depth)
+	}
+	if t.match.MatchString(p) {
+		return true
+	}
+	if ks := t.opens(it.file, depth); ks != nil {
+		d := depth
+		if !it.file.IsDirNode() {
+			d--
+		}
+		return t.hits(buildTreeDir(ks), p+"/", d)
+	}
+	return false
+}
+
+func (t *treePrinter) printDir(d *treeDir, prefix, at string, depth int) {
+	items := t.items(d, true)
+	if t.match != nil {
+		kept := items[:0]
+		for _, it := range items {
+			if t.matches(it, at, depth) {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
 	for i, it := range items {
 		branch, next := "├── ", "│   "
 		if i == len(items)-1 {
@@ -224,14 +366,20 @@ func (t *treePrinter) printDir(d *treeDir, prefix string, depth int) {
 		}
 		if it.dir != nil {
 			fmt.Printf("%s%s%s\n", prefix, branch, it.name)
-			t.printDir(it.dir, prefix+next, depth)
+			t.printDir(it.dir, prefix+next, at+it.name, depth)
 			continue
 		}
-		t.printFile(it.file, it.name, prefix, branch, next, depth)
+		t.printFile(it.file, it.name, prefix, branch, next, at+it.name, depth)
 	}
 }
 
-func (t *treePrinter) printFile(f *carve.Node, name, prefix, branch, next string, depth int) {
+func (t *treePrinter) printFile(f *carve.Node, name, prefix, branch, next, at string, depth int) {
+	if f.IsDirNode() { // a directory on disk, not a container level: depth is not spent
+		_, ks, _ := f.Children()
+		fmt.Printf("%s%s%s/\n", prefix, branch, name)
+		t.print(ks, prefix+next, at+"/", depth)
+		return
+	}
 	size := ""
 	if f.Size >= 0 {
 		size = "  " + humanBytes(f.Size)
@@ -264,12 +412,14 @@ func (t *treePrinter) printFile(f *carve.Node, name, prefix, branch, next string
 	}
 	fmt.Printf("%s%s%s%s%s\n", prefix, branch, name, size, label)
 	if len(kids) > 0 {
-		t.print(kids, prefix+next, depth-1)
+		t.print(kids, prefix+next, at+"/", depth-1)
 	}
 }
 
 func newExtractCmd() *cobra.Command {
-	var out string
+	var out, match string
+	var skip []string
+	var depth int
 	var recursive, force bool
 	c := &cobra.Command{
 		Use:   "extract <file | url> <path>",
@@ -280,13 +430,30 @@ under a directory instead, named by their paths; nested containers stay whole.
 
   unbrick extract ota.zip payload.bin/modem/image/adsp.mdt.joined -o adsp.elf
   unbrick extract -r ota.zip payload.bin/boot/ramdisk -o ramdisk/`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			n, err := carvePath(args[0], args[1])
+			p := ""
+			if len(args) == 2 {
+				p = args[1]
+			}
+			var re *regexp.Regexp
+			if match != "" {
+				var err error
+				if re, err = regexp.Compile(match); err != nil {
+					return fmt.Errorf("--match: %w", err)
+				}
+				if !recursive {
+					return fmt.Errorf("--match needs -r")
+				}
+			}
+			n, err := carvePath(args[0], p)
 			if err != nil {
 				return err
 			}
 			if !recursive {
+				if len(args) < 2 {
+					return fmt.Errorf("extract needs a path (or -r to write a container's children)")
+				}
 				if out == "" {
 					out = path.Base(n.Name)
 				}
@@ -302,26 +469,89 @@ under a directory instead, named by their paths; nested containers stay whole.
 			if kids == nil {
 				return fmt.Errorf("%s is not a container", n.Name)
 			}
-			for _, k := range kids {
-				dst, err := within(out, k.Name)
-				if err != nil {
-					return err
-				}
-				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-					return err
-				}
-				if err := writeNode(k, dst, force); err != nil {
-					return err
-				}
+			written, err := extractKids(kids, "", out, re, skip, depth-1, force)
+			if err != nil {
+				return err
 			}
-			fmt.Printf("%d entries written under %s\n", len(kids), out)
+			fmt.Printf("%d entries written under %s\n", written, out)
 			return nil
 		},
 	}
 	c.Flags().StringVarP(&out, "output", "o", "", `where to write ("-" for stdout; with -r, a directory)`)
 	c.Flags().BoolVarP(&recursive, "recursive", "r", false, "write a container's children under a directory")
 	c.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing files")
+	c.Flags().StringVarP(&match, "match", "m", "", "with -r, write only entries whose full path (from the extracted node, through nested containers) matches this regular expression; containers are opened to look, down to --depth, and a matching one is written whole")
+	c.Flags().IntVar(&depth, "depth", 3, "with --match, how many container levels to open, the first included")
+	c.Flags().StringSliceVar(&skip, "skip", nil, "with -r, leave out files and directories (a skipped container is not opened): \"navi\" for the navigation map parts, or a glob on the name; repeatable or comma-separated - same values as 'recon --skip'")
 	return addSecrets(addFullDownload(c))
+}
+
+// nameSkipped reports whether any slash-separated segment of a member name is
+// one a --skip value names (an archive member "a/b/c" lies under a and b).
+func nameSkipped(skip []string, name string) bool {
+	if len(skip) == 0 {
+		return false
+	}
+	for _, seg := range strings.Split(strings.Trim(name, "/"), "/") {
+		for _, s := range skip {
+			if skipMatch(s, seg) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractKids writes kids under out, named by their paths from the extracted
+// node (at is the path of kids). A directory is always descended. With re, only
+// entries whose path matches are written, and containers are opened, while
+// depth > 0, to look for them.
+func extractKids(kids []*carve.Node, at, out string, re *regexp.Regexp, skip []string, depth int, force bool) (int, error) {
+	written := 0
+	for _, k := range kids {
+		if nameSkipped(skip, k.Name) {
+			continue
+		}
+		p := at + k.Name
+		switch {
+		case k.IsDirNode():
+			_, ks, err := k.Children()
+			if err != nil {
+				return written, err
+			}
+			n, err := extractKids(ks, p+"/", out, re, skip, depth, force)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		case re == nil || re.MatchString(p):
+			dst, err := within(out, p)
+			if err != nil {
+				return written, err
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return written, err
+			}
+			if err := writeNode(k, dst, force); err != nil {
+				return written, err
+			}
+			written++
+		case depth > 0:
+			if _, ok := carve.Format(k); !ok {
+				continue
+			}
+			_, ks, err := k.Children()
+			if err != nil {
+				continue // not readable as a container: nothing to find in it
+			}
+			n, err := extractKids(ks, p+"/", out, re, skip, depth-1, force)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+	}
+	return written, nil
 }
 
 // within joins a member name under dir, refusing one that would land outside

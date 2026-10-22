@@ -1,7 +1,15 @@
 # go-unbrick
 
-Build a Qualcomm/Motorola **blankflash** for a device that has none, by borrowing
-the one non-reproducible piece from a **sibling in the same SoC family**.
+A firmware and device toolkit. It identifies (`recon`), browses, diffs and
+extracts anything through nested containers (packages, payloads, filesystems,
+boot images, local or over ssh/http); talks to devices over fastboot, EDL and
+adb; drafts Linux ports from a stock package; and forges a Qualcomm/Motorola
+**blankflash** for a device that has none, the original purpose, below.
+
+## Blankflash forging
+
+Build a blankflash for a device that has none, by borrowing the one
+non-reproducible piece from a **sibling in the same SoC family**.
 
 A blankflash revives a hard-bricked phone stuck in EDL (Qualcomm 9008) by pushing
 a `singleimage.bin` with `qboot`. That singleimage needs a Firehose

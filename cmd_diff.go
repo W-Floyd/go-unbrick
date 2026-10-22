@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/spf13/cobra"
 
@@ -30,7 +31,7 @@ func init() {
 // point: it is routinely an order of magnitude larger than the real change.
 func newDiffCmd() *cobra.Command {
 	var verbose, verify, profile, interactive bool
-	var member, view, webAddr string
+	var member, view, webAddr, match string
 	var context int
 	var fetchAheadMiB int64
 	var depth, workers, autoDepth int
@@ -42,6 +43,13 @@ func newDiffCmd() *cobra.Command {
 			cfg := analysis.Config{A: args[0], B: args[1], Depth: depth, Verbose: verbose, Member: member, Verify: verify, FetchAhead: fetchAheadMiB << 20, Workers: workers, AutoDeepen: autoDepth}
 			if fetchAheadMiB == 0 {
 				cfg.FetchAhead = -1
+			}
+			if match != "" {
+				re, err := regexp.Compile(match)
+				if err != nil {
+					return fmt.Errorf("--match: %w", err)
+				}
+				cfg.Match = re
 			}
 			if profile {
 				analysis.StartProfile()
@@ -172,6 +180,7 @@ func newDiffCmd() *cobra.Command {
 	c.Flags().BoolVar(&profile, "profile", false, "packages: report on stderr where the time went")
 	_ = c.Flags().MarkHidden("profile")
 	c.Flags().BoolVar(&verify, "verify", false, "packages: read every file instead of trusting vendor manifests (.ver, update.info, TarList) for their hashes")
+	c.Flags().StringVarP(&match, "match", "m", "", "packages: compare only members whose full path (from the inputs' roots, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression; containers are opened to look, down to --depth")
 	c.Flags().IntVar(&depth, "depth", 3, "packages: how many container levels to compare into")
 	c.Flags().IntVar(&autoDepth, "auto-depth", 2, "interactive and web: levels beyond --depth to compare on their own, per path, nearest what you are looking at first, when a worker is spare (0 = only when asked, with D; negative = no limit)")
 	c.Flags().IntVar(&workers, "workers", 2, "interactive and web: container pairs compared deeper at once (what you look at may use all; the background all but one); 1 on a spinning disk")

@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -151,6 +152,7 @@ type diffEnt struct {
 type diffLine struct {
 	text string
 	drop bool
+	base string      // the path of the tally the line was made in, for --match (see treeDiffTally.base)
 	sub  []*diffLine // what changed inside a similar pair, printed under it
 	// subT is the comparison of the inside while it is still running, so a
 	// viewer can show what it has found so far; sub replaces it when it is done.
@@ -187,17 +189,30 @@ type treeDiffTally struct {
 	metaOnly                               int // containers whose members are all the same and whose headers differ
 	depth                                  int // container levels left to compare into
 	verbose                                bool
-	lines                                  []*diffLine
-	gone, fresh                            []*diffEnt
-	claimsA, claimsB                       claimSet
-	pref                                   *prefetcher // fetching ahead of this comparison's members
+	// base is where this tally's paths start, from the compared roots: "" for the
+	// first pass, whose paths are already full, and the container's path for a tally
+	// started later inside one. --match is tried against base+path.
+	base             string
+	lines            []*diffLine
+	gone, fresh      []*diffEnt
+	claimsA, claimsB claimSet
+	pref             *prefetcher // fetching ahead of this comparison's members
 }
 
 // out queues a line; the report prints once renames are known.
 func (t *treeDiffTally) out(format string, args ...any) *diffLine {
-	l := &diffLine{text: fmt.Sprintf(format, args...)}
+	l := &diffLine{text: fmt.Sprintf(format, args...), base: t.base}
 	live(func() { t.lines = append(t.lines, l) })
 	return l
+}
+
+// diffMatch, when set, limits a comparison to the members whose full path matches
+// (--match); containers are opened to look for them.
+var diffMatch *regexp.Regexp
+
+// hit reports whether the member at path is one --match asks for.
+func (t *treeDiffTally) hit(path string) bool {
+	return diffMatch == nil || diffMatch.MatchString(t.base+path)
 }
 
 // diffStep, when set, is called as the comparison reaches each member. A test
@@ -306,6 +321,9 @@ func (t *treeDiffTally) addOnly(n *carve.Node, path, indent string, isNew bool) 
 		}
 		return
 	}
+	if !t.hit(path) {
+		return
+	}
 	e := &diffEnt{path: path, node: n}
 	claims := t.claimsA
 	if isNew {
@@ -367,6 +385,13 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 		if diffStep != nil {
 			diffStep(path)
 		}
+		// Under --match a member that does not match is looked at only for what
+		// is inside it: a directory, or a container both sides open.
+		hit := t.hit(path)
+		if !hit && !(x != nil && x.IsDirNode()) && !(y != nil && y.IsDirNode()) &&
+			!(x != nil && y != nil && depth > 1 && x.IsContainer() && y.IsContainer()) {
+			continue
+		}
 		switch {
 		case y == nil:
 			t.addOnly(x, path, indent, false)
@@ -398,6 +423,9 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 				if done {
 					continue
 				}
+			}
+			if !hit {
+				continue
 			}
 			var same bool
 			end := dprof.member("compare " + path)

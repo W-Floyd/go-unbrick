@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
@@ -40,6 +42,7 @@ type BrowseEntry struct {
 	// file on disk, which is opened (and may turn out to be nothing) when asked.
 	Openable bool `json:"openable"`
 
+	Path   string      `json:"-"` // from the input's root, through nested containers (see Place)
 	OSPath string      `json:"-"` // a file or directory on disk (or ssh://)
 	Node   *carve.Node `json:"-"` // a member of a container
 	Group  *Group      `json:"-"` // a directory implied by a container's member names
@@ -62,6 +65,7 @@ func (e BrowseEntry) Key() string {
 // BrowseLevel is a directory or a container, listed.
 type BrowseLevel struct {
 	Title   string
+	Path    string      // of the level from the input's root, with a trailing slash ("" at the top)
 	Dir     string      // set for a directory on disk
 	Node    *carve.Node // set for a container
 	Entries []BrowseEntry
@@ -221,6 +225,16 @@ var ErrNotContainer = errors.New("not a container")
 // Open is the level inside an entry: a directory listed, a file on disk opened
 // through carve, or a container's members.
 func Open(e BrowseEntry, skip []string) (*BrowseLevel, error) {
+	l, err := openRaw(e, skip)
+	if err != nil {
+		return nil, err
+	}
+	l.place(e.Path+"/", skip)
+	return l, nil
+}
+
+// openRaw is Open without the --match filter.
+func openRaw(e BrowseEntry, skip []string) (*BrowseLevel, error) {
 	switch {
 	case e.Group != nil:
 		return ListGroup(*e.Group), nil
@@ -240,26 +254,122 @@ func Open(e BrowseEntry, skip []string) (*BrowseLevel, error) {
 
 // Refresh lists a level again.
 func (l *BrowseLevel) Refresh(skip []string) (*BrowseLevel, error) {
-	if l.group != nil {
-		return ListGroup(*l.group), nil
+	var n *BrowseLevel
+	var err error
+	switch {
+	case l.group != nil:
+		n = ListGroup(*l.group)
+	case l.Node != nil:
+		n, err = ListNode(l.Node)
+	default:
+		n, err = ListDir(l.Dir, skip)
 	}
-	if l.Node != nil {
-		return ListNode(l.Node)
+	if err != nil {
+		return nil, err
 	}
-	return ListDir(l.Dir, skip)
+	n.place(l.Path, skip)
+	return n, nil
 }
 
 // OpenInput is the top level of an input: a directory, or the members of whatever
 // carve opens it as.
 func OpenInput(input string, skip []string) (*BrowseLevel, error) {
+	var l *BrowseLevel
 	if infile.IsDir(input) {
-		return ListDir(input, skip)
+		var err error
+		if l, err = ListDir(input, skip); err != nil {
+			return nil, err
+		}
+	} else {
+		root, err := OpenRoot(input)
+		if err != nil {
+			return nil, err
+		}
+		if l, err = ListNode(root); err != nil {
+			return nil, err
+		}
 	}
-	root, err := OpenRoot(input)
-	if err != nil {
-		return nil, err
+	l.place("", skip)
+	return l, nil
+}
+
+// BrowseMatch, when set, limits listings to entries whose full path (from the
+// input's root, through nested containers) matches, and to the directories and
+// containers that hold one, opened down to BrowseDepth container levels to look.
+var BrowseMatch *regexp.Regexp
+
+// BrowseDepth is how many container levels BrowseMatch opens, the first included.
+var BrowseDepth = 3
+
+var holdsCache = struct {
+	sync.Mutex
+	m map[string]bool
+}{m: map[string]bool{}}
+
+// Place gives the level's entries their paths, under prefix ("" for the input's
+// own level, else the path of what was opened and a slash), and applies
+// BrowseMatch. A level made by ListDir, ListNode or ListGroup is placed before use.
+func (l *BrowseLevel) Place(prefix string, skip []string) { l.place(prefix, skip) }
+
+func (l *BrowseLevel) place(prefix string, skip []string) {
+	l.setPaths(prefix)
+	if BrowseMatch == nil {
+		return
 	}
-	return ListNode(root)
+	kept := l.Entries[:0]
+	for _, e := range l.Entries {
+		if matchEntry(e, skip, BrowseDepth) {
+			kept = append(kept, e)
+		}
+	}
+	l.Entries = kept
+}
+
+func (l *BrowseLevel) setPaths(prefix string) {
+	l.Path = prefix
+	for i := range l.Entries {
+		l.Entries[i].Path = prefix + l.Entries[i].Name
+	}
+}
+
+// matchEntry reports whether an entry is, or holds, a BrowseMatch match, opening
+// containers while depth allows. A file on disk that is not text or an image may
+// be a container: it is tried.
+func matchEntry(e BrowseEntry, skip []string, depth int) bool {
+	if BrowseMatch.MatchString(e.Path) {
+		return true
+	}
+	dir := e.Dir || e.Group != nil
+	if !dir && (e.Text || e.Image || (e.OSPath == "" && !e.Container)) {
+		return false
+	}
+	if !dir {
+		if depth <= 0 {
+			return false
+		}
+		depth-- // opening a container spends a level; a directory does not
+	}
+	key := fmt.Sprintf("%s@%d", e.Path, depth)
+	holdsCache.Lock()
+	v, ok := holdsCache.m[key]
+	holdsCache.Unlock()
+	if ok {
+		return v
+	}
+	v = false
+	if l, err := openRaw(e, skip); err == nil {
+		l.setPaths(e.Path + "/")
+		for _, c := range l.Entries {
+			if matchEntry(c, skip, depth) {
+				v = true
+				break
+			}
+		}
+	}
+	holdsCache.Lock()
+	holdsCache.m[key] = v
+	holdsCache.Unlock()
+	return v
 }
 
 // PreviewCap bounds how much of a file ReadEntry reads for a preview.

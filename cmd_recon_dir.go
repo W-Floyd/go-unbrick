@@ -377,6 +377,15 @@ var skipGroups = map[string]func(base string) bool{
 	"navi": func(base string) bool { return partName.MatchString(base) && strings.HasPrefix(base, "navi_backup.") },
 }
 
+// skipMatch reports whether one --skip value names the file with this base name.
+func skipMatch(skip, base string) bool {
+	if f, ok := skipGroups[skip]; ok {
+		return f(base)
+	}
+	ok, _ := filepath.Match(skip, base)
+	return ok
+}
+
 // applySkips drops the files the --skip values name and reports what it left out.
 func applySkips(paths, skips []string) []string {
 	if len(skips) == 0 {
@@ -388,13 +397,7 @@ func applySkips(paths, skips []string) []string {
 		base := filepath.Base(p)
 		hit := ""
 		for _, s := range skips {
-			match := false
-			if f, ok := skipGroups[s]; ok {
-				match = f(base)
-			} else {
-				match, _ = filepath.Match(s, base)
-			}
-			if match {
+			if skipMatch(s, base) {
 				hit = s
 				break
 			}

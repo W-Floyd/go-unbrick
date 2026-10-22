@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +34,9 @@ type Config struct {
 	Member string
 	// Verify reads every member instead of trusting a vendor manifest's stated hash.
 	Verify bool
+	// Match limits the comparison to members whose full path from the inputs'
+	// roots, through nested containers, matches; containers are opened to look.
+	Match *regexp.Regexp
 	// Workers is how many container pairs go deeper at once (default 2): foreground
 	// work, what a front end is looking at, may use all of them; the background uses
 	// all but one, so a front end asking for something finds a place free. On a
@@ -498,6 +502,9 @@ func (r *Run) membersLevel(e Entry) *Level {
 	a, b := e.a, e.b
 	t := &treeDiffTally{depth: 1, verbose: true, claimsA: subClaims(a, ""), claimsB: subClaims(b, "")}
 	l := e.src
+	if l != nil {
+		t.base = l.base + l.path + "/"
+	}
 	record := l != nil && l.a != nil && l.b != nil && (l.kind == '~' || l.kind == '≈') && r.claimWith(l, t)
 	done := make(chan struct{})
 	go func() {
@@ -814,6 +821,7 @@ func (r *Run) FakeFinish(add ...FakeLine) {
 
 func apply(cfg Config) {
 	diffTrust = !cfg.Verify
+	diffMatch = cfg.Match
 	switch {
 	case cfg.FetchAhead > 0:
 		prefetchBudget = cfg.FetchAhead

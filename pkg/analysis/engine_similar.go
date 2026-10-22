@@ -185,7 +185,7 @@ func (t *treeDiffTally) pairSimilar() {
 // descend compares a similar pair's members, under the pair's own line. A pair
 // with nothing different inside is a plain rename after all.
 func (t *treeDiffTally) descend(g, f *diffEnt) {
-	sub := &treeDiffTally{depth: t.depth - 1, verbose: t.verbose,
+	sub := &treeDiffTally{depth: t.depth - 1, verbose: t.verbose, base: g.line.base + f.path + "/",
 		claimsA: subClaims(g.node, ""), claimsB: subClaims(f.node, "")}
 	live(func() { g.line.subT = sub }) // visible while it runs
 	sub.pref = startPrefetch(g.node, f.node, "", sub)
@@ -256,7 +256,7 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 		dprof.logf("opening %s (%s vs %s; stated hashes: %s | %s; bytes differ by claim: %v)",
 			path, size(x), size(y), algoList(cx), algoList(cy), bytesDiffer)
 	}
-	sub := &treeDiffTally{depth: depth - 1, verbose: verbose,
+	sub := &treeDiffTally{depth: depth - 1, verbose: verbose, base: t.base,
 		claimsA: subClaims(x, path+"/"), claimsB: subClaims(y, path+"/")}
 	// The line exists from the start, reading as under way, with the comparison of
 	// the inside hung from it, so a viewer shows what has been found so far. It
@@ -273,6 +273,9 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 	sub.pairRenames()
 	sub.pairSimilar()
 	switch {
+	case !t.hit(path) && sub.differences() == 0:
+		// Opened only to look for matches, and none differ.
+		live(func() { line.subT, line.drop = nil, true })
 	case sub.differences() == 0 && bytesDiffer:
 		t.changed++
 		t.trusted += sub.trusted

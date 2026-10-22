@@ -350,7 +350,7 @@ func (r *Run) isClosed() bool { return r.closing.Load() }
 // descend does for a similar pair, and folds what it found into the run's counts.
 // What it finds inside is one level further from the first pass than the line.
 func (r *Run) expandLine(l *diffLine) {
-	sub := &treeDiffTally{depth: 1, claimsA: subClaims(l.a, ""), claimsB: subClaims(l.b, "")}
+	sub := &treeDiffTally{depth: 1, base: l.base + l.path + "/", claimsA: subClaims(l.a, ""), claimsB: subClaims(l.b, "")}
 	live(func() { l.subT = sub }) // visible while it runs
 	sub.pref = startPrefetch(l.a, l.b, "", sub)
 	err := diffNodes(l.a, l.b, "", "      ", 1, false, sub)
