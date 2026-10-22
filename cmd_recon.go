@@ -35,6 +35,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/edl"
 	"github.com/W-Floyd/go-unbrick/internal/facts"
 	"github.com/W-Floyd/go-unbrick/internal/fastboot"
+	"github.com/W-Floyd/go-unbrick/internal/fdt"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/fill"
 	"github.com/W-Floyd/go-unbrick/internal/imgfacts"
@@ -52,6 +53,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/secboot"
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
+	"github.com/W-Floyd/go-unbrick/internal/unixauth"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
@@ -990,8 +992,10 @@ func runFileRecon(path string) error {
 		rerr = reconELF(path)
 	case kind == filetype.GPT:
 		rerr = reconGPT(path)
-	case kind == filetype.DTBOTable, kind == filetype.DeviceTree:
+	case kind == filetype.DTBOTable:
 		rerr = reconDTBO(path)
+	case kind == filetype.DeviceTree:
+		rerr = reconFDT(path)
 	case kind == filetype.ARM64Image, bootimg.IsZImage(head):
 		_, rerr = reconKernel(path, true)
 	case kind == filetype.LZ4Legacy, kind == filetype.LZ4:
@@ -1170,6 +1174,26 @@ func reconDTBO(path string) error {
 		}
 		fmt.Printf("    id=0x%08x rev=0x%08x  %s\n", e.ID, e.Rev, humanBytes(int64(e.Size)))
 	}
+	return nil
+}
+
+// reconFDT reports a bare device tree: not a DTBO wrapper (reconDTBO handles
+// that), just one flattened device tree blob.
+func reconFDT(path string) error {
+	data, err := infile.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	root, err := fdt.Parse(data)
+	if err != nil {
+		return fmt.Errorf("device tree: %w", err)
+	}
+	if d := vendor.DescribeDeviceTree(data); d != "" {
+		fmt.Printf("  %s\n", d)
+	}
+	nodes := 0
+	root.Walk(func(string, *fdt.Node) { nodes++ })
+	fmt.Printf("  %d node(s)\n", nodes)
 	return nil
 }
 
@@ -2062,6 +2086,8 @@ func typeLabel(name string, head []byte) string {
 		return "UBIFS"
 	case filetype.Ogg:
 		return "Ogg"
+	case filetype.ACDB:
+		return "Qualcomm ACDB (audio calibration)"
 	case filetype.Gzip:
 		return "gzip"
 	case filetype.Zip:
@@ -2077,6 +2103,9 @@ func typeLabel(name string, head []byte) string {
 	}
 	if androidkeys.Is(head) { // it is text, so it is named before text is
 		return "Android recovery keys"
+	}
+	if label, _, ok := unixauth.Identify(name, head); ok { // shadow/passwd/chap-secrets: also text
+		return label
 	}
 	if blocks, ok := pemfile.Parse(head); ok { // by content, whatever it is called (res.dat, a .pem)
 		return pemfile.Label(blocks)
@@ -2385,6 +2414,15 @@ func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 		if ok, err := reconKernel(path, false); ok || err != nil {
 			return err
 		}
+	}
+	// passwd/shadow/gshadow/chap-secrets/pap-secrets: text, so named before any text reading.
+	// Never a hash or secret value: HasPassword accounts get their scheme and a
+	// one-way fingerprint only.
+	if _, lines, ok := unixauth.Identify(path, head); ok { // the Type line above names it
+		for _, l := range lines {
+			fmt.Println("  " + l)
+		}
+		return nil
 	}
 	// Android recovery's trusted update keys (res/keys): text, so named before any text reading.
 	if keys, ok := androidkeys.Parse(head); ok {

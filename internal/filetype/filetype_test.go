@@ -42,7 +42,8 @@ func TestDetect(t *testing.T) {
 		{"qdb", []byte("\x7fQDBxxxx"), QDB},
 		{"ubi", []byte("UBI#\x01\x00\x00\x00"), UBI},
 		{"ogg", []byte("OggS\x00\x02"), Ogg},
-		{"unknown",[]byte("hello world"), Unknown},
+		{"acdb", []byte("QCMSNDDBextra"), ACDB},
+		{"unknown", []byte("hello world"), Unknown},
 	}
 	for _, c := range cases {
 		if got := Detect(c.head); got != c.want {

@@ -7,6 +7,8 @@ package unixauth
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -195,3 +197,75 @@ func ParsePPPSecrets(data []byte) []PPPSecret {
 }
 
 func unquote(s string) string { return strings.Trim(s, `"`) }
+
+// Identify names a passwd/shadow/gshadow/chap-secrets/pap-secrets file for recon
+// and browse: a type label, and report lines (one-line summary first) for a
+// fuller report. ok is false unless the base name is exactly one of these —
+// that alone is specific enough to claim it, even one with no entries (a stock
+// pppd template, just its header comments). Never a hash or secret value, only
+// Scheme and Fingerprint.
+func Identify(name string, data []byte) (label string, lines []string, ok bool) {
+	switch filepath.Base(name) {
+	case "shadow", "gshadow":
+		label = "shadow file"
+		if filepath.Base(name) == "gshadow" {
+			label = "group shadow file"
+		}
+		entries := ParseShadow(data)
+		if len(entries) == 0 {
+			return label, []string{"no accounts (empty or not parseable)"}, true
+		}
+		return label, shadowLines(entries), true
+	case "passwd":
+		entries := ParsePasswd(data)
+		if len(entries) == 0 {
+			return "passwd file", []string{"no accounts (empty or not parseable)"}, true
+		}
+		return "passwd file", []string{fmt.Sprintf("%d account(s)", len(entries))}, true
+	case "chap-secrets", "pap-secrets":
+		label = "PPP " + filepath.Base(name)
+		secrets := ParsePPPSecrets(data)
+		if len(secrets) == 0 {
+			return label, []string{"no secrets configured (template only)"}, true
+		}
+		set := 0
+		for _, s := range secrets {
+			if s.Fingerprint() != "" {
+				set++
+			}
+		}
+		return label, []string{fmt.Sprintf("%d secret(s), %d set", len(secrets), set)}, true
+	}
+	return "", nil, false
+}
+
+// shadowLines is Identify's report body for a shadow/gshadow file: a one-line
+// summary of who has a password and in what scheme, then one line per such
+// account with its scheme and fingerprint (never the hash itself).
+func shadowLines(entries []ShadowEntry) []string {
+	var withPW []ShadowEntry
+	seen := map[Scheme]bool{}
+	var schemes []string
+	for _, e := range entries {
+		if !e.HasPassword() {
+			continue
+		}
+		withPW = append(withPW, e)
+		if !seen[e.Scheme] {
+			seen[e.Scheme] = true
+			s := string(e.Scheme)
+			if e.Scheme.Weak() {
+				s += " (weak)"
+			}
+			schemes = append(schemes, s)
+		}
+	}
+	if len(withPW) == 0 {
+		return []string{fmt.Sprintf("%d account(s), all locked or passwordless", len(entries))}
+	}
+	lines := []string{fmt.Sprintf("%d of %d account(s) have a password: %s", len(withPW), len(entries), strings.Join(schemes, ", "))}
+	for _, e := range withPW {
+		lines = append(lines, fmt.Sprintf("  %s: %s, fingerprint %s", e.User, e.Scheme, e.Fingerprint()))
+	}
+	return lines
+}

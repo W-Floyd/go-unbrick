@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/npkg"
 )
 
 const (
@@ -95,6 +97,27 @@ func (hkmc) CarveExpanders() []carve.Expander {
 				name += ".decoded"
 			}
 			return []*carve.Node{carve.FromBytes(name, DecodeTarList(data))}, nil
+		},
+	}, {
+		Kind:  "npkg",
+		Match: func(_ *carve.Node, head []byte) bool { return npkg.Is(head) },
+		Expand: func(n *carve.Node) ([]*carve.Node, error) {
+			ra, err := n.ReaderAt()
+			if err != nil {
+				return nil, err
+			}
+			head := make([]byte, 64<<10) // n.Size sections, each a 12-byte table row: ample even at thousands of entries
+			k, _ := ra.ReadAt(head, 0)
+			p, err := npkg.Parse(head[:k], n.Size)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]*carve.Node, len(p.Sections))
+			for i, s := range p.Sections {
+				name := fmt.Sprintf("section%d_%08x.bin", i, s.Tag)
+				out[i] = carve.FromReaderAt(name, io.NewSectionReader(ra, int64(s.Offset), int64(s.Size)), int64(s.Size))
+			}
+			return out, nil
 		},
 	}}
 }

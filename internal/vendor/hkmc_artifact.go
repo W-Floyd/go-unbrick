@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/npkg"
 )
 
 func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
@@ -19,8 +22,10 @@ func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
 			info.Detail = n
 		}
 		return info, true
-	case bytes.HasPrefix(data, []byte("PRNM")) && len(data) >= 0x20:
-		return ArtifactInfo{Label: "navi package (PRNM)", Detail: "built " + string(bytes.TrimRight(data[0x10:0x20], "\x00"))}, true
+	case npkg.Is(data):
+		// No Detail: ArtifactReport below prints the validated Summary and the
+		// section table, so a short teaser here would just repeat its first line.
+		return ArtifactInfo{Label: "navi package (PRNM)"}, true
 	case bytes.HasPrefix(data, []byte(splashMagic)):
 		info := ArtifactInfo{Label: "splash container"}
 		if imgs, err := ParseSplash(data); err == nil {
@@ -31,7 +36,10 @@ func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
 		return ArtifactInfo{Label: "micom firmware"}, true
 	case bytes.HasPrefix(data, []byte("TRMB")):
 		return ArtifactInfo{Label: "Trimble GPS firmware (TRMB)"}, true
-	case filepath.Base(name) == "ffu_sw.bin" && len(data) >= 0x28 && bytes.HasPrefix(data[0x20:], []byte("FQT")):
+	case filepath.Base(name) == "ffu_sw.bin" && len(data) >= 0x28 && bytes.Contains(data[0x20:0x28], []byte("QT00R")):
+		// The tag's first byte varies (seen "F" on a 64 GB part, "9" on a 128 GB
+		// part; likely a capacity/revision code, not a fixed vendor magic), so the
+		// match keys on the stable "QT00R" run rather than anchoring at the start.
 		return ArtifactInfo{Label: "Micron FFU firmware", Detail: string(bytes.TrimRight(data[0x20:0x28], "\x00"))}, true
 	case looksLikeTarList(data):
 		info := ArtifactInfo{Label: "TarList manifest (XOR 0x11)"}
@@ -96,4 +104,21 @@ func utf16Name(b []byte) string {
 		out = append(out, b[i])
 	}
 	return string(out)
+}
+
+// ArtifactReport implements ArtifactReporter: a PRNM package's section table
+// (full validation needs the whole file, which head alone may not cover).
+func (hkmc) ArtifactReport(path string, head []byte) []string {
+	if !npkg.Is(head) {
+		return nil
+	}
+	data, err := infile.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	p, err := npkg.Parse(data, int64(len(data)))
+	if err != nil {
+		return []string{fmt.Sprintf("PRNM header doesn't check out: %v", err)}
+	}
+	return p.Report()
 }

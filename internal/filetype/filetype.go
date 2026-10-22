@@ -49,7 +49,8 @@ const (
 	DEX               Kind = "dalvik-dex"
 	Ogg               Kind = "ogg"
 	TelechipsBoot     Kind = "telechips-boot" // signed boot stage: "CERT" block, "HDR" at 0x100
-	Unknown          Kind = "unknown"
+	ACDB              Kind = "qualcomm-acdb"  // audio calibration database: "QCMSNDDB" magic
+	Unknown           Kind = "unknown"
 )
 
 // Detect classifies head (the first bytes of a file; a few KiB is plenty). It
@@ -122,6 +123,8 @@ func Detect(head []byte) Kind {
 		return TypeLib
 	case len(head) >= 16 && bytes.Equal(head[:16], []byte("SQLite format 3\x00")):
 		return SQLite
+	case len(head) >= 8 && bytes.Equal(head[:8], []byte("QCMSNDDB")):
+		return ACDB
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("UBI#")):
 		return UBI
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x06101831: // UBIFS node magic
