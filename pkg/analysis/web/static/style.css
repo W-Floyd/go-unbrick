@@ -1,9 +1,12 @@
 :root {
+  color-scheme: light dark; accent-color: var(--hunk);
+  --hunk: #0969da;
   --bg: #fff; --fg: #1d2125; --dim: #6b7280; --line: #e5e7eb; --panel: #f6f7f9;
   --add: #1a7f37; --del: #cf222e; --mid: #9a6700; --sel: #dbeafe; --addbg: #e6ffec; --delbg: #ffebe9; --mark: #ffd33d66;
 }
 @media (prefers-color-scheme: dark) {
   :root {
+    --hunk: #58a6ff;
     --bg: #14161a; --fg: #e5e7eb; --dim: #8b93a1; --line: #2a2e35; --panel: #1b1e23;
     --add: #3fb950; --del: #f85149; --mid: #d29922; --sel: #1f3a5f; --addbg: #12261a; --delbg: #2d1417; --mark: #bb800966;
   }
@@ -42,7 +45,7 @@ pre.lines { margin: 0; font: 12.5px/1.4 ui-monospace, monospace; }
 .detail.wrap .ln { white-space: pre-wrap; word-break: break-all; }
 .ln .no { flex: none; width: 4.5ch; text-align: right; color: var(--dim); padding-right: 1ch; user-select: none; }
 .ln .mk { flex: none; width: 2ch; user-select: none; }
-.opadd { background: var(--addbg); } .opdel { background: var(--delbg); } .ophunk { color: #0969da; } .opctx { color: var(--dim); }
+.opadd { background: var(--addbg); } .opdel { background: var(--delbg); } .ophunk { color: var(--hunk); } .opctx { color: var(--dim); }
 mark, .mark { background: var(--mark); color: inherit; border-radius: 2px; }
 table { border-collapse: collapse; } td { padding: 1px 12px 1px 0; }
 table.ov td:first-child { font-weight: 600; }
