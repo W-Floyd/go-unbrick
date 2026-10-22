@@ -84,6 +84,10 @@ var (
 	// AVBRollbackIndex is the vbmeta rollback index (AVB anti-rollback), distinct
 	// from the HAB SecurityVersion though they often track together.
 	AVBRollbackIndex = Key[int]("avb_rollback_index")
+	// AVBProtected is the partitions the package's vbmeta descriptors cover (hash,
+	// hash tree, or chained to another key), sorted and joined with ", ". A
+	// partition not among them is never verified by AVB, whenever it is loaded.
+	AVBProtected = Key[string]("avb_protected")
 
 	// AntiRollbackTable is the per-image anti-rollback version table; all-zero is
 	// the shipping baseline.

@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -106,5 +107,57 @@ func TestChainedName(t *testing.T) {
 		if got := chainedName(src); got != want {
 			t.Errorf("chainedName(%q) = %v", src, got)
 		}
+	}
+}
+
+// vbmetaWith builds a vbmeta whose descriptors are the given (tag, name) pairs.
+func vbmetaWith(descs ...struct {
+	tag  uint64
+	name string
+}) []byte {
+	be := binary.BigEndian
+	u64 := func(v uint64) []byte { b := make([]byte, 8); be.PutUint64(b, v); return b }
+	var all []byte
+	for _, d := range descs {
+		var body []byte
+		switch d.tag {
+		case 2: // hash
+			body = make([]byte, 116)
+			be.PutUint32(body[40:], uint32(len(d.name)))
+		case 1: // hashtree
+			body = make([]byte, 164)
+			be.PutUint32(body[88:], uint32(len(d.name)))
+		case 4: // chain
+			body = make([]byte, 76)
+			be.PutUint32(body[4:], uint32(len(d.name)))
+		}
+		body = append(body, d.name...)
+		for len(body)%8 != 0 {
+			body = append(body, 0)
+		}
+		all = append(all, u64(d.tag)...)
+		all = append(all, u64(uint64(len(body)))...)
+		all = append(all, body...)
+	}
+	h := make([]byte, 256)
+	copy(h, "AVB0")
+	be.PutUint32(h[4:], 1)
+	be.PutUint64(h[20:], uint64(len(all)))
+	be.PutUint64(h[64:], uint64(len(all)))
+	be.PutUint64(h[104:], uint64(len(all)))
+	return append(h, all...)
+}
+
+func TestAVBProtectedListsDescribedPartitions(t *testing.T) {
+	type d = struct {
+		tag  uint64
+		name string
+	}
+	b := facts.NewBag()
+	facts.Set(b, facts.SourceVBMeta, vbmetaWith(d{2, "boot"}, d{1, "system"}, d{4, "vbmeta_vendor"}),
+		facts.Provenance{Source: "vbmeta.img", Authority: facts.Attested})
+	facts.New(FactProviders(), nil).ResolveAll(b, facts.Options{})
+	if got, _ := facts.Get(b, facts.AVBProtected); got != "boot, system, vbmeta_vendor" {
+		t.Errorf("avb_protected = %q", got)
 	}
 }

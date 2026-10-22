@@ -109,3 +109,15 @@ func TestDetectLZ4Formats(t *testing.T) {
 		t.Error("lz4 legacy magic with a zero block size")
 	}
 }
+
+func TestDetectTelechipsBoot(t *testing.T) {
+	h := make([]byte, 0x180)
+	copy(h, "CERT")
+	copy(h[0x100:], "HDR\x00")
+	if Detect(h) != TelechipsBoot {
+		t.Error("telechips boot stage")
+	}
+	if Detect(h[:0x100]) == TelechipsBoot {
+		t.Error("a head too short to show the HDR is not one")
+	}
+}

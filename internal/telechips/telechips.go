@@ -134,6 +134,8 @@ var (
 		"bootargs": true, "bootcmd": true, "bootdelay": true, "board_id": true, "bootdev": true, "bootpart": true,
 		"miscpart": true, "fdtpart": true, "kerneladdr": true, "fdt_addr": true, "overlay_addr": true, "baudrate": true,
 		"preboot": true, "fastbootcmd": true, "recoverycmd": true, "avb_verify": true,
+		// What bootcmd runs by name: BootLoads follows them to see which partitions it reads.
+		"loadfdt": true, "loadfdtpart": true,
 	}
 	// features are what to look for, and what to call it.
 	features = []struct{ needle, name string }{

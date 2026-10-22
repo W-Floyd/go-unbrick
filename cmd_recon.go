@@ -390,6 +390,12 @@ func identityFactLines(b *facts.Bag) []string {
 		}
 		out = append(out, line)
 	}
+	if v, ok := facts.Get(b, vendor.TelechipsBootLoads); ok {
+		out = append(out, "Boot script loads: "+v)
+	}
+	if v, ok := facts.Get(b, vendor.TelechipsUnprotectedLoads); ok {
+		out = append(out, "Loaded but not covered by vbmeta: "+v)
+	}
 	var comp []string
 	if v, ok := facts.Get(b, vendor.MBMVersion); ok {
 		comp = append(comp, "MBM "+v)
@@ -1989,6 +1995,8 @@ func typeLabel(name string, head []byte) string {
 		return "lz4"
 	case filetype.LZ4Legacy:
 		return "lz4 (legacy format)"
+	case filetype.TelechipsBoot:
+		return "Telechips boot stage"
 	case filetype.PE:
 		return "PE executable"
 	case filetype.F2FS:

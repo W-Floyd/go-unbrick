@@ -48,7 +48,8 @@ const (
 	ODEX              Kind = "dalvik-odex" // optimized DEX, pre-ART ("dey\n036")
 	DEX               Kind = "dalvik-dex"
 	Ogg               Kind = "ogg"
-	Unknown           Kind = "unknown"
+	TelechipsBoot     Kind = "telechips-boot" // signed boot stage: "CERT" block, "HDR" at 0x100
+	Unknown          Kind = "unknown"
 )
 
 // Detect classifies head (the first bytes of a file; a few KiB is plenty). It
@@ -131,6 +132,8 @@ func Detect(head []byte) Kind {
 		return QCDT
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("OggS")):
 		return Ogg
+	case len(head) >= 0x104 && bytes.Equal(head[:4], []byte("CERT")) && bytes.Equal(head[0x100:0x104], []byte("HDR\x00")):
+		return TelechipsBoot
 	default:
 		return Unknown
 	}

@@ -418,6 +418,37 @@ func FactProviders() []facts.Provider {
 			},
 		},
 
+		// The partitions the vbmeta(s) cover. Every vbmeta present counts, root and
+		// chained: a partition is protected if any of them describes it.
+		facts.Rule{
+			Out: facts.AVBProtected.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested,
+			Fn: func(b *facts.Bag) (bool, error) {
+				set := map[string]bool{}
+				for _, v := range b.Values(facts.SourceVBMeta.Name()) {
+					data, _ := v.Data.([]byte)
+					img, err := avb.ParseImage(data)
+					if err != nil {
+						continue
+					}
+					for _, d := range img.Descriptors {
+						if (d.Kind == "hash" || d.Kind == "hashtree" || d.Kind == "chain") && d.Partition != "" {
+							set[d.Partition] = true
+						}
+					}
+				}
+				if len(set) == 0 {
+					return false, nil
+				}
+				names := make([]string, 0, len(set))
+				for n := range set {
+					names = append(names, n)
+				}
+				sort.Strings(names)
+				facts.Set(b, facts.AVBProtected, strings.Join(names, ", "), facts.Provenance{Source: "vbmeta descriptors", Authority: facts.Attested})
+				return true, nil
+			},
+		},
+
 		// A Qualcomm boot image names the SoC it was built for, either in its
 		// QC_IMAGE_VERSION_STRING or through the JTAG id in its signature. The
 		// value is the catalog's marketing spelling of that silicon (bootelf
