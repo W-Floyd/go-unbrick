@@ -32,3 +32,24 @@ func TestLearnImageDat(t *testing.T) {
 		t.Error("read without keys")
 	}
 }
+
+func TestKeyFilePatternsNameTheDatFiles(t *testing.T) {
+	var match func(string) bool = func(p string) bool {
+		for _, re := range KeyFilePatterns() {
+			if re.MatchString(p) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range []string{"iv.dat", "enc_system/enc_system.ext4/system.ext4/etc/image.dat", "x.tar/res/iv.dat"} {
+		if !match(p) {
+			t.Errorf("%s is a key file", p)
+		}
+	}
+	for _, p := range []string{"notiv.dat", "image.dat.bak", "etc/iv.data"} {
+		if match(p) {
+			t.Errorf("%s is not", p)
+		}
+	}
+}

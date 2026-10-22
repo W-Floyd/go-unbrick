@@ -30,10 +30,11 @@ import (
 
 // Secret is a key, with the IV that goes with it and how the data is framed.
 type Secret struct {
-	Name string
-	Key  []byte
-	IV   []byte
-	Mode string // "" CBC under IV, "ecb", or "prefix" (CBC, the first block is the IV)
+	Name   string
+	IVName string // the IV's own secrets file, when IV came from one
+	Key    []byte
+	IV     []byte
+	Mode   string // "" CBC under IV, "ecb", or "prefix" (CBC, the first block is the IV)
 }
 
 // DecryptHead decrypts the whole blocks of head under s.
@@ -159,7 +160,7 @@ func Load(dir string) error {
 			return NameAffinity(k.Name, byName[i].Name) > NameAffinity(k.Name, byName[j].Name)
 		})
 		for _, iv := range byName {
-			out = append(out, Secret{Name: k.Name, Key: k.Key, IV: iv.IV})
+			out = append(out, Secret{Name: k.Name, IVName: iv.Name, Key: k.Key, IV: iv.IV})
 		}
 	}
 	// Less likely framings of the same keys, tried after every key/IV pair.

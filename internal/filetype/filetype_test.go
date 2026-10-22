@@ -121,3 +121,13 @@ func TestDetectTelechipsBoot(t *testing.T) {
 		t.Error("a head too short to show the HDR is not one")
 	}
 }
+
+func TestGzipNeedsAHeader(t *testing.T) {
+	if Detect([]byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0}) != Gzip {
+		t.Error("a deflate gzip header is not gzip")
+	}
+	// What a wrong key can leave: the magic, then noise.
+	if Detect([]byte{0x1f, 0x8b, 0x4e, 0xe4, 0x67, 0xeb}) == Gzip {
+		t.Error("1f 8b with another method byte is not gzip")
+	}
+}

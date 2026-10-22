@@ -8,6 +8,7 @@ package vendor
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -317,6 +318,24 @@ func Mirrors(u string) []string {
 // so `ls` and `extract` reach inside them as they do the neutral ones.
 type Carver interface {
 	CarveExpanders() []carve.Expander
+}
+
+// KeyFiler is an optional Driver capability: naming the files in this OEM's packages that
+// hold a key or IV (full paths from a package's root, through nested containers, match), so a
+// search can list them wherever a package keeps them and say which are new.
+type KeyFiler interface {
+	KeyFilePatterns() []*regexp.Regexp
+}
+
+// KeyFilePatterns gathers every registered driver's key file patterns.
+func KeyFilePatterns() []*regexp.Regexp {
+	var out []*regexp.Regexp
+	for _, d := range Drivers() {
+		if k, ok := d.(KeyFiler); ok {
+			out = append(out, k.KeyFilePatterns()...)
+		}
+	}
+	return out
 }
 
 // CarveExpanders gathers every registered driver's container formats.

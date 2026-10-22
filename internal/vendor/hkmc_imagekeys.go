@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -17,6 +18,12 @@ var (
 	ImageIV  = facts.Key[string]("image_iv")
 	ImageKey = facts.Key[string]("image_key")
 )
+
+// KeyFilePatterns is where a package may keep them: its updater's etc/ in the system image, the
+// recovery's copy of them, the recovery ramdisk's, which one is in varies as the keys rotate.
+func (hkmc) KeyFilePatterns() []*regexp.Regexp {
+	return []*regexp.Regexp{regexp.MustCompile(`(^|/)(iv|image)\.dat$`)}
+}
 
 // imageDatRoots are where /etc sits under an enc_system.ext4 member: the decrypted
 // filesystem itself, or the system.ext4 it wraps.

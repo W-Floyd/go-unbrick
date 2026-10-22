@@ -1,0 +1,386 @@
+package analysis
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
+	"github.com/W-Floyd/go-unbrick/internal/carve"
+)
+
+// Searching an input for key material: each value looked for as a rolling window
+// through every byte of every file, through nested containers and after
+// decryption, to find where else it is embedded than where it is known to be.
+
+// KeyValue is a byte string to search for: a key or an IV.
+type KeyValue struct {
+	Name  string // what to call it in a hit (its secrets file)
+	Bytes []byte
+}
+
+// LoadedKeyValues is the keys and IVs a host has loaded as secrets (the
+// secrets directory), each once, named by its file. A secret that only combines
+// a key with a framing (zero IV, ECB) adds nothing.
+func LoadedKeyValues() []KeyValue {
+	var out []KeyValue
+	index := map[string]int{}
+	add := func(b []byte, name string) {
+		if len(b) == 0 {
+			return
+		}
+		i, seen := index[string(b)]
+		if !seen {
+			index[string(b)] = len(out)
+			out = append(out, KeyValue{Name: name, Bytes: b})
+			return
+		}
+		if !strings.Contains(", "+out[i].Name+", ", ", "+name+", ") {
+			out[i].Name += ", " + name
+		}
+	}
+	for _, s := range aeskeys.Secrets() {
+		name := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(s.Name, " (zero IV)"), " (ecb)"), " (prefixed IV)")
+		add(s.Key, name)
+		if s.IVName != "" {
+			add(s.IV, s.IVName)
+		}
+	}
+	return out
+}
+
+// KeyHit is one place a value was found.
+type KeyHit struct {
+	Path     string // from the input's root, through nested containers
+	Offset   int64  // in the file's (decrypted) bytes
+	Name     string // the value's KeyValue.Name
+	Encoding string // "raw", "hex" or "HEX" (as lower- or upper-case hex text)
+	Known    bool   // the path is where the value is already known to be
+}
+
+// KeySweepProgress is how far a sweep has got.
+type KeySweepProgress struct {
+	Path       string // the file being read
+	Size       int64  // its size, -1 if unknown
+	Done       int64  // bytes of it read
+	TotalBytes int64  // bytes read of all files so far, this one included
+	Files      int    // files finished
+}
+
+// KeySweepOptions says what to search for and how far to look.
+type KeySweepOptions struct {
+	// Values are the strings to find, as raw bytes and as hex text. Default: LoadedKeyValues.
+	Values []KeyValue
+	// Depth is how many container levels to open. Default: unlimited.
+	Depth int
+	// Skip, if set, leaves out an entry by its name; it is asked of every
+	// slash-separated segment of a member's name, and a skipped container is not opened.
+	Skip func(name string) bool
+	// Known, if set, says whether a path is where a value is already known to be.
+	Known func(path string) bool
+	// OnHit is called for each hit as it is found.
+	OnHit func(KeyHit)
+	// OnProgress is called while files are read, at most every 100 ms, and as each
+	// file starts and ends. It runs on the sweeping goroutine.
+	OnProgress func(KeySweepProgress)
+}
+
+// KeySweepResult is everything a sweep found.
+type KeySweepResult struct {
+	Hits  []KeyHit
+	Files int
+	Bytes int64
+	// Unreadable is what could not be read as listed ("path: why"). A container
+	// with an unreadable member was searched whole as well.
+	Unreadable []string
+	// Searched is how many strings were looked for.
+	Searched int
+}
+
+// SweepKeys searches every byte of every file under input (a file, a package, an
+// image or a directory, local or ssh://) for the values, through nested
+// containers and after decryption (the host loads the secrets that decrypt, as
+// for browsing). It stops early with ctx's error if ctx ends.
+func SweepKeys(ctx context.Context, input string, opt KeySweepOptions) (*KeySweepResult, error) {
+	values := opt.Values
+	if values == nil {
+		values = LoadedKeyValues()
+	}
+	m := newKeyMatcher(values)
+	if len(m.pats) == 0 {
+		return nil, fmt.Errorf("no keys or IVs to search for")
+	}
+	root, err := diffRoot(input)
+	if err != nil {
+		return nil, err
+	}
+	depth := opt.Depth
+	if depth <= 0 {
+		depth = 1 << 20
+	}
+	s := &keySweeper{ctx: ctx, m: m, opt: opt, res: &KeySweepResult{Searched: len(m.pats)}}
+	s.walk(root, "", depth)
+	if err := ctx.Err(); err != nil {
+		return s.res, err
+	}
+	return s.res, nil
+}
+
+type keySweeper struct {
+	ctx context.Context
+	m   *keyMatcher
+	opt KeySweepOptions
+	res *KeySweepResult
+}
+
+func (s *keySweeper) skipped(name string) bool {
+	if s.opt.Skip == nil {
+		return false
+	}
+	for _, seg := range strings.Split(strings.Trim(name, "/"), "/") {
+		if s.opt.Skip(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// walk searches n and what is inside it, and reports whether every byte was read.
+// A container with a member that could not be read is searched whole as well, so
+// those bytes are not lost to it.
+func (s *keySweeper) walk(n *carve.Node, path string, depth int) bool {
+	if s.ctx.Err() != nil {
+		return false
+	}
+	if n.IsDirNode() {
+		_, kids, err := n.Children()
+		if err != nil {
+			s.res.Unreadable = append(s.res.Unreadable, path+": "+err.Error())
+			return false
+		}
+		ok := true
+		for _, k := range kids {
+			if !s.skipped(k.Name) {
+				ok = s.walk(k, path+"/"+k.Name, depth) && ok
+			}
+		}
+		return ok
+	}
+	if depth > 0 {
+		if _, isContainer := carve.Format(n); isContainer {
+			if _, kids, err := n.Children(); err == nil {
+				ok := true
+				for _, k := range kids {
+					if !s.skipped(k.Name) {
+						ok = s.walk(k, path+"/"+k.Name, depth-1) && ok
+					}
+				}
+				if !ok && s.ctx.Err() == nil {
+					s.scanFile(n, strings.TrimPrefix(path, "/")+" (as bytes)")
+				}
+				return true // its own bytes are covered
+			}
+			// Not readable as the container it looks like: its bytes are all there is.
+		}
+	}
+	return s.scanFile(n, strings.TrimPrefix(path, "/"))
+}
+
+// scanFile searches one file's bytes and reports whether they were all read.
+func (s *keySweeper) scanFile(n *carve.Node, path string) bool {
+	r, err := n.Reader()
+	if err != nil {
+		s.res.Unreadable = append(s.res.Unreadable, path+": "+err.Error())
+		return false
+	}
+	defer r.Close()
+	cr := &sweepReader{ctx: s.ctx, r: r, s: s, path: path, size: n.Size}
+	cr.report()
+	err = s.m.scan(cr, func(h keyHit) {
+		kh := KeyHit{Path: path, Offset: h.off, Name: h.pat.name, Encoding: h.pat.enc,
+			Known: s.opt.Known != nil && s.opt.Known(path)}
+		s.res.Hits = append(s.res.Hits, kh)
+		if s.opt.OnHit != nil {
+			s.opt.OnHit(kh)
+		}
+	})
+	s.res.Files++
+	cr.report()
+	if err != nil {
+		if s.ctx.Err() == nil {
+			s.res.Unreadable = append(s.res.Unreadable, fmt.Sprintf("%s: read stopped after %d bytes: %v", path, cr.n, err))
+		}
+		return false
+	}
+	return true
+}
+
+// sweepReader counts what is read and reports progress as it goes.
+type sweepReader struct {
+	ctx  context.Context
+	r    io.Reader
+	s    *keySweeper
+	path string
+	size int64
+	n    int64
+	last time.Time
+}
+
+func (c *sweepReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	c.s.res.Bytes += int64(n)
+	if time.Since(c.last) >= 100*time.Millisecond {
+		c.report()
+	}
+	return n, err
+}
+
+func (c *sweepReader) report() {
+	c.last = time.Now()
+	if c.s.opt.OnProgress != nil {
+		c.s.opt.OnProgress(KeySweepProgress{Path: c.path, Size: c.size, Done: c.n, TotalBytes: c.s.res.Bytes, Files: c.s.res.Files})
+	}
+}
+
+// keyPat is one byte string to find: a value as raw bytes or as hex text.
+type keyPat struct {
+	name string // the value's name(s)
+	enc  string // raw, hex, HEX
+	b    []byte
+	// bounded: a match counts only when no hex digit sits either side, for a value so
+	// regular (00 01 02 …) that it is the start of every hex table.
+	bounded bool
+}
+
+// keyMatcher finds many patterns in one pass: a 64 Ki table on the first two
+// bytes of each position says whether any pattern could start there, and only
+// those are compared in full.
+type keyMatcher struct {
+	pats   []keyPat
+	has    [1 << 16]bool
+	first  map[uint16][]int
+	maxLen int
+}
+
+func newKeyMatcher(values []KeyValue) *keyMatcher {
+	m := &keyMatcher{first: map[uint16][]int{}}
+	seen := map[string]bool{}
+	for _, v := range values {
+		b := v.Bytes
+		if len(b) < 16 || uniform(b) || seen[string(b)] {
+			continue
+		}
+		seen[string(b)] = true
+		// 00 01 02 … is in every binary, and its hex text starts every hex table:
+		// only the hex text, standing alone, means anything.
+		weak := progression(b)
+		if !weak {
+			m.add(keyPat{name: v.Name, enc: "raw", b: b})
+		}
+		lo := []byte(hex.EncodeToString(b))
+		m.add(keyPat{name: v.Name, enc: "hex", b: lo, bounded: weak})
+		if up := bytes.ToUpper(lo); !bytes.Equal(up, lo) {
+			m.add(keyPat{name: v.Name, enc: "HEX", b: up, bounded: weak})
+		}
+	}
+	return m
+}
+
+// progression is bytes that each step by the same amount: 00 01 02 …, or one byte repeated.
+func progression(b []byte) bool {
+	for i := 2; i < len(b); i++ {
+		if b[i]-b[i-1] != b[1]-b[0] {
+			return false
+		}
+	}
+	return true
+}
+
+func uniform(b []byte) bool {
+	for _, c := range b {
+		if c != b[0] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *keyMatcher) add(p keyPat) {
+	k := uint16(p.b[0]) | uint16(p.b[1])<<8
+	m.has[k] = true
+	m.first[k] = append(m.first[k], len(m.pats))
+	m.pats = append(m.pats, p)
+	m.maxLen = max(m.maxLen, len(p.b))
+}
+
+type keyHit struct {
+	pat *keyPat
+	off int64
+}
+
+// scan reads r through and reports every match, at its offset in the stream.
+func (m *keyMatcher) scan(r io.Reader, emit func(keyHit)) error {
+	const chunk = 4 << 20
+	buf := make([]byte, 0, chunk+m.maxLen+1)
+	var base int64 // offset in the stream of buf[0]
+	start := 0     // the first position not yet searched
+	for {
+		carry := len(buf)
+		buf = buf[:carry+chunk]
+		n, err := io.ReadFull(r, buf[carry:])
+		buf = buf[:carry+n]
+		eof := err == io.EOF || err == io.ErrUnexpectedEOF
+		if err != nil && !eof {
+			return err
+		}
+		// A position is searched once a full pattern, and the byte after it, are read.
+		limit := len(buf) - m.maxLen
+		if eof || limit < 0 {
+			limit = len(buf)
+		}
+		for i := start; i < limit; i++ {
+			if i+1 >= len(buf) {
+				break
+			}
+			k := uint16(buf[i]) | uint16(buf[i+1])<<8
+			if !m.has[k] {
+				continue
+			}
+			for _, pi := range m.first[k] {
+				p := &m.pats[pi]
+				if !bytes.HasPrefix(buf[i:], p.b) {
+					continue
+				}
+				if p.bounded {
+					end := i + len(p.b)
+					if (i > 0 && isHexDigit(buf[i-1])) || (end < len(buf) && isHexDigit(buf[end])) {
+						continue
+					}
+				}
+				emit(keyHit{p, base + int64(i)})
+			}
+		}
+		if eof {
+			return nil
+		}
+		// Carried over: one byte before the first unsearched position, for the
+		// bounded patterns, and everything after it.
+		from := max(limit-1, 0)
+		copy(buf, buf[from:])
+		buf = buf[:len(buf)-from]
+		base += int64(from)
+		start = limit - from
+	}
+}
+
+func isHexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}

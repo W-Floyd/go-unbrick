@@ -60,7 +60,7 @@ import (
 func newReconCmd() *cobra.Command {
 	var depth int
 	var carve, why, with, secrets string
-	var verify, learn bool
+	var verify, learn, exhaustive bool
 	c := &cobra.Command{
 		Use:   "recon <file | directory | http(s) url | ssh://[user@]host[:port]/path>",
 		Short: "identify any file (stock zip, image, container, config) and report what it is",
@@ -82,6 +82,16 @@ func newReconCmd() *cobra.Command {
 				}
 				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", secretsLoaded(), secrets)
 			}
+			if exhaustive {
+				if !cmd.Flags().Changed("skip") {
+					reconSkip = []string{"navi"} // gigabytes of map data; --skip= searches it too
+				}
+				d := 100
+				if cmd.Flags().Changed("depth") {
+					d = depth
+				}
+				return runKeySweep(args[0], d)
+			}
 			if isDir {
 				if with != "" {
 					fmt.Fprintf(os.Stderr, "note: --with is ignored in directory mode; each file resolves its own companion\n")
@@ -99,6 +109,7 @@ func newReconCmd() *cobra.Command {
 	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
 	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
+	c.Flags().BoolVar(&exhaustive, "exhaustive-key-learn", false, "instead of a recon: search every byte of every file (through nested containers, after decryption; --depth defaults to unlimited here) for each loaded key and IV, raw and as hex text, and report where they are embedded; --skip applies, and defaults to navi here (--skip= searches everything)")
 	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach; found automatically when a vendor can name it, \"none\" to skip")
 	return addFullDownload(c)
 }

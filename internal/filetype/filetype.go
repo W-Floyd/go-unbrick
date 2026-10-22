@@ -67,7 +67,9 @@ func Detect(head []byte) Kind {
 		return ELF
 	case len(head) >= 262 && bytes.Equal(head[257:262], []byte("ustar")):
 		return Tar
-	case len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b:
+	// Two bytes of magic alone match 1 in 65536 random blocks: a real header also has method 8
+	// (deflate) and no reserved flag bits, and a key that turns noise into 1f 8b should not pass.
+	case len(head) >= 4 && head[0] == 0x1f && head[1] == 0x8b && head[2] == 8 && head[3]&0xe0 == 0:
 		return Gzip
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x184d2204: // frame format
 		return LZ4
