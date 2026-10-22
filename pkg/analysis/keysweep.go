@@ -86,9 +86,9 @@ type KeySweepOptions struct {
 	// read in order is searched as the listing reaches it. Default: the CPUs, at
 	// most 8; 1 searches one at a time.
 	Workers int
-	// Skip, if set, leaves out an entry by its name; it is asked of every
-	// slash-separated segment of a member's name, and a skipped container is not opened.
-	Skip func(name string) bool
+	// Skip leaves out entries whose path (as in KeyHit.Path) matches any of these
+	// regular expressions, and does not open a container that matches. See SkipPath.
+	Skip []string
 	// Known, if set, says whether a path is where a value is already known to be.
 	Known func(path string) bool
 	// OnHit is called for each hit as it is found, one call at a time (from any
@@ -178,17 +178,7 @@ func (s *keySweeper) unreadable(msg string) {
 	s.mu.Unlock()
 }
 
-func (s *keySweeper) skipped(name string) bool {
-	if s.opt.Skip == nil {
-		return false
-	}
-	for _, seg := range strings.Split(strings.Trim(name, "/"), "/") {
-		if s.opt.Skip(seg) {
-			return true
-		}
-	}
-	return false
-}
+func (s *keySweeper) skipped(path string) bool { return SkipPath(s.opt.Skip, path) }
 
 // walk searches n and what is inside it, and reports whether every byte was read.
 // A container with a member that could not be read is searched whole as well, so
@@ -248,7 +238,7 @@ func (s *keySweeper) visit(n *carve.Node, path string, depth int) <-chan bool {
 func (s *keySweeper) members(kids []*carve.Node, path string, depth int) bool {
 	var pending []<-chan bool
 	for _, k := range kids {
-		if !s.skipped(k.Name) {
+		if !s.skipped(path + "/" + k.Name) {
 			pending = append(pending, s.visit(k, path+"/"+k.Name, depth))
 		}
 	}

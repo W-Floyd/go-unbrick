@@ -210,6 +210,10 @@ func (t *treeDiffTally) out(format string, args ...any) *diffLine {
 // (--match); containers are opened to look for them.
 var diffMatch *regexp.Regexp
 
+// diffSkip are the --skip regular expressions: a member whose full path matches is left
+// out of the comparison, and a container that matches is not opened.
+var diffSkip []string
+
 // hit reports whether the member at path is one --match asks for.
 func (t *treeDiffTally) hit(path string) bool {
 	return diffMatch == nil || diffMatch.MatchString(t.base+path)
@@ -314,6 +318,9 @@ func (t *treeDiffTally) pairRenames() {
 // addOnly records a member present on one side only. A directory is listed as
 // the files in it, so each can be matched to a rename elsewhere.
 func (t *treeDiffTally) addOnly(n *carve.Node, path, indent string, isNew bool) {
+	if SkipPath(diffSkip, t.base+path) {
+		return
+	}
 	if n.IsDirNode() {
 		_, kids, _ := n.Children()
 		for _, k := range kids {
@@ -384,6 +391,9 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 		t.pref.reached(path)
 		if diffStep != nil {
 			diffStep(path)
+		}
+		if SkipPath(diffSkip, t.base+path) {
+			continue
 		}
 		// Under --match a member that does not match is looked at only for what
 		// is inside it: a directory, or a container both sides open.

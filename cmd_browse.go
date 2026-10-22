@@ -82,6 +82,10 @@ There is no flat/non-interactive mode for this command; it requires a real
 terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var err error
+			if skip, err = checkSkips(skip); err != nil {
+				return err
+			}
 			if match != "" {
 				re, err := regexp.Compile(match)
 				if err != nil {
@@ -126,7 +130,7 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 			return err
 		},
 	}
-	c.Flags().StringSliceVar(&skip, "skip", nil, "directory listings: leave files out (they're never listed, so never preemptively reconned either): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated - same values as 'recon --skip'")
+	addSkipFlag(c, &skip, "listings (what is left out is never listed, so never preemptively reconned either)")
 	c.Flags().StringVarP(&match, "match", "m", "", "list only entries whose full path (from the input's root, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression, and the directories and containers that hold one; containers are opened to look, down to --depth")
 	c.Flags().IntVar(&depth, "depth", 3, "with --match, how many container levels to open looking for matches, the first included")
 	c.Flags().BoolVar(&noCrawl, "no-auto-recon", false, "recon only what is listed and highlighted; by default the rest is reconned too, to any depth, in the background and behind whatever you navigate to")

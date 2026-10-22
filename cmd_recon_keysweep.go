@@ -91,10 +91,8 @@ func runKeySweep(input string, depth, workers int) error {
 	res, err := analysis.SweepKeys(context.Background(), input, analysis.KeySweepOptions{
 		Depth:   depth,
 		Workers: workers,
-		Skip: func(name string) bool {
-			return nameSkipped(reconSkip, name)
-		},
-		Known: knownKeyFile,
+		Skip:    reconSkip,
+		Known:   knownKeyFile,
 		OnHit: func(h analysis.KeyHit) {
 			tag := "known"
 			if !h.Known {

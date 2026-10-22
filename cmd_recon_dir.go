@@ -13,6 +13,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 type verEntry = vendor.VerEntry
@@ -371,36 +372,23 @@ func reconParts(label string, parts []string) (failed []string) {
 	return failed
 }
 
-// skipGroups name sets of files --skip can leave out of a directory recon.
-// Any other --skip value is a glob on the file's base name.
-var skipGroups = map[string]func(base string) bool{
-	// The split parts (navi_backup.tar1, …) and the whole file (navi_backup.tar).
-	"navi": func(base string) bool {
-		return base == "navi_backup.tar" || partName.MatchString(base) && strings.HasPrefix(base, "navi_backup.")
-	},
-}
-
-// skipMatch reports whether one --skip value names the file with this base name.
-func skipMatch(skip, base string) bool {
-	if f, ok := skipGroups[skip]; ok {
-		return f(base)
-	}
-	ok, _ := filepath.Match(skip, base)
-	return ok
-}
-
-// applySkips drops the files the --skip values name and reports what it left out.
-func applySkips(paths, skips []string) []string {
+// applySkips drops the files a --skip regular expression matches, tried against the
+// file's path from dir, and reports what it left out.
+func applySkips(dir string, paths, skips []string) []string {
 	if len(skips) == 0 {
 		return paths
 	}
 	var keep []string
 	dropped := map[string][]string{}
 	for _, p := range paths {
-		base := filepath.Base(p)
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			rel = p
+		}
+		rel = filepath.ToSlash(rel)
 		hit := ""
 		for _, s := range skips {
-			if skipMatch(s, base) {
+			if analysis.SkipPath([]string{s}, rel) {
 				hit = s
 				break
 			}

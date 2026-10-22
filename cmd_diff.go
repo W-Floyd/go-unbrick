@@ -14,14 +14,6 @@ import (
 func init() {
 	analysis.OpenRoot = carveRoot
 	analysis.TypeLabel = typeLabel
-	// applySkips prints a "Skipped navi: ..." line straight to stdout, meant for
-	// recon's flat report; in a listing it is captured and dropped: the files
-	// simply are not there, which says the same thing.
-	analysis.SkipFilter = func(paths, skip []string) []string {
-		kept := paths
-		captureStdout(func() error { kept = applySkips(paths, skip); return nil }) //nolint:errcheck
-		return kept
-	}
 }
 
 // ---- diff ----
@@ -34,6 +26,7 @@ func newDiffCmd() *cobra.Command {
 	var member, view, webAddr, match string
 	var context int
 	var fetchAheadMiB int64
+	var skip []string
 	var depth, workers, autoDepth int
 	c := &cobra.Command{
 		Use:   "diff <a> <b>",
@@ -50,6 +43,10 @@ func newDiffCmd() *cobra.Command {
 					return fmt.Errorf("--match: %w", err)
 				}
 				cfg.Match = re
+			}
+			var err error
+			if cfg.Skip, err = checkSkips(skip); err != nil {
+				return err
 			}
 			if profile {
 				analysis.StartProfile()
@@ -181,6 +178,7 @@ func newDiffCmd() *cobra.Command {
 	_ = c.Flags().MarkHidden("profile")
 	c.Flags().BoolVar(&verify, "verify", false, "packages: read every file instead of trusting vendor manifests (.ver, update.info, TarList) for their hashes")
 	c.Flags().StringVarP(&match, "match", "m", "", "packages: compare only members whose full path (from the inputs' roots, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression; containers are opened to look, down to --depth")
+	addSkipFlag(c, &skip, "packages")
 	c.Flags().IntVar(&depth, "depth", 3, "packages: how many container levels to compare into")
 	c.Flags().IntVar(&autoDepth, "auto-depth", 2, "interactive and web: levels beyond --depth to compare on their own, per path, nearest what you are looking at first, when a worker is spare (0 = only when asked, with D; negative = no limit)")
 	c.Flags().IntVar(&workers, "workers", 2, "interactive and web: container pairs compared deeper at once (what you look at may use all; the background all but one); 1 on a spinning disk")

@@ -124,20 +124,24 @@ func TestBrowserLevelsByPathAndReading(t *testing.T) {
 	}
 }
 
-func TestSkipFilterHook(t *testing.T) {
-	old := SkipFilter
-	t.Cleanup(func() { SkipFilter = old })
-	SkipFilter = func(paths, skip []string) []string {
-		var out []string
-		for _, p := range paths {
-			if !strings.HasSuffix(p, "notes.txt") {
-				out = append(out, p)
-			}
-		}
-		return out
+func TestSkipIsARegexOnTheFullPath(t *testing.T) {
+	dir := browseFixture(t)
+	top, err := OpenInput(dir, []string{`(^|/)notes\.txt$`})
+	if err != nil || strings.Contains(entryNames(top), "notes.txt") || !strings.Contains(entryNames(top), "data.json") {
+		t.Errorf("%v %s", err, entryNames(top))
 	}
-	l, err := ListDir(browseFixture(t), []string{"x"})
-	if err != nil || strings.Contains(entryNames(l), "notes.txt") {
-		t.Errorf("%v %s", err, entryNames(l))
+	// A path from the input's root: "sub/inner.txt" is skipped by its directory, not its name.
+	sub, ok := top.Find("sub")
+	if !ok {
+		t.Fatalf("no sub in %s", entryNames(top))
+	}
+	for skip, hidden := range map[string]bool{`^sub/inner`: true, `^inner`: false, `sub/.*\.txt$`: true} {
+		l, err := Open(sub, []string{skip})
+		if err != nil || strings.Contains(entryNames(l), "inner.txt") != !hidden {
+			t.Errorf("skip %q: %v %s", skip, err, entryNames(l))
+		}
+	}
+	if !SkipPath([]string{"", `a/b`}, "x/a/b/c") || SkipPath([]string{"", `[`}, "x") {
+		t.Error("SkipPath: empty and invalid patterns match nothing, others search the path")
 	}
 }

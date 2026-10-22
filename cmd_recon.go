@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/adb"
+	"github.com/W-Floyd/go-unbrick/internal/androidkeys"
 	"github.com/W-Floyd/go-unbrick/internal/avb"
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
@@ -44,6 +46,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/modem"
 	"github.com/W-Floyd/go-unbrick/internal/otameta"
 	"github.com/W-Floyd/go-unbrick/internal/payload"
+	"github.com/W-Floyd/go-unbrick/internal/pemfile"
 	"github.com/W-Floyd/go-unbrick/internal/qfil"
 	"github.com/W-Floyd/go-unbrick/internal/rsakey"
 	"github.com/W-Floyd/go-unbrick/internal/secboot"
@@ -82,10 +85,11 @@ func newReconCmd() *cobra.Command {
 				}
 				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", secretsLoaded(), secrets)
 			}
+			var err error
+			if reconSkip, err = checkSkips(reconSkip); err != nil {
+				return err
+			}
 			if exhaustive {
-				if !cmd.Flags().Changed("skip") {
-					reconSkip = []string{"navi"} // gigabytes of map data; --skip= searches it too
-				}
 				d := 100
 				if cmd.Flags().Changed("depth") {
 					d = depth
@@ -103,13 +107,13 @@ func newReconCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members; a directory input finds ./secrets or ../secrets itself")
-	c.Flags().StringSliceVar(&reconSkip, "skip", nil, "directory mode: leave files out of the recon (still checked against the manifest): \"navi\" for the navigation map parts, or a glob on the file name; repeatable or comma-separated")
+	addSkipFlag(c, &reconSkip, "directory mode and --exhaustive-key-learn (files in a directory are still checked against the manifest)")
 	c.Flags().IntVar(&depth, "depth", 4, "how many container levels to cascade into (zip → radio → NON-HLOS → ext4)")
 	c.Flags().StringVar(&carve, "carve", "", "write every unique embedded cert (PEM+DER) and key (PEM) to this directory")
 	c.Flags().StringVar(&why, "why", "", "explain how one fact was derived (e.g. --why cid), with every corroborating source")
 	c.Flags().BoolVar(&verify, "verify", false, "run redundant derivations for their cross-check value, even the expensive ones")
 	c.Flags().BoolVar(&learn, "learn", false, "contribute this image's raw, non-identifying facts to the library knowledge store")
-	c.Flags().BoolVar(&exhaustive, "exhaustive-key-learn", false, "instead of a recon: search every byte of every file (through nested containers, after decryption; --depth defaults to unlimited here) for each loaded key and IV, raw and as hex text, and report where they are embedded; --skip applies, and defaults to navi here (--skip= searches everything)")
+	c.Flags().BoolVar(&exhaustive, "exhaustive-key-learn", false, "instead of a recon: search every byte of every file (through nested containers, after decryption; --depth defaults to unlimited here) for each loaded key and IV, raw and as hex text, and report where they are embedded; --skip applies")
 	c.Flags().IntVar(&sweepWorkers, "workers", 0, "with --exhaustive-key-learn, how many files are searched at once (default: the CPUs, at most 8; 1 = one at a time)")
 	c.Flags().StringVar(&with, "with", "", "another package of the same release (file or URL), read for what this one cannot reach; found automatically when a vendor can name it, \"none\" to skip")
 	return addFullDownload(c)
@@ -871,7 +875,7 @@ func runDirRecon(dir string) error {
 		fmt.Printf("%s: no files found\n", dir)
 		return nil
 	}
-	paths = applySkips(reportCollection(dir, paths, reconVerify), reconSkip)
+	paths = applySkips(dir, reportCollection(dir, paths, reconVerify), reconSkip)
 
 	var failed []string
 	for i, unit := range partUnits(paths) {
@@ -933,7 +937,15 @@ func runFileRecon(path string) error {
 	}
 	fmt.Printf("%s\n", infile.Base(path))
 	fmt.Printf("  Size:  %s\n", humanBytes(size))
-	fmt.Printf("  Type:  %s\n", kind)
+	// The detector knows binary formats; a file it cannot place may still be one
+	// recon names (a vendor artifact, a key list, text).
+	typeName := string(kind)
+	if kind == filetype.Unknown {
+		if l := typeLabel(infile.Base(path), head); l != "unknown" {
+			typeName = l
+		}
+	}
+	fmt.Printf("  Type:  %s\n", typeName)
 
 	resetCerts() // keys/certs are gathered during the walk, printed deduped after
 	// Resolve before rendering: the identity lines a package prints are the
@@ -2055,6 +2067,15 @@ func typeLabel(name string, head []byte) string {
 	if lp.IsSuper(head) {
 		return "super metadata"
 	}
+	if androidkeys.Is(head) { // it is text, so it is named before text is
+		return "Android recovery keys"
+	}
+	if blocks, ok := pemfile.Parse(head); ok { // by content, whatever it is called (res.dat, a .pem)
+		return pemfile.Label(blocks)
+	}
+	if b, ok := hexValue(head); ok {
+		return hexValueLabel(b)
+	}
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), name, head); ok {
 		return info.Label
 	}
@@ -2194,6 +2215,12 @@ func summarize(head, data []byte) string {
 		if recs, err := blankflash.Parse(data); err == nil {
 			return fmt.Sprintf(" — %d records", len(recs)-1)
 		}
+	}
+	if keys, ok := androidkeys.Parse(head); ok {
+		return " — " + androidkeys.Summary(keys)
+	}
+	if blocks, ok := pemfile.Parse(head); ok && len(blocks) == 1 {
+		return " — " + blocks[0].Detail
 	}
 	// Vendor-specific formats with no neutral magic (CID, MotoLogo, SLCF).
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), "", head); ok && info.Detail != "" {
@@ -2350,6 +2377,29 @@ func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 		if ok, err := reconKernel(path, false); ok || err != nil {
 			return err
 		}
+	}
+	// Android recovery's trusted update keys (res/keys): text, so named before any text reading.
+	if keys, ok := androidkeys.Parse(head); ok {
+		fmt.Printf("  %s\n", androidkeys.Summary(keys)) // the Type line above names it
+		for _, l := range androidkeys.Lines(keys) {
+			fmt.Println("  " + l)
+		}
+		return nil
+	}
+	// A key or IV as hex text (iv.dat, image.dat): say whether the secrets already hold it.
+	if b, ok := hexValue(head); ok {
+		fmt.Printf("  %s\n", datStatus(hex.EncodeToString(b)))
+		return nil
+	}
+	// PEM: keys and certificates, by their armor, whatever the file is called.
+	if blocks, ok := pemfile.Parse(head); ok {
+		for _, b := range blocks {
+			fmt.Printf("  %s\n", b.Detail)
+			for _, l := range b.Lines {
+				fmt.Println("    " + l)
+			}
+		}
+		return nil
 	}
 	// Vendor-specific content with no neutral magic (CID image, MotoLogo, SLCF).
 	if info, ok := vendor.RecognizeArtifact(activeCatalog(), filepath.Base(path), head); ok {

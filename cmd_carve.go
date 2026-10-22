@@ -16,6 +16,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
 // carveOnce registers the vendors' container formats after the neutral ones.
@@ -197,6 +198,10 @@ name its format, which over a URL means fetching it.
 			if kind == "" {
 				return fmt.Errorf("%s is not a container (%s)", n.Name, typeLabel(n.Name, n.Head()))
 			}
+			skip, err = checkSkips(skip)
+			if err != nil {
+				return err
+			}
 			t := &treePrinter{types: types, skip: skip}
 			if match != "" {
 				if t.match, err = regexp.Compile(match); err != nil {
@@ -215,7 +220,7 @@ name its format, which over a URL means fetching it.
 	}
 	c.Flags().IntVar(&depth, "depth", 3, "how many container levels to open, the first included")
 	c.Flags().BoolVarP(&types, "types", "t", false, "name each file's format (reads every head)")
-	c.Flags().StringSliceVar(&skip, "skip", nil, "leave out files and directories (a skipped container is not opened): \"navi\" for the navigation map parts, or a glob on the name; repeatable or comma-separated - same values as 'recon --skip'")
+	addSkipFlag(c, &skip, "files and directories")
 	c.Flags().StringVarP(&match, "match", "m", "", "draw only entries whose full path (from the tree's root, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression, with the directories above them; containers are opened to look, down to --depth")
 	return addSecrets(addFullDownload(c))
 }
@@ -251,19 +256,15 @@ func buildTreeDir(kids []*carve.Node) *treeDir {
 
 type treePrinter struct {
 	types             bool
-	skip              []string       // names left out, files and directories alike (see skipMatch)
+	skip              []string       // regular expressions on an entry's full path: left out, files and directories alike
 	match             *regexp.Regexp // when set, only entries that are or hold a match are drawn
 	containers, files int
 	left              int // entries a skip left out
 }
 
-func (t *treePrinter) skipped(base string) bool {
-	for _, s := range t.skip {
-		if skipMatch(s, base) {
-			return true
-		}
-	}
-	return false
+// skipped says whether the entry at path (a directory with a trailing slash) is left out.
+func (t *treePrinter) skipped(path string) bool {
+	return analysis.SkipPath(t.skip, path) || analysis.SkipPath(t.skip, strings.TrimSuffix(path, "/"))
 }
 
 // print draws kids under prefix, opening containers while depth > 0.
@@ -278,7 +279,7 @@ type treeItem struct {
 }
 
 // items is d's entries in order, less those a skip leaves out (counted when count).
-func (t *treePrinter) items(d *treeDir, count bool) []treeItem {
+func (t *treePrinter) items(d *treeDir, at string, count bool) []treeItem {
 	var items []treeItem
 	for name, sub := range d.dirs {
 		items = append(items, treeItem{name: name + "/", dir: sub})
@@ -289,7 +290,7 @@ func (t *treePrinter) items(d *treeDir, count bool) []treeItem {
 	if len(t.skip) > 0 {
 		kept := items[:0]
 		for _, it := range items {
-			if t.skipped(strings.TrimSuffix(it.name, "/")) {
+			if t.skipped(at + it.name) {
 				if count {
 					t.left++
 				}
@@ -321,7 +322,7 @@ func (t *treePrinter) opens(f *carve.Node, depth int) []*carve.Node {
 
 // hits reports whether d, at path at, holds an entry whose path matches --match.
 func (t *treePrinter) hits(d *treeDir, at string, depth int) bool {
-	for _, it := range t.items(d, false) {
+	for _, it := range t.items(d, at, false) {
 		if t.matches(it, at, depth) {
 			return true
 		}
@@ -349,7 +350,7 @@ func (t *treePrinter) matches(it treeItem, at string, depth int) bool {
 }
 
 func (t *treePrinter) printDir(d *treeDir, prefix, at string, depth int) {
-	items := t.items(d, true)
+	items := t.items(d, at, true)
 	if t.match != nil {
 		kept := items[:0]
 		for _, it := range items {
@@ -436,6 +437,10 @@ under a directory instead, named by their paths; nested containers stay whole.
 			if len(args) == 2 {
 				p = args[1]
 			}
+			skip, err := checkSkips(skip)
+			if err != nil {
+				return err
+			}
 			var re *regexp.Regexp
 			if match != "" {
 				var err error
@@ -482,24 +487,8 @@ under a directory instead, named by their paths; nested containers stay whole.
 	c.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing files")
 	c.Flags().StringVarP(&match, "match", "m", "", "with -r, write only entries whose full path (from the extracted node, through nested containers) matches this regular expression; containers are opened to look, down to --depth, and a matching one is written whole")
 	c.Flags().IntVar(&depth, "depth", 3, "with --match, how many container levels to open, the first included")
-	c.Flags().StringSliceVar(&skip, "skip", nil, "with -r, leave out files and directories (a skipped container is not opened): \"navi\" for the navigation map parts, or a glob on the name; repeatable or comma-separated - same values as 'recon --skip'")
+	addSkipFlag(c, &skip, "with -r")
 	return addSecrets(addFullDownload(c))
-}
-
-// nameSkipped reports whether any slash-separated segment of a member name is
-// one a --skip value names (an archive member "a/b/c" lies under a and b).
-func nameSkipped(skip []string, name string) bool {
-	if len(skip) == 0 {
-		return false
-	}
-	for _, seg := range strings.Split(strings.Trim(name, "/"), "/") {
-		for _, s := range skip {
-			if skipMatch(s, seg) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // extractKids writes kids under out, named by their paths from the extracted
@@ -509,10 +498,10 @@ func nameSkipped(skip []string, name string) bool {
 func extractKids(kids []*carve.Node, at, out string, re *regexp.Regexp, skip []string, depth int, force bool) (int, error) {
 	written := 0
 	for _, k := range kids {
-		if nameSkipped(skip, k.Name) {
+		p := at + k.Name
+		if analysis.SkipPath(skip, p) {
 			continue
 		}
-		p := at + k.Name
 		switch {
 		case k.IsDirNode():
 			_, ks, err := k.Children()

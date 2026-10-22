@@ -37,6 +37,9 @@ type Config struct {
 	// Match limits the comparison to members whose full path from the inputs'
 	// roots, through nested containers, matches; containers are opened to look.
 	Match *regexp.Regexp
+	// Skip leaves out members whose full path (as for Match) matches any of these
+	// regular expressions; a container that matches is not opened. See SkipPath.
+	Skip []string
 	// Workers is how many container pairs go deeper at once (default 2): foreground
 	// work, what a front end is looking at, may use all of them; the background uses
 	// all but one, so a front end asking for something finds a place free. On a
@@ -821,7 +824,7 @@ func (r *Run) FakeFinish(add ...FakeLine) {
 
 func apply(cfg Config) {
 	diffTrust = !cfg.Verify
-	diffMatch = cfg.Match
+	diffMatch, diffSkip = cfg.Match, cfg.Skip
 	switch {
 	case cfg.FetchAhead > 0:
 		prefetchBudget = cfg.FetchAhead

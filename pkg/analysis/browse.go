@@ -12,10 +12,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/W-Floyd/go-unbrick/internal/androidkeys"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/pemfile"
 	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
@@ -23,11 +25,6 @@ import (
 // inside a file (archive members, partitions, filesystem files, boot image
 // sections), navigated a level at a time. The terminal browser and the web page
 // both call these.
-
-// SkipFilter is how a host drops files from directory listings (recon's --skip):
-// it gets the full paths of a directory's files and returns the ones to keep.
-// The default keeps them all.
-var SkipFilter = func(paths []string, skip []string) []string { return paths }
 
 // BrowseEntry is one row of a level.
 type BrowseEntry struct {
@@ -81,16 +78,6 @@ func ListDir(dir string, skip []string) (*BrowseLevel, error) {
 		return nil, err
 	}
 	sort.Slice(des, func(i, j int) bool { return des[i].Name() < des[j].Name() })
-	var filePaths []string
-	for _, d := range des {
-		if !d.IsDir() {
-			filePaths = append(filePaths, infile.Join(dir, d.Name()))
-		}
-	}
-	keep := map[string]bool{}
-	for _, p := range SkipFilter(filePaths, skip) {
-		keep[p] = true
-	}
 	l := &BrowseLevel{Title: filepath.Base(dir), Dir: dir}
 	probes := 0
 	for _, d := range des {
@@ -100,9 +87,6 @@ func ListDir(dir string, skip []string) (*BrowseLevel, error) {
 		full := infile.Join(dir, d.Name())
 		if d.IsDir() {
 			l.Entries = append(l.Entries, BrowseEntry{Name: d.Name(), Size: -1, Dir: true, Openable: true, OSPath: full})
-			continue
-		}
-		if !keep[full] {
 			continue
 		}
 		size := int64(-1)
@@ -313,14 +297,18 @@ func (l *BrowseLevel) Place(prefix string, skip []string) { l.place(prefix, skip
 
 func (l *BrowseLevel) place(prefix string, skip []string) {
 	l.setPaths(prefix)
-	if BrowseMatch == nil {
+	if len(skip) == 0 && BrowseMatch == nil {
 		return
 	}
 	kept := l.Entries[:0]
 	for _, e := range l.Entries {
-		if matchEntry(e, skip, BrowseDepth) {
-			kept = append(kept, e)
+		if SkipPath(skip, e.Path) {
+			continue
 		}
+		if BrowseMatch != nil && !matchEntry(e, skip, BrowseDepth) {
+			continue
+		}
+		kept = append(kept, e)
 	}
 	l.Entries = kept
 }
@@ -360,7 +348,7 @@ func matchEntry(e BrowseEntry, skip []string, depth int) bool {
 	if l, err := openRaw(e, skip); err == nil {
 		l.setPaths(e.Path + "/")
 		for _, c := range l.Entries {
-			if matchEntry(c, skip, depth) {
+			if !SkipPath(skip, c.Path) && matchEntry(c, skip, depth) {
 				v = true
 				break
 			}
@@ -500,6 +488,9 @@ var textExts = map[string]bool{
 // LooksLikeText is the Text gate shared by files on disk and members: a content
 // check first, a known text extension as a fallback.
 func LooksLikeText(name string, head []byte) bool {
+	if androidkeys.Is(head) || pemfile.Is(head) {
+		return false // recon reads it as the keys or certificates it holds
+	}
 	if ok, _ := filetype.Text(head); ok {
 		return true
 	}

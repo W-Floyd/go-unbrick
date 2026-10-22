@@ -97,7 +97,7 @@ func TestSweepKeysDirectory(t *testing.T) {
 	progressed := false
 	res, err := SweepKeys(context.Background(), dir, KeySweepOptions{
 		Values:     []KeyValue{{Name: "image_key", Bytes: key}},
-		Skip:       func(name string) bool { return name == "skipme" },
+		Skip:       []string{`^skipme/`},
 		Known:      func(path string) bool { return filepath.Base(path) == "image.dat" },
 		OnHit:      func(h KeyHit) { live = append(live, h) },
 		OnProgress: func(KeySweepProgress) { progressed = true },

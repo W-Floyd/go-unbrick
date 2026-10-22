@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/aes"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -155,4 +156,20 @@ func datStatus(v string) string {
 		return v + " — known: " + name
 	}
 	return render(styleGood.Bold(true), v+" — NEW")
+}
+
+// hexValue is the bytes of a file that is one hex string of a key or IV length
+// (iv.dat, image.dat), with ok false for anything else.
+func hexValue(head []byte) ([]byte, bool) {
+	t := strings.TrimSpace(string(head))
+	if len(t) != 32 && len(t) != 48 && len(t) != 64 {
+		return nil, false
+	}
+	b, err := hex.DecodeString(t)
+	return b, err == nil
+}
+
+// hexValueLabel names such a file by what its length makes it.
+func hexValueLabel(b []byte) string {
+	return fmt.Sprintf("hex key or IV (%d bytes)", len(b))
 }
