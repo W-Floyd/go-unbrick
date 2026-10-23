@@ -16,15 +16,17 @@ func (Recognizer) Label(name string, head []byte) string { return "Android recov
 
 func (Recognizer) Summary(name string, head, data []byte) string {
 	if keys, ok := Parse(head); ok {
-		return Summary(keys)
+		return " — " + Summary(keys) // the interface's convention: Summary includes the " — ", not the caller
 	}
 	return ""
 }
 
+// Report leads with the one-line Summary, then the full key listing: the one
+// caller of this (recon's content fallback) used to print both stacked.
 func (Recognizer) Report(path, name string, head, data []byte) []string {
 	keys, ok := Parse(head)
 	if !ok {
 		return nil
 	}
-	return Lines(keys)
+	return append([]string{Summary(keys)}, Lines(keys)...)
 }

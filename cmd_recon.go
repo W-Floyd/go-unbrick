@@ -6,7 +6,6 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -24,7 +23,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/adb"
-	"github.com/W-Floyd/go-unbrick/internal/androidkeys"
 	"github.com/W-Floyd/go-unbrick/internal/avb"
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
@@ -47,15 +45,14 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/modem"
 	"github.com/W-Floyd/go-unbrick/internal/otameta"
 	"github.com/W-Floyd/go-unbrick/internal/payload"
-	"github.com/W-Floyd/go-unbrick/internal/pemfile"
 	"github.com/W-Floyd/go-unbrick/internal/qfil"
 	"github.com/W-Floyd/go-unbrick/internal/rsakey"
 	"github.com/W-Floyd/go-unbrick/internal/secboot"
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
-	"github.com/W-Floyd/go-unbrick/internal/unixauth"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis/recognize"
 )
 
 // newReconCmd is the file counterpart to `fastboot recon`: hand it any file and
@@ -2095,26 +2092,8 @@ func typeLabel(name string, head []byte) string {
 	case filetype.SevenZip:
 		return "7z"
 	}
-	if l, ok := kernelLabel(name, head); ok {
-		return l
-	}
-	if lp.IsSuper(head) {
-		return "super metadata"
-	}
-	if androidkeys.Is(head) { // it is text, so it is named before text is
-		return "Android recovery keys"
-	}
-	if label, _, ok := unixauth.Identify(name, head); ok { // shadow/passwd/chap-secrets: also text
-		return label
-	}
-	if blocks, ok := pemfile.Parse(head); ok { // by content, whatever it is called (res.dat, a .pem)
-		return pemfile.Label(blocks)
-	}
-	if b, ok := hexValue(head); ok {
-		return hexValueLabel(b)
-	}
-	if info, ok := vendor.RecognizeArtifact(activeCatalog(), name, head); ok {
-		return info.Label
+	if r, ok := recognize.Default.Find(name, head); ok {
+		return r.Label(name, head)
 	}
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".nvm":
@@ -2253,15 +2232,10 @@ func summarize(head, data []byte) string {
 			return fmt.Sprintf(" — %d records", len(recs)-1)
 		}
 	}
-	if keys, ok := androidkeys.Parse(head); ok {
-		return " — " + androidkeys.Summary(keys)
-	}
-	if blocks, ok := pemfile.Parse(head); ok && len(blocks) == 1 {
-		return " — " + blocks[0].Detail
-	}
-	// Vendor-specific formats with no neutral magic (CID, MotoLogo, SLCF).
-	if info, ok := vendor.RecognizeArtifact(activeCatalog(), "", head); ok && info.Detail != "" {
-		return " — " + info.Detail
+	// name is "": summarize has no filename parameter, so content-only recognizers
+	// (the ones that need it, e.g. the vendor chain) see none, same as before.
+	if r, ok := recognize.Default.Find("", head); ok {
+		return r.Summary("", head, data)
 	}
 	return ""
 }
@@ -2415,46 +2389,11 @@ func reconContentFallback(path string, head []byte, bag *facts.Bag) error {
 			return err
 		}
 	}
-	// passwd/shadow/gshadow/chap-secrets/pap-secrets: text, so named before any text reading.
-	// Never a hash or secret value: HasPassword accounts get their scheme and a
-	// one-way fingerprint only.
-	if _, lines, ok := unixauth.Identify(path, head); ok { // the Type line above names it
-		for _, l := range lines {
-			fmt.Println("  " + l)
-		}
-		return nil
-	}
-	// Android recovery's trusted update keys (res/keys): text, so named before any text reading.
-	if keys, ok := androidkeys.Parse(head); ok {
-		fmt.Printf("  %s\n", androidkeys.Summary(keys)) // the Type line above names it
-		for _, l := range androidkeys.Lines(keys) {
-			fmt.Println("  " + l)
-		}
-		return nil
-	}
-	// A key or IV as hex text (iv.dat, image.dat): say whether the secrets already hold it.
-	if b, ok := hexValue(head); ok {
-		fmt.Printf("  %s\n", datStatus(hex.EncodeToString(b)))
-		return nil
-	}
-	// PEM: keys and certificates, by their armor, whatever the file is called.
-	if blocks, ok := pemfile.Parse(head); ok {
-		for _, b := range blocks {
-			fmt.Printf("  %s\n", b.Detail)
-			for _, l := range b.Lines {
-				fmt.Println("    " + l)
-			}
-		}
-		return nil
-	}
-	// Vendor-specific content with no neutral magic (CID image, MotoLogo, SLCF).
-	if info, ok := vendor.RecognizeArtifact(activeCatalog(), filepath.Base(path), head); ok {
-		line := "  " + info.Label
-		if info.Detail != "" {
-			line += " — " + info.Detail
-		}
-		fmt.Println(line)
-		for _, l := range vendor.ArtifactReport(path, head) { // what the file says about itself
+	// The second-tier content-sniffing chain (unixauth, androidkeys, hex key/IV,
+	// PEM, vendor-specific formats): the Type line above already named it, so
+	// none of these re-echo a label, only the deeper detail.
+	if r, ok := recognize.Default.Find(filepath.Base(path), head); ok {
+		for _, l := range r.Report(path, filepath.Base(path), head, nil) {
 			fmt.Println("  " + l)
 		}
 		return nil
