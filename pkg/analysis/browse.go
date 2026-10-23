@@ -619,6 +619,12 @@ type Browser struct {
 	mu   sync.RWMutex // guards root and lc: SetFilters replaces both under a live server
 	root *BrowseLevel
 	lc   levelCache[*BrowseLevel]
+
+	// OnOpen, when set, is told about an entry the moment LevelAt opens it (lists its children, decrypting it
+	// first if it is an encrypted image a loaded key opens): e is the entry, sub its children, nil if it could
+	// not be opened. Called once per entry: LevelAt never opens one twice, so neither does this. Set it before
+	// the browser is used, not while requests may be running.
+	OnOpen func(e BrowseEntry, sub *BrowseLevel)
 }
 
 // NewBrowser opens an input for browsing.
@@ -641,7 +647,11 @@ func (b *Browser) LevelAt(path []string) (*BrowseLevel, error) {
 		if !ok {
 			return nil, ErrNoSuchEntry
 		}
-		return Open(e, b.skip)
+		l, err := Open(e, b.skip)
+		if b.OnOpen != nil {
+			b.OnOpen(e, l) // l is nil when err != nil
+		}
+		return l, err
 	})
 }
 

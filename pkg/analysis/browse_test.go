@@ -247,3 +247,47 @@ func TestBrowserSetFiltersReopensAndClearsCache(t *testing.T) {
 		t.Errorf("after clearing filters: %q", entryNames(top))
 	}
 }
+
+// A Browser's OnOpen hears about an entry the moment LevelAt opens it, with its path and children, and never
+// again for the same entry: a second LevelAt of the same path is answered from the cache.
+func TestBrowserOnOpen(t *testing.T) {
+	dir := browseFixture(t)
+	b, err := NewBrowser(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	b.OnOpen = func(e BrowseEntry, sub *BrowseLevel) {
+		ok := "ok"
+		if sub == nil {
+			ok = "fail"
+		}
+		seen = append(seen, e.Path+":"+ok)
+	}
+	if _, err := b.LevelAt([]string{"sub"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.LevelAt([]string{"pkg.tar"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "sub:ok|pkg.tar:ok"; strings.Join(seen, "|") != want {
+		t.Errorf("seen = %q, want %q", seen, want)
+	}
+	// The same entries again: nothing new, both are cached.
+	if _, err := b.LevelAt([]string{"sub"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.LevelAt([]string{"pkg.tar"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Errorf("a cached level fired OnOpen again: %v", seen)
+	}
+	// An entry with nowhere to go (a tar member, not a container): OnOpen still hears about it, told it failed.
+	if _, err := b.LevelAt([]string{"pkg.tar", "m.txt"}); err == nil {
+		t.Fatal("a plain tar member should not open")
+	}
+	if len(seen) != 3 || seen[2] != "pkg.tar/m.txt:fail" {
+		t.Errorf("a failed open: %v", seen)
+	}
+}
