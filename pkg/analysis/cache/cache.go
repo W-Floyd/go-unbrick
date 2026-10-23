@@ -47,6 +47,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -142,27 +143,42 @@ var (
 // write, the last record for a key winning on load -- the same convention
 // internal/hashcache uses, so a damaged or missing file is just an empty cache,
 // never an error this tool's callers have to handle.
+// Store is sharded on disk by (Domain, Domain.Version()): one file per
+// generation, e.g. ".../recon-cache.recon.3f9a2b1c.jsonl". A generation
+// becomes permanently unreachable through Get/Put the instant its domain's
+// Version() moves on -- shardPath always names the *current* version, so an
+// old generation's file is never even opened again, let alone scanned record
+// by record to find out it's stale. That makes reclaiming the space trivial
+// (Prune: delete any shard file whose version isn't the live one, by name
+// alone) and keeps every file small and homogeneous, which matters if it's
+// ever compressed (one coherent blob per generation, not one tiny frame per
+// write or one giant file mixing every version ever seen).
 type Store struct {
 	path string
 
+	mu     sync.Mutex // guards shards itself, not what's inside one
+	shards map[string]*shard
+}
+
+// shard is one generation's state: the file one (Domain, Version) pair is
+// stored in, loaded lazily and independently of every other shard.
+type shard struct {
 	mu      sync.Mutex
 	loaded  bool
-	entries map[string]record
+	entries map[string]string // key -> text
 	out     *os.File
 }
 
 type record struct {
-	Key     string `json:"k"`
-	Domain  string `json:"d"`
-	Version string `json:"v"`
-	Text    string `json:"t"`
+	Key  string `json:"k"`
+	Text string `json:"t"`
 }
 
 // Open returns a Store backed by path, read lazily on first use. path == ""
 // makes an in-memory store (nothing persists between processes) -- useful for
 // a library consumer that wants the invalidation behavior without a file, and
 // for tests.
-func Open(path string) *Store { return &Store{path: path} }
+func Open(path string) *Store { return &Store{path: path, shards: map[string]*shard{}} }
 
 // Default is the store the CLI's own recon/listing/label caches use:
 // $UNBRICK_RECON_CACHE, or <user cache dir>/go-unbrick/recon-cache.jsonl, read
@@ -192,17 +208,42 @@ func (s *Store) resolvePath() string {
 	return filepath.Join(d, "go-unbrick", "recon-cache.jsonl")
 }
 
-func (s *Store) load() {
-	if s.loaded {
+// shardPath is the file domain's current generation is stored in: the base
+// path (resolvePath) with the domain's name and current Version() inserted
+// before its extension. "" when resolvePath is (an in-memory store).
+func (s *Store) shardPath(domain Domain) string {
+	base := s.resolvePath()
+	if base == "" {
+		return ""
+	}
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	return fmt.Sprintf("%s.%s.%s%s", stem, domain.Name, domain.Version(), ext)
+}
+
+// shardFor is domain's shard, creating its in-memory state (not yet loaded
+// from disk) the first time it's asked for.
+func (s *Store) shardFor(domain Domain) (*shard, string) {
+	p := s.shardPath(domain)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh, ok := s.shards[p]
+	if !ok {
+		sh = &shard{entries: map[string]string{}}
+		s.shards[p] = sh
+	}
+	return sh, p
+}
+
+func (sh *shard) load(path string) {
+	if sh.loaded {
 		return
 	}
-	s.loaded = true
-	s.entries = map[string]record{}
-	p := s.resolvePath()
-	if p == "" {
+	sh.loaded = true
+	if path == "" {
 		return
 	}
-	f, err := os.Open(p)
+	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
@@ -212,48 +253,46 @@ func (s *Store) load() {
 	for sc.Scan() {
 		var r record
 		if json.Unmarshal(sc.Bytes(), &r) == nil && r.Key != "" {
-			s.entries[r.Key] = r
+			sh.entries[r.Key] = r.Text
 		}
 	}
 }
 
-// Get returns the text cached for key under domain, if domain's version
-// matches what it was stamped with -- a stale entry (the domain's members'
-// Versions have moved since) is reported as a miss, same as one never written.
+// Get returns the text cached for key under domain, from the shard domain's
+// current Version names -- a stale entry (the domain's members' Versions
+// have moved since this was written) was stamped into a *different* shard
+// file, so it is never even looked at, let alone matched against: this
+// simply misses, same as one never written.
 func (s *Store) Get(domain Domain, key string) (text string, ok bool) {
 	if key == "" {
 		return "", false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.load()
-	r, ok := s.entries[key]
-	if !ok || r.Domain != domain.Name || r.Version != domain.Version() {
-		return "", false
-	}
-	return r.Text, true
+	sh, p := s.shardFor(domain)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.load(p)
+	text, ok = sh.entries[key]
+	return text, ok
 }
 
-// Put records text for key under domain, stamped with domain's current
-// version. Failing to persist it is not an error: the next Get simply misses,
-// same as a cold cache.
+// Put records text for key, in domain's current shard. Failing to persist it
+// is not an error: the next Get simply misses, same as a cold cache.
 func (s *Store) Put(domain Domain, key, text string) {
 	if key == "" {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.load()
-	r := record{Key: key, Domain: domain.Name, Version: domain.Version(), Text: text}
-	if old, ok := s.entries[key]; ok && old == r {
+	sh, p := s.shardFor(domain)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.load(p)
+	if old, ok := sh.entries[key]; ok && old == text {
 		return
 	}
-	s.entries[key] = r
-	p := s.resolvePath()
+	sh.entries[key] = text
 	if p == "" {
 		return // in-memory store: the map above is the whole of it
 	}
-	if s.out == nil {
+	if sh.out == nil {
 		if os.MkdirAll(filepath.Dir(p), 0o755) != nil {
 			return
 		}
@@ -261,15 +300,69 @@ func (s *Store) Put(domain Domain, key, text string) {
 		if err != nil {
 			return
 		}
-		s.out = f
+		sh.out = f
 	}
-	b, err := json.Marshal(r)
+	b, err := json.Marshal(record{Key: key, Text: text})
 	if err != nil {
 		return
 	}
 	b = append(b, '\n')
-	_, _ = s.out.Write(b)
+	_, _ = sh.out.Write(b)
 }
+
+// Prune deletes every on-disk shard file for one of domains whose generation
+// is no longer current -- the ones a Version bump already made permanently
+// unreachable through Get/Put. Safe to call any time, from any process: it
+// only ever removes files nothing will read from again, by comparing the
+// version named in each file against domain.Version() now, never by opening
+// or scanning one. Returns how many files it removed.
+func (s *Store) Prune(domains ...Domain) (removed int, err error) {
+	base := s.resolvePath()
+	if base == "" {
+		return 0, nil
+	}
+	dir := filepath.Dir(base)
+	ext := filepath.Ext(base)
+	stem := filepath.Base(strings.TrimSuffix(base, ext))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	live := make(map[string]string, len(domains)) // domain name -> current version
+	for _, d := range domains {
+		live[d.Name] = d.Version()
+	}
+	prefix := stem + "."
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ext) {
+			continue
+		}
+		mid := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ext) // "domainName.version"
+		i := strings.LastIndex(mid, ".")
+		if i < 0 {
+			continue
+		}
+		domName, ver := mid[:i], mid[i+1:]
+		cur, known := live[domName]
+		if !known || ver == cur {
+			continue // not one of the given domains, or still current
+		}
+		if rmErr := os.Remove(filepath.Join(dir, name)); rmErr == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// Prune is Default's, for the common case of one process-wide cache.
+func Prune(domains ...Domain) (int, error) { return Default.Prune(domains...) }
 
 // Get and Put are Default's, for the common case of one process-wide cache
 // (the CLI's own usage): Get(cache.Recon, key) reads as "the recon cache."

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -147,6 +148,71 @@ func TestDefaultGetPut(t *testing.T) {
 		Put(d, "k", "hello")
 		if text, ok := Get(d, "k"); !ok || text != "hello" {
 			t.Errorf("got %q, %v", text, ok)
+		}
+	})
+}
+
+func TestPruneRemovesOnlyStaleShards(t *testing.T) {
+	withVersions(t, map[string]int{"a": 1}, func() {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "c.jsonl")
+		d := Domain{"d", []string{"a"}}
+		s := Open(p)
+		s.Put(d, "k", "v1")
+
+		Versions["a"] = 2 // bumps d's Version, orphaning the shard just written
+		s.Put(d, "k", "v2")
+
+		removed, err := s.Prune(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if removed != 1 {
+			t.Errorf("removed = %d, want 1 (the v1 generation)", removed)
+		}
+		// The live generation must survive, and still answer.
+		if text, ok := s.Get(d, "k"); !ok || text != "v2" {
+			t.Errorf("got %q, %v after pruning", text, ok)
+		}
+		// Pruning again finds nothing left to remove.
+		if removed, err := s.Prune(d); err != nil || removed != 0 {
+			t.Errorf("second prune: removed=%d err=%v, want 0, nil", removed, err)
+		}
+	})
+}
+
+func TestPruneIgnoresOtherDomainsAndNonShardFiles(t *testing.T) {
+	withVersions(t, map[string]int{"a": 1}, func() {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "c.jsonl")
+		d1 := Domain{"one", []string{"a"}}
+		d2 := Domain{"two", []string{"a"}}
+		s := Open(p)
+		s.Put(d1, "k", "v1")
+		s.Put(d2, "k", "v1")
+		if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		Versions["a"] = 2 // orphans d1's shard; d2 is not passed to Prune, so must survive untouched
+
+		removed, err := s.Prune(d1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if removed != 1 {
+			t.Errorf("removed = %d, want 1", removed)
+		}
+		es, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(es) != 2 { // d2's stale-but-unpruned shard, plus unrelated.txt
+			names := make([]string, len(es))
+			for i, e := range es {
+				names[i] = e.Name()
+			}
+			t.Errorf("dir = %v, want exactly d2's shard and unrelated.txt", names)
 		}
 	})
 }
