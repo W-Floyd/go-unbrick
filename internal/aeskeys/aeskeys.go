@@ -318,8 +318,28 @@ func (c *Reader) ReadAt(p []byte, off int64) (int, error) {
 // The images are PKCS#7-padded (1–16 bytes of the pad length), so the reader's size excludes the
 // pad.
 func DecryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (*Reader, string, bool) {
-	if len(head) < 2*aes.BlockSize {
+	s, blk, ok := secretFor(head)
+	if !ok {
 		return nil, "", false
+	}
+	c := &Reader{ra: ra, blk: blk, iv: s.IV, size: size &^ (aes.BlockSize - 1), ecb: s.Mode == "ecb"}
+	if s.Mode == "prefix" {
+		c.base, c.size = aes.BlockSize, c.size-aes.BlockSize
+	}
+	c.size -= c.padLen()
+	return c, s.Name, true
+}
+
+// SecretFor is the loaded secret, key and IV together, that decrypts head to plaintext: the same one
+// DecryptedReaderAt would use.
+func SecretFor(head []byte) (Secret, bool) {
+	s, _, ok := secretFor(head)
+	return s, ok
+}
+
+func secretFor(head []byte) (Secret, cipher.Block, bool) {
+	if len(head) < 2*aes.BlockSize {
+		return Secret{}, nil, false
 	}
 	for _, s := range Secrets() {
 		blk, err := aes.NewCipher(s.Key)
@@ -327,16 +347,10 @@ func DecryptedReaderAt(ra io.ReaderAt, size int64, head []byte) (*Reader, string
 			continue
 		}
 		if plain := s.DecryptHead(blk, head); plain != nil && Proven(plain) {
-			s = bestSecret(s, blk, head)
-			c := &Reader{ra: ra, blk: blk, iv: s.IV, size: size &^ (aes.BlockSize - 1), ecb: s.Mode == "ecb"}
-			if s.Mode == "prefix" {
-				c.base, c.size = aes.BlockSize, c.size-aes.BlockSize
-			}
-			c.size -= c.padLen()
-			return c, s.Name, true
+			return bestSecret(s, blk, head), blk, true
 		}
 	}
-	return nil, "", false
+	return Secret{}, nil, false
 }
 
 // Expander lets a listing see through an AES-encrypted member (an enc_*.ext4 or enc_boot.img)

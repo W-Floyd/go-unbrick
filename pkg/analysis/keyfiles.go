@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"path"
 	"strings"
 
 	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
@@ -37,18 +38,48 @@ func IsKeyFile(path string) bool {
 	return false
 }
 
-// FindKeyFiles looks for the key files the vendors name (vendor.KeyFilePatterns) anywhere in input (a directory, or a file carve
-// opens), going into containers down to depth levels, as the secrets loaded (LoadSecrets) allow:
-// an encrypted image is only gone into if a key opens it. It stops, with what it has so far, when
-// ctx ends. progress, if set, is told after each container is opened how many have been, how many key
-// files are found so far, and the path of the container just opened.
+// KeyUse is an encrypted member of an input that a loaded secret opens: which key goes with which package.
+type KeyUse struct {
+	Path   string `json:"path"`   // from the input's root, through nested containers
+	Secret string `json:"secret"` // the loaded secret's name (the file the key came from)
+	// The key and IV that opened it, together: each by the file it came from and its value in hex, and how the data
+	// is framed ("" for CBC under the IV, "ecb", or "prefix" when the first block is the IV).
+	KeyFile string `json:"keyFile,omitempty"`
+	Key     string `json:"key,omitempty"`
+	IVFile  string `json:"ivFile,omitempty"`
+	IV      string `json:"iv,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+}
+
+// KeyScan is what searching an input for keys found.
+type KeyScan struct {
+	Files    []KeyFile // the key files the vendors name
+	Uses     []KeyUse  // encrypted members, and the loaded secret that opens each
+	Unopened []string  // members named enc_ that no loaded secret opens
+}
+
+// FindKeyFiles is ScanKeys' key files alone.
 func FindKeyFiles(ctx context.Context, input string, depth int, progress func(opened, found int, at string)) ([]KeyFile, error) {
+	k, err := ScanKeys(ctx, input, depth, progress)
+	if k == nil {
+		return nil, err
+	}
+	return k.Files, err
+}
+
+// ScanKeys looks through input (a directory, or a file carve opens), going into containers down to depth
+// levels as the secrets loaded (LoadSecrets) allow, for the key files the vendors name
+// (vendor.KeyFilePatterns), and for which loaded secret opens each encrypted member. An encrypted image is
+// only gone into if a key opens it. It stops, with what it has so far, when ctx ends. progress, if set, is told
+// after each container is opened how many have been, how many key files are found so far, and the path of
+// the container just opened.
+func ScanKeys(ctx context.Context, input string, depth int, progress func(opened, found int, at string)) (*KeyScan, error) {
 	opened := 0
 	top, err := OpenInput(input, nil)
 	if err != nil {
 		return nil, err
 	}
-	var out []KeyFile
+	out := &KeyScan{}
 	var walk func(l *BrowseLevel, depth int)
 	walk = func(l *BrowseLevel, depth int) {
 		for _, e := range l.Entries {
@@ -60,7 +91,7 @@ func FindKeyFiles(ctx context.Context, input string, depth int, progress func(op
 				b, _, err := ReadEntry(e, keyFileMax)
 				if err == nil && len(b) > 0 {
 					name := e.Name
-					out = append(out, KeyFile{Path: e.Path, Name: name, Size: len(b), Value: describeKey(b), Known: knownKey(b)})
+					out.Files = append(out.Files, KeyFile{Path: e.Path, Name: name, Size: len(b), Value: describeKey(b), Known: knownKey(b, name)})
 				}
 				continue
 			}
@@ -75,21 +106,50 @@ func FindKeyFiles(ctx context.Context, input string, depth int, progress func(op
 				next-- // opening a container spends a level; a directory does not
 			}
 			sub, err := openRaw(e, nil)
+			if err == nil && !dir && strings.HasPrefix(e.Name, "enc_") {
+				if use, ok := secretFor(e, sub); ok {
+					out.Uses = append(out.Uses, use)
+				} else {
+					out.Unopened = append(out.Unopened, e.Path)
+				}
+			}
 			if err != nil {
+				if !dir && strings.HasPrefix(e.Name, "enc_") {
+					out.Unopened = append(out.Unopened, e.Path)
+				}
 				continue
 			}
 			sub.setPaths(e.Path + "/")
 			if !dir {
 				opened++
 				if progress != nil {
-					progress(opened, len(out), e.Path)
+					progress(opened, len(out.Files), e.Path)
 				}
 			}
 			walk(sub, next)
 		}
 	}
 	walk(top, depth)
+	resolveIVNames(out.Files)
 	return out, ctx.Err()
+}
+
+// secretFor is the loaded secret that opened an enc_ member whose level is sub: it opened if its one child is the
+// decrypted image, named without the prefix, and the secret is the one that decrypts the member's head.
+func secretFor(e BrowseEntry, sub *BrowseLevel) (KeyUse, bool) {
+	if len(sub.Entries) != 1 || sub.Entries[0].Name != strings.TrimPrefix(e.Name, "enc_") {
+		return KeyUse{}, false
+	}
+	head, _, err := ReadEntry(e, 8192)
+	if err != nil || len(head) < 32 {
+		return KeyUse{}, false
+	}
+	s, ok := aeskeys.SecretFor(head)
+	if !ok {
+		return KeyUse{}, false
+	}
+	return KeyUse{Path: e.Path, Secret: s.Name, KeyFile: strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(s.Name, " (zero IV)"), " (ecb)"), " (prefixed IV)"),
+		Key: hex.EncodeToString(s.Key), IVFile: s.IVName, IV: hex.EncodeToString(s.IV), Mode: s.Mode}, true
 }
 
 // describeKey shows a key file's content: its text if it is one line of text, else hex.
@@ -112,13 +172,68 @@ func keyBytes(b []byte) []byte {
 	return b
 }
 
-// knownKey names the loaded secret whose key or IV is the file's content.
-func knownKey(b []byte) string {
+// isIVFile says a key file holds an IV rather than a key, by its name: iv.dat beside image.dat.
+func isIVFile(name string) bool { return strings.HasPrefix(strings.ToLower(name), "iv") }
+
+func trimFraming(name string) string {
+	for _, suf := range []string{" (zero IV)", " (ecb)", " (prefixed IV)"} {
+		name = strings.TrimSuffix(name, suf)
+	}
+	return name
+}
+
+// loadedNames are the loaded files whose content is b, as an IV if iv is set and else as a key: the key's own
+// file, or the IV's own, never the other's.
+func loadedNames(b []byte, iv bool) []string {
 	k := keyBytes(b)
-	for _, s := range aeskeys.Secrets() {
-		if bytes.Equal(s.Key, k) || bytes.Equal(s.IV, k) {
-			return strings.TrimSuffix(s.Name, " (zero IV)")
+	var out []string
+	seen := map[string]bool{}
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
 		}
 	}
+	for _, s := range aeskeys.Secrets() {
+		if iv && bytes.Equal(s.IV, k) {
+			add(s.IVName)
+		}
+		if !iv && bytes.Equal(s.Key, k) {
+			add(trimFraming(s.Name))
+		}
+	}
+	return out
+}
+
+// knownKey names the loaded file whose content the key file's is: a key's own file, or an IV's. If several
+// hold it the first is named; ScanKeys settles an IV by the key beside it.
+func knownKey(b []byte, file string) string {
+	if names := loadedNames(b, isIVFile(file)); len(names) > 0 {
+		return names[0]
+	}
 	return ""
+}
+
+// resolveIVNames says, for an IV that more than one loaded file holds, which one goes with the key beside it: the
+// one whose name has the most in common with that key's file (the files of one package share their prefix).
+func resolveIVNames(files []KeyFile) {
+	keyOf := map[string]string{} // directory -> the loaded file of the key in it
+	for _, f := range files {
+		if !isIVFile(f.Name) && f.Known != "" {
+			keyOf[path.Dir(f.Path)] = f.Known
+		}
+	}
+	for i, f := range files {
+		if !isIVFile(f.Name) || keyOf[path.Dir(f.Path)] == "" {
+			continue
+		}
+		b, _ := hex.DecodeString(strings.TrimSuffix(f.Value, "…"))
+		best, bestScore := f.Known, -1
+		for _, n := range loadedNames(b, true) {
+			if sc := aeskeys.NameAffinity(keyOf[path.Dir(f.Path)], n); sc > bestScore {
+				best, bestScore = n, sc
+			}
+		}
+		files[i].Known = best
+	}
 }

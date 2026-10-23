@@ -25,6 +25,7 @@ import (
 type KeyValue struct {
 	Name  string // what to call it in a hit (its secrets file)
 	Bytes []byte
+	Role  string // "key" or "IV": a value that is both is a key
 }
 
 // LoadedKeyValues is the keys and IVs a host has loaded as secrets (the
@@ -33,14 +34,14 @@ type KeyValue struct {
 func LoadedKeyValues() []KeyValue {
 	var out []KeyValue
 	index := map[string]int{}
-	add := func(b []byte, name string) {
+	add := func(b []byte, name, role string) {
 		if len(b) == 0 {
 			return
 		}
 		i, seen := index[string(b)]
 		if !seen {
 			index[string(b)] = len(out)
-			out = append(out, KeyValue{Name: name, Bytes: b})
+			out = append(out, KeyValue{Name: name, Bytes: b, Role: role})
 			return
 		}
 		if !strings.Contains(", "+out[i].Name+", ", ", "+name+", ") {
@@ -49,9 +50,9 @@ func LoadedKeyValues() []KeyValue {
 	}
 	for _, s := range aeskeys.Secrets() {
 		name := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(s.Name, " (zero IV)"), " (ecb)"), " (prefixed IV)")
-		add(s.Key, name)
+		add(s.Key, name, "key")
 		if s.IVName != "" {
-			add(s.IV, s.IVName)
+			add(s.IV, s.IVName, "IV")
 		}
 	}
 	return out
