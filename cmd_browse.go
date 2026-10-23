@@ -254,7 +254,28 @@ func (e browseEntry) line() string {
 	default:
 		desc = humanBytes(e.size) + "  " + e.label
 	}
-	return fitWidth(e.name, browseNameWidth) + "  " + desc
+	line := fitWidth(e.name, browseNameWidth) + "  " + desc
+	if note := e.literalNote(); note != "" {
+		line += literalNoteStyle.Render(note)
+	}
+	return line
+}
+
+// literalNoteStyle marks literalNote's text as what it is, not the thing it
+// looks like: dim and italic, distinct from both a normal entry and the bold
+// reverse video a selected row gets.
+var literalNoteStyle = lipgloss.NewStyle().Faint(true).Italic(true)
+
+// literalNote flags an entry whose name is "." or ".." but isn't the
+// synthetic parent row: a real archive member can be named exactly that (an
+// HKMC navi map package does - see "a zip can say '../../x'" in within()'s
+// comment), and rendered one path segment per line the same way the
+// synthetic row is, it is otherwise indistinguishable from it.
+func (e browseEntry) literalNote() string {
+	if e.isParent || e.name != ".." && e.name != "." {
+		return ""
+	}
+	return " (literal, not \"go up\")"
 }
 
 // browseDelegate renders one entry per terminal row: no blank-line spacing,
@@ -272,12 +293,16 @@ func (browseDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	if !ok {
 		return
 	}
-	line := e.line()
+	// Padded to the full width, not just truncated: a short row (this entry,
+	// or the previous one at this same terminal row before a shorter list
+	// replaced it) otherwise leaves stale trailing characters - see
+	// padToWidth's doc comment.
+	line := padToWidth(e.line(), m.Width())
 	style := lipgloss.NewStyle()
 	if index == m.Index() {
 		style = style.Reverse(true).Bold(true)
 	}
-	fmt.Fprint(w, style.MaxWidth(m.Width()).Render(line))
+	fmt.Fprint(w, style.Render(line))
 }
 
 // browseFrame is one level of navigation: the title shown above the list, and
