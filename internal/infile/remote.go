@@ -295,6 +295,25 @@ func entryKey(m meta) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// writeFileAtomic replaces path in one rename, so a concurrent reader sees the old
+// content or the new, never a partial file.
+func writeFileAtomic(path string, b []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	_, werr := tmp.Write(b)
+	if cerr := tmp.Close(); werr != nil || cerr != nil {
+		os.Remove(tmp.Name())
+		return errors.Join(werr, cerr)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
 // openEntry opens the cache entry for m, discarding one recorded for different
 // content. Called with remotesMu held.
 func openEntry(m meta) (*remote, error) {
@@ -308,22 +327,28 @@ func openEntry(m meta) (*remote, error) {
 	}
 	metaPath := filepath.Join(dir, "meta.json")
 
+	// Other processes share this directory: meta.json is replaced atomically, and an
+	// entry is wiped only when its meta exists and names other content, never because
+	// it is merely absent (a peer may be creating it).
 	var old meta
-	if b, err := os.ReadFile(metaPath); err == nil && json.Unmarshal(b, &old) == nil && old.same(m) {
+	b, rerr := os.ReadFile(metaPath)
+	if rerr == nil && json.Unmarshal(b, &old) == nil && old.same(m) {
 		// Reused; a name the server now gives is kept for an offline run.
 		if m.Filename != "" && old.Filename != m.Filename {
 			b, _ := json.MarshalIndent(m, "", "  ")
-			_ = os.WriteFile(metaPath, b, 0o644)
+			_ = writeFileAtomic(metaPath, b)
 		}
 	} else {
-		if err := os.RemoveAll(dir); err != nil {
-			return nil, err
+		if rerr == nil {
+			if err := os.RemoveAll(dir); err != nil {
+				return nil, err
+			}
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
 		b, _ := json.MarshalIndent(m, "", "  ")
-		if err := os.WriteFile(metaPath, b, 0o644); err != nil {
+		if err := writeFileAtomic(metaPath, b); err != nil {
 			return nil, err
 		}
 	}

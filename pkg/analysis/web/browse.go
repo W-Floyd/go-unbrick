@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -42,6 +43,9 @@ type BrowseOptions struct {
 	OnRead func(e analysis.BrowseEntry, sha256 string, size int64)
 	// Redact is applied to the errors the handler sends (see Options.Redact).
 	Redact func(string) string
+	// ReconFull, when set, adds a "download" button to an entry: its report is made again by
+	// this, which fetches in full what the entry needs more of than ranges give.
+	ReconFull ReconFunc
 }
 
 // BrowseHandler serves a Browser to a browser: the same levels, previews and
@@ -65,6 +69,7 @@ func BrowseHandler(b *analysis.Browser, opts BrowseOptions) http.Handler {
 	mux.HandleFunc("/api/progress", progressHandler(s.redact))
 	mux.HandleFunc("/api/preview", s.preview)
 	mux.HandleFunc("/api/raw", s.raw)
+	mux.HandleFunc("/api/fulldownload", s.fullDownload)
 	mux.HandleFunc("/chroma.css", chromaCSS)
 	sub, _ := fs.Sub(assets, "static")
 	files := http.FileServer(http.FS(sub))
@@ -91,6 +96,7 @@ type browseServer struct {
 
 type reconJob struct {
 	entry analysis.BrowseEntry
+	full  bool // made by opts.ReconFull
 	done  bool
 	text  string
 	err   string
@@ -106,9 +112,40 @@ func (s *browseServer) fail(w http.ResponseWriter, code int, err error) {
 
 func (s *browseServer) info(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, struct {
-		Title string `json:"title"`
-		Recon bool   `json:"recon"`
-	}{s.opts.Title, s.opts.Recon != nil})
+		Title           string `json:"title"`
+		Recon           bool   `json:"recon"`
+		CanFullDownload bool   `json:"canFullDownload"`
+	}{s.opts.Title, s.opts.Recon != nil, s.opts.ReconFull != nil})
+}
+
+// fullDownload queues the named entry's report again, to run with full download
+// (POST, the entry named as for /api/preview).
+func (s *browseServer) fullDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || s.opts.ReconFull == nil {
+		s.fail(w, http.StatusMethodNotAllowed, errors.New("not available"))
+		return
+	}
+	_, e, err := s.locate(r)
+	if err != nil || e.Dir {
+		s.fail(w, http.StatusNotFound, errors.New("no such file"))
+		return
+	}
+	k := e.Key()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j, ok := s.jobs[k]; ok && !j.done {
+		s.fail(w, http.StatusConflict, errors.New("already running"))
+		return
+	}
+	j := &reconJob{entry: e, full: true}
+	select {
+	case s.queue <- j:
+		s.jobs[k] = j
+	default:
+		s.fail(w, http.StatusServiceUnavailable, errors.New("queue full"))
+		return
+	}
+	writeJSON(w, struct{}{})
 }
 
 // locate is the level and entry a request names, in analysis.Location's form.
@@ -236,7 +273,11 @@ func (s *browseServer) recon(e analysis.BrowseEntry) *reconResp {
 // disks underneath are not safe for more.
 func (s *browseServer) worker() {
 	for j := range s.queue {
-		text, err := s.opts.Recon(j.entry)
+		recon := s.opts.Recon
+		if j.full {
+			recon = s.opts.ReconFull
+		}
+		text, err := recon(j.entry)
 		s.mu.Lock()
 		j.text, j.done = text, true
 		if err != nil {

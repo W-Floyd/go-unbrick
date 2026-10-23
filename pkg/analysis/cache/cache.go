@@ -306,7 +306,10 @@ func (s *Store) Put(domain Domain, key, text string) {
 	if err != nil {
 		return
 	}
-	b = append(b, '\n')
+	// Led by a newline too: a peer process killed mid-write leaves an unterminated
+	// line, which would otherwise swallow this record. One write, so O_APPEND keeps
+	// concurrent processes' records whole.
+	b = append(append([]byte{'\n'}, b...), '\n')
 	_, _ = sh.out.Write(b)
 }
 

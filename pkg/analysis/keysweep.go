@@ -23,9 +23,13 @@ import (
 
 // KeyValue is a byte string to search for: a key or an IV.
 type KeyValue struct {
-	Name  string // what to call it in a hit (its secrets file)
+	Name  string // what to call it in a hit: every secrets file holding this value, comma separated
 	Bytes []byte
-	Role  string // "key" or "IV": a value that is both is a key
+	Role  string // "key" or "IV", for Name as a whole: "key" if any file sharing this value is one
+	// Roles is each name in Name's own role, by its own file, independent of the others: two files
+	// can share a value (a key's first half guessed to equal another vehicle's IV, say) without one's
+	// role deciding the other's.
+	Roles map[string]string
 }
 
 // LoadedKeyValues is the keys and IVs a host has loaded as secrets (the
@@ -41,11 +45,15 @@ func LoadedKeyValues() []KeyValue {
 		i, seen := index[string(b)]
 		if !seen {
 			index[string(b)] = len(out)
-			out = append(out, KeyValue{Name: name, Bytes: b, Role: role})
+			out = append(out, KeyValue{Name: name, Bytes: b, Role: role, Roles: map[string]string{name: role}})
 			return
 		}
 		if !strings.Contains(", "+out[i].Name+", ", ", "+name+", ") {
 			out[i].Name += ", " + name
+		}
+		out[i].Roles[name] = role
+		if role == "key" {
+			out[i].Role = "key" // a value that is both is a key, whichever use was seen first
 		}
 	}
 	for _, s := range aeskeys.Secrets() {

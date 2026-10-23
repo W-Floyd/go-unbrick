@@ -123,10 +123,7 @@ func observe(host string, n int64, d time.Duration, failed, throttled bool) {
 	}
 	if p := hostsPath(); p != "" {
 		if b, err := json.MarshalIndent(hosts.m, "", "  "); err == nil {
-			tmp := p + ".tmp"
-			if os.WriteFile(tmp, b, 0o644) == nil {
-				os.Rename(tmp, p)
-			}
+			writeFileAtomic(p, b)
 		}
 	}
 }

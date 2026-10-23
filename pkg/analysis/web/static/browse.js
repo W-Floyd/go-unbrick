@@ -77,6 +77,15 @@ function browse() {
       } finally { if (seq === this._seq) this.loading = false; }
     },
 
+    async fullDownload() {
+      if (!this.cur) return;
+      try {
+        const r = await fetch('api/fulldownload?' + u.q([...this.levelQuery(), ['name', this.cur.entry.name]]), { method: 'POST' });
+        if (!r.ok) throw new Error((await r.text()).trim());
+      } catch (e) { this.note = String(e.message || e); return; }
+      await this.reload();
+    },
+
     select(e) { this.sel = e.name; return this.reload(); },
     async open(e) {
       if (!e.openable && !e.dir) return;

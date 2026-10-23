@@ -14,7 +14,10 @@ import (
 // runFileReconCached is runFileRecon's printed report, straight to stdout,
 // through pkg/analysis/cache's Recon domain. See reconCachedText.
 func runFileReconCached(path string) error {
+	// Only here, not in runFileRecon: the browsers run that in the background under their own screen.
+	stop := showProgress(infile.Base(path))
 	text, err := reconCachedText(path)
+	stop()
 	fmt.Print(text) // print what was captured either way, success or not, same as if this call had not been cached
 	return err
 }

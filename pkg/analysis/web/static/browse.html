@@ -52,7 +52,8 @@
     <div class="tabs">
       <label x-show="cur && cur.canPretty"><input type="checkbox" x-model="pretty" @change="reload()"> pretty</label>
       <label x-show="cur && cur.kind === 'text'"><input type="checkbox" x-model="wrap"> wrap</label>
-      <a class="dl" x-show="cur && cur.kind !== 'dir'" :href="rawUrl(true)" download>download</a>
+      <button x-show="cur && cur.kind !== 'dir' && info.canFullDownload" @click="fullDownload()" title="fetch this file in full and redo its report">download &amp; recon</button>
+      <a class="dl"x-show="cur && cur.kind !== 'dir'" :href="rawUrl(true)" download>download</a>
       <span class="loading" x-show="loading" x-text="progText || 'reading…'">reading…</span>
     </div>
     <div class="detail" :class="{wrap: wrap}">

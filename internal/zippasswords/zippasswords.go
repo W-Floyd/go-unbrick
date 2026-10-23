@@ -13,6 +13,7 @@ package zippasswords
 
 import (
 	"bufio"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -62,24 +63,21 @@ func isPasswordFile(stem string) bool {
 // was loaded. A directory with none is not an error: it simply loads nothing,
 // same as one aeskeys.Load finds no keys in.
 func Load(dir string) error {
-	es, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
 	var out []string
 	seen := map[string]bool{}
-	for _, e := range es {
-		if e.IsDir() {
-			continue
+	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return err
 		}
 		stem := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 		if !isPasswordFile(stem) {
-			continue
+			return nil
 		}
-		f, err := os.Open(filepath.Join(dir, e.Name()))
+		f, err := os.Open(p)
 		if err != nil {
-			continue
+			return nil
 		}
+		defer f.Close()
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			pw := strings.TrimRight(sc.Text(), "\r\n")
@@ -89,7 +87,10 @@ func Load(dir string) error {
 			seen[pw] = true
 			out = append(out, pw)
 		}
-		f.Close()
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	Set(out)
 	return nil

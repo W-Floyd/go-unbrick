@@ -15,12 +15,22 @@ func runBrowseWeb(input string, skip []string, addr string) error {
 	if err != nil {
 		return err
 	}
-	return serveWeb(addr, web.BrowseHandler(b, web.BrowseOptions{
+	opts := web.BrowseOptions{
 		Title: infile.Base(input),
 		Recon: func(e analysis.BrowseEntry) (string, error) {
 			// One at a time (the handler's worker): runReconJob captures stdout, which is
 			// process-wide.
 			return stripANSI(runReconJob(reconJob{key: e.Key(), name: e.Name, osPath: e.OSPath, node: e.Node})), nil
 		},
-	}))
+	}
+	if infile.IsRemote(input) {
+		// Run by the same worker as Recon, one at a time, so the flag is this job's alone.
+		opts.ReconFull = func(e analysis.BrowseEntry) (string, error) {
+			prev := infile.FullDownload
+			infile.FullDownload = true
+			defer func() { infile.FullDownload = prev }()
+			return opts.Recon(e)
+		}
+	}
+	return serveWeb(addr, web.BrowseHandler(b, opts))
 }

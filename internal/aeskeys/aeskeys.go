@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path"
@@ -115,24 +116,20 @@ func Set(s []Secret) {
 	mu.Unlock()
 }
 
-// Load reads the keys and IVs in dir, replacing what was loaded.
+// Load reads the keys and IVs in dir and its subdirectories, replacing what was loaded.
 func Load(dir string) error {
-	es, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
 	var keys, ivs []Secret
-	for _, e := range es {
-		if e.IsDir() {
-			continue
+	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return err
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		raw, err := os.ReadFile(p)
 		if err != nil {
-			continue
+			return nil
 		}
 		b, err := hex.DecodeString(strings.TrimSpace(string(raw)))
 		if err != nil || len(b) != aes.BlockSize && len(b) != 24 && len(b) != 32 {
-			continue
+			return nil
 		}
 		stem := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 		s := Secret{Name: stem}
@@ -149,6 +146,10 @@ func Load(dir string) error {
 			s.Key = b
 			keys = append(keys, s)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	var out []Secret
 	for _, k := range keys {

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/W-Floyd/go-unbrick/internal/hashcache"
+	"github.com/W-Floyd/go-unbrick/internal/progress"
 )
 
 // IsRemote reports whether p names an http(s) or ssh:// URL rather than a local path.
@@ -148,8 +149,15 @@ func ReadFile(p string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: %d bytes is too large to fetch whole", Base(p), f.Size())
 	}
 	b := make([]byte, f.Size())
-	if _, err := f.ReadAt(b, 0); err != nil && err != io.EOF {
-		return nil, err
+	task := progress.Begin("downloading "+Base(p), f.Size())
+	defer task.End()
+	const step = 4 << 20
+	for off := 0; off < len(b); off += step {
+		end := min(off+step, len(b))
+		if _, err := f.ReadAt(b[off:end], int64(off)); err != nil && err != io.EOF {
+			return nil, err
+		}
+		task.Add(int64(end - off))
 	}
 	recordDigest(p, b)
 	return b, nil

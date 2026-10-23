@@ -67,6 +67,8 @@ format browse can reformat (currently: JSON) shows pretty-printed by default.
   backspace/h/←     go back up one level (lands back on what you came from)
   x                 extract the selected entry to the current directory
   p                 toggle a reformatted text file between pretty and raw
+  d                 download the selected entry in full and redo its report (for a remote input,
+                    what ranges cannot give)
   y                 copy the whole preview pane's text to the clipboard
   /                 filter the current list
   click / wheel     select, activate, or scroll with the mouse
@@ -318,6 +320,7 @@ type browseModel struct {
 	// recon queue's worker goroutine (Init does that, not newBrowseModel),
 	// so os.Stdout is still reliably the real terminal here.
 	termOut *os.File
+	remote  bool // the input is an ssh/http URL, so 'd' (full download) applies
 	status  string
 	width   int
 	height  int
@@ -332,6 +335,7 @@ func newBrowseModel(input string, skip []string, crawl bool) (*browseModel, erro
 		rq:       newReconQueue(),
 		skip:     skip,
 		termOut:  os.Stdout,
+		remote:   infile.IsRemote(input),
 	}
 	// Without this a long line just vanishes past the pane's width - no
 	// scrollbar, no indicator it's cut off, and no keybinding here for
@@ -466,6 +470,9 @@ func (m *browseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "p":
 				m.showRaw = !m.showRaw
 				m.showPreview()
+				return m, nil
+			case "d":
+				m.downloadSelected()
 				return m, nil
 			case "y":
 				// Our own mouse reporting (tea.MouseModeCellMotion, for
@@ -610,6 +617,9 @@ func (m *browseModel) View() tea.View {
 		}
 	} else if name, ok := m.rq.inflightDisplay(); ok {
 		status = m.spin.View() + " reconning " + name + "..."
+		if p := work.Text(); p != "" {
+			status = m.spin.View() + " reconning " + name + ": " + p
+		}
 	} else if status == "" {
 		status = strings.Join(m.breadcrumb(), " / ")
 	}
@@ -626,7 +636,15 @@ func (m *browseModel) View() tea.View {
 	// general-purpose version of every "stale content left on screen"
 	// symptom chased through this file - not specific to images, lists, or
 	// any particular code path, just two footer lines nothing ever padded.
-	content := body + "\n" + padToWidth(m.progressLine(), m.width) + "\n" + padToWidth(cLabel(status), m.width)
+	hint := "↵ open · ⌫ back · x extract · p raw · y copy · / filter · q quit"
+	if m.remote {
+		hint = "d download · " + hint
+	}
+	row := cLabel(status)
+	if gap := m.width - ansi.StringWidth(status) - ansi.StringWidth(hint); gap >= 2 {
+		row += strings.Repeat(" ", gap) + hint
+	}
+	content := body + "\n" + padToWidth(m.progressLine(), m.width) + "\n" + padToWidth(row, m.width)
 	v := tea.NewView(content)
 	v.MouseMode = tea.MouseModeCellMotion
 	// Without this, bubbletea renders inline below the shell prompt instead
@@ -1124,6 +1142,23 @@ func (m *browseModel) textPreview(e browseEntry) (string, bool) {
 
 func (m *browseModel) setStatus(s string) { m.status = s }
 
+// downloadSelected redoes the selected entry's report with full download on, for that
+// entry alone: what it needs more of than ranges give is fetched whole.
+func (m *browseModel) downloadSelected() {
+	e, ok := m.selected()
+	key, kok := reconKey(e)
+	if !ok || !kok {
+		m.setStatus("nothing to download here")
+		return
+	}
+	if !m.rq.redoFull(reconJob{key: key, name: e.name, osPath: e.osPath, node: e.node, full: true}) {
+		m.setStatus("already running: " + e.name)
+		return
+	}
+	m.showPreview()
+	m.setStatus("downloading " + e.name)
+}
+
 // maxPreemptiveRecon bounds how many of a frame's entries enqueueAll queues
 // up front. A directory of firmware files or a tar's members is dozens to a
 // few hundred - fine to recon all of in the background. A filesystem (an
@@ -1321,6 +1356,7 @@ func (m *browseModel) ascend() {
 type reconJob struct {
 	key, name, osPath string
 	node              *carve.Node
+	full              bool // run with infile.FullDownload on, for this job alone
 }
 
 // reconReadyMsg announces that job.key's report is in the cache now.
@@ -1602,6 +1638,29 @@ func (q *reconQueue) crawl() {
 	}
 }
 
+// redoFull drops job's report and queues it again at the front, to run with full
+// download. False if that entry is running right now.
+func (q *reconQueue) redoFull(job reconJob) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.inflightKey == job.key {
+		return false
+	}
+	if elem, ok := q.byKey[job.key]; ok {
+		q.pending.Remove(elem)
+		delete(q.byKey, job.key)
+	}
+	if elem, ok := q.lowByKey[job.key]; ok {
+		q.low.Remove(elem)
+		delete(q.lowByKey, job.key)
+	}
+	delete(q.cache, job.key)
+	q.seen[job.key] = true
+	q.byKey[job.key] = q.pending.PushFront(job)
+	q.cond.Broadcast()
+	return true
+}
+
 func (q *reconQueue) get(key string) (string, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1633,6 +1692,12 @@ func (q *reconQueue) inflightDisplay() (name string, ok bool) {
 // filename, e.g. "micom_sw.bin" - a random temp name would silently skip
 // those) — the same bytes 'x' would extract.
 func runReconJob(job reconJob) string {
+	if job.full {
+		// Safe like stderrIsTTY below: one job runs at a time.
+		prev := infile.FullDownload
+		infile.FullDownload = true
+		defer func() { infile.FullDownload = prev }()
+	}
 	path := job.osPath
 	if path == "" {
 		if job.node.RandomAccess() {

@@ -944,8 +944,8 @@ func runFileRecon(path string) error {
 	// Every non-archive branch reads the input whole; over HTTP that is the
 	// full download this route exists to avoid, so only a modest file is
 	// accepted.
-	if infile.IsRemote(path) && !archive && size > maxCascadeRead {
-		return fmt.Errorf("%s is %s and cannot be read by range; download it to recon it", infile.Base(path), humanBytes(size))
+	if infile.IsRemote(path) && !archive && size > maxCascadeRead && !infile.FullDownload {
+		return fmt.Errorf("%s is %s and is not a recognised archive, so recon must read it whole; pass --full-download to fetch it", infile.Base(path), humanBytes(size))
 	}
 	fmt.Printf("%s\n", infile.Base(path))
 	fmt.Printf("  Size:  %s\n", humanBytes(size))

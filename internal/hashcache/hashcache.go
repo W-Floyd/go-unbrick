@@ -145,8 +145,10 @@ func Put(key string, size int64, sum string, claimed bool) {
 		}
 		out = f
 	}
+	// Led by a newline: a peer killed mid-write leaves an unterminated line that would
+	// swallow this record. One write, so O_APPEND keeps concurrent processes' records whole.
 	b, _ := json.Marshal(r)
-	out.Write(append(b, '\n'))
+	out.Write(append(append([]byte{'\n'}, b...), '\n'))
 }
 
 // Reset forgets what is loaded and closes the store; for tests.
