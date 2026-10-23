@@ -904,6 +904,10 @@ func (e Entry) OneSided() (be BrowseEntry, ok bool) {
 		name = name[i+1:]
 	}
 	head := n.Head()
-	return BrowseEntry{Name: name, Size: n.Size, Label: TypeLabel(n.Name, head), Text: LooksLikeText(n.Name, head),
+	label := TypeLabel(n.Name, head)
+	if n.ZipLocked() {
+		label = "zip-encrypted (no working password)"
+	}
+	return BrowseEntry{Name: name, Size: n.Size, Label: label, Text: LooksLikeText(n.Name, head),
 		Image: LooksLikeImage(head), Node: n}, true
 }

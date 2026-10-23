@@ -1369,6 +1369,12 @@ func reconArchive(path string, bag *facts.Bag) error {
 	bar.Begin(len(expand))
 	for _, m := range expand {
 		base := filepath.Base(m.Name)
+		if m.Encrypted {
+			bar.Clear()
+			fmt.Printf("    %-26s [zip-encrypted (no working password)]\n", base)
+			bar.Advance()
+			continue
+		}
 		kind := filetype.Detect(m.Head)
 		bar.Describe("reading " + base)
 		if label, detail, ok := describeOTAMember(path, base, m); ok {

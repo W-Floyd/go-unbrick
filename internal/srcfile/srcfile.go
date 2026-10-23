@@ -10,6 +10,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/progress"
+	"github.com/W-Floyd/go-unbrick/internal/zipcrypto"
 )
 
 type kind int
@@ -85,18 +87,32 @@ type Member struct {
 	Name string
 	Size uint64
 	Head []byte
+	// Encrypted is true for a zip member encrypted with the traditional
+	// PKWARE cipher that no loaded password (ZipPasswords) opened: Head, if
+	// any, is sampled from its raw ciphertext, not real content.
+	Encrypted bool
 }
+
+// ZipPasswords, when set, is tried against an encrypted zip member found as a
+// top-level input (archive/zip members reached by nesting go through
+// carve.ZipPasswords instead, which this package cannot import -- see
+// internal/carve/zipcrypt.go). Unlike that hook, this one has no container
+// context to derive a password from (a top-level zip has no Node.Parent to
+// read a vendor's inventory file from), so it is meant for a plain,
+// user-supplied list (internal/zippasswords), not per-vendor derivation.
+var ZipPasswords func(member string) []string
 
 // entry is one regular file in an archive, however the archive stores it.
 type entry struct {
-	name   string
-	size   uint64
-	head   []byte // prefilled when reading the head again would be costly (tgz)
-	open   func() (io.ReadCloser, error)
-	at     io.ReaderAt // the member at random, when its container allows; nil otherwise
-	defl   *Deflated
-	crc    uint32 // the zip directory's checksum, when hasCRC
-	hasCRC bool
+	name      string
+	size      uint64
+	head      []byte // prefilled when reading the head again would be costly (tgz)
+	open      func() (io.ReadCloser, error)
+	at        io.ReaderAt // the member at random, when its container allows; nil otherwise
+	defl      *Deflated
+	crc       uint32 // the zip directory's checksum, when hasCRC
+	hasCRC    bool
+	encrypted bool // a zip member encrypted with the traditional PKWARE cipher that no loaded password opened: at/defl, if set, are its raw ciphertext, not real content
 	// srcOff and srcLen are where the member's bytes sit in the archive file
 	// (compressed, for a deflated zip member), when hasSrc.
 	srcOff, srcLen int64
@@ -176,6 +192,11 @@ func openArchiveUncached(path string) (*archive, error) {
 			e.srcFn = func() (int64, int64, bool) {
 				off, ok := lo.get()
 				return off, int64(f.CompressedSize64), ok
+			}
+			if f.Flags&0x1 != 0 && f.Method != 99 { // traditional PKWARE cipher; AES (method 99) not handled
+				setEncryptedEntry(&e, f, lo, in)
+				a.entries = append(a.entries, e)
+				continue
 			}
 			switch f.Method {
 			case zip.Store:
@@ -283,7 +304,7 @@ func Members(path string, headLen int) ([]Member, error) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, headReaders)
 	for i, e := range a.entries {
-		out[i] = Member{Name: e.name, Size: e.size}
+		out[i] = Member{Name: e.name, Size: e.size, Encrypted: e.encrypted}
 		if headLen <= 0 {
 			continue // names and sizes only: opening each member would decode it for nothing
 		}
@@ -341,6 +362,10 @@ type Entry struct {
 	// where that costs a read per member (a zip): nil when the fields above are set.
 	SrcFn     func() (off, length int64, ok bool)
 	DeflateFn func() *Deflated
+	// Encrypted is true for a zip member encrypted with the traditional
+	// PKWARE cipher that no loaded password (ZipPasswords) opened: At/Deflate,
+	// if set, are its raw ciphertext, not real content.
+	Encrypted bool
 }
 
 // Entries lists path's members for reading, which stays possible until close.
@@ -356,7 +381,7 @@ func Entries(path string) ([]Entry, io.Closer, error) {
 	out := make([]Entry, 0, len(a.entries))
 	for _, e := range a.entries {
 		out = append(out, Entry{Name: e.name, Size: e.size, Open: e.open, At: e.at, Deflate: e.defl, CRC32: e.crc, HasCRC: e.hasCRC,
-			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc, Modified: e.modified, SrcFn: e.srcFn, DeflateFn: e.deflFn})
+			SrcOff: e.srcOff, SrcLen: e.srcLen, HasSrc: e.hasSrc, Modified: e.modified, SrcFn: e.srcFn, DeflateFn: e.deflFn, Encrypted: e.encrypted})
 	}
 	return out, closerFunc(a.close), nil
 }
@@ -498,4 +523,63 @@ func (a *lazyAt) ReadAt(p []byte, off int64) (int, error) {
 		return 0, fmt.Errorf("srcfile: no data offset for %s", a.lo.f.Name)
 	}
 	return io.NewSectionReader(a.ra, start, a.size).ReadAt(p, off)
+}
+
+// setEncryptedEntry fills e for f, a member encrypted with the traditional
+// PKWARE cipher: tried against every ZipPasswords candidate (there is no
+// container to derive one from at this level -- see ZipPasswords), same
+// check-byte convention as internal/carve/zipcrypt.go's decryptedZipMember.
+// Opened, e.at or e.defl is the plaintext. Not opened, e.encrypted is set and
+// e.at is the raw on-disk bytes (the zipcrypto header, then the still-
+// compressed ciphertext) rather than handing an undecrypted deflate stream to
+// a plain deflate reader, which would just fail reading it.
+func setEncryptedEntry(e *entry, f *zip.File, lo *lazyOffset, in io.ReaderAt) {
+	start, ok := lo.get()
+	rawSize := int64(f.CompressedSize64)
+	if !ok {
+		e.encrypted = true
+		e.open = func() (io.ReadCloser, error) {
+			return nil, fmt.Errorf("srcfile: %s: no data offset", f.Name)
+		}
+		return
+	}
+	data := io.NewSectionReader(in, start, rawSize)
+	var pws []string
+	if ZipPasswords != nil {
+		pws = ZipPasswords(f.Name)
+	}
+	checks := []byte{byte(f.CRC32 >> 24), byte(f.ModifiedTime >> 8)}
+	if f.Flags&0x8 != 0 {
+		checks[0], checks[1] = checks[1], checks[0]
+	}
+	plainSize := rawSize - zipcrypto.HeaderLen
+	if r, _, ok := zipcrypto.TryPasswords(data, plainSize, pws, checks...); ok {
+		if f.Method == zip.Deflate {
+			e.defl = &Deflated{R: r, Start: 0, End: plainSize}
+			e.open = func() (io.ReadCloser, error) {
+				return flate.NewReader(io.NewSectionReader(r, 0, r.Size())), nil
+			}
+		} else {
+			e.at = r
+			e.open = func() (io.ReadCloser, error) {
+				return io.NopCloser(io.NewSectionReader(r, 0, r.Size())), nil
+			}
+		}
+		return
+	}
+	// No password opened it: never hand the still-encrypted bytes to the
+	// native zip reader's Open (it would try to inflate ciphertext as if it
+	// were a valid deflate stream and fail reading it) -- report plainly
+	// instead, and expose the raw on-disk bytes only through At, for a
+	// caller that wants them anyway (see Node.ZipLocked).
+	e.encrypted = true
+	e.at = &lazyAt{lo: lo, ra: in, size: rawSize}
+	e.open = func() (io.ReadCloser, error) {
+		return nil, fmt.Errorf("srcfile: %s is encrypted; no working password", f.Name)
+	}
+	// e.size defaults to f.UncompressedSize64 (the plaintext length), but
+	// e.at above only has rawSize (on-disk: header + still-compressed
+	// ciphertext) bytes behind it -- report what's actually readable, not
+	// the plaintext size nothing here can produce.
+	e.size = uint64(rawSize)
 }

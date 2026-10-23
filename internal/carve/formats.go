@@ -237,7 +237,12 @@ func expandInput(n *Node) ([]*Node, error) {
 				k.deflFn = e.DeflateFn
 			}
 		}
-		if e.HasCRC {
+		if e.Encrypted {
+			// e.CRC32 describes the plaintext; these bytes are still the
+			// ciphertext, so no crc32 claim is made on them (see
+			// srcfile.setEncryptedEntry).
+			k.zipLocked = true
+		} else if e.HasCRC {
 			withClaim(k, "crc32", fmt.Sprintf("%08x", e.CRC32), int64(e.Size))
 		}
 		switch {
@@ -271,6 +276,20 @@ func expandZip(n *Node) ([]*Node, error) {
 		size := int64(f.UncompressedSize64)
 		// An encrypted member is opened with the vendor's password, when it has one.
 		if k := decryptedZipMember(n, f, ra); k != nil {
+			out = append(out, k)
+			continue
+		}
+		// No password opened it (or none was even tried): expose the raw
+		// on-disk bytes (the zipcrypto header, then the still-compressed
+		// ciphertext) rather than handing a deflated-and-encrypted stream to
+		// a plain deflate reader, which would just fail reading it -- see
+		// Node.ZipLocked. f.CRC32/UncompressedSize64 describe the plaintext,
+		// not these bytes, so no crc32 claim is made on them.
+		if zipEncrypted(f) {
+			size := int64(f.CompressedSize64)
+			k := FromReaderAt(f.Name, &zipStored{f: f, ra: ra, size: size}, size)
+			k.Modified = f.Modified
+			k.zipLocked = true
 			out = append(out, k)
 			continue
 		}

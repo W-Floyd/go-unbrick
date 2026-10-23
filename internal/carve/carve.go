@@ -65,7 +65,18 @@ type Node struct {
 
 	// Modified is when the container records n was last changed, if it records one.
 	Modified time.Time
+
+	// zipLocked is true for a zip member encrypted with the traditional
+	// PKWARE cipher that no loaded password opened: n's bytes, if read, are
+	// the raw ciphertext (undecrypted, and for a deflated member still
+	// compressed on top of that), not meaningful content -- see ZipLocked.
+	zipLocked bool
 }
+
+// ZipLocked reports whether n is an encrypted zip member no loaded password
+// opened. Reading n still returns bytes (its ciphertext, so callers that
+// don't check this don't crash on it), but they are not n's real content.
+func (n *Node) ZipLocked() bool { return n.zipLocked }
 
 // Open returns the root node for an input path or URL.
 // It is one node per input for the process, so what is expanded once (a

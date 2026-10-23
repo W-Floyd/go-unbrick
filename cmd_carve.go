@@ -16,6 +16,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
@@ -28,6 +29,12 @@ func carveRoot(input string) (*carve.Node, error) {
 	carveOnce.Do(func() {
 		carve.Register(vendor.CarveExpanders()...)
 		carve.ZipPasswords = zippasswords.WithVendor(vendor.ZipPasswords)
+		// A zip given directly as the input (not nested inside another
+		// container) is read through srcfile, not carve's own zip Expander,
+		// so it needs its own hook -- no vendor derivation here (there's no
+		// container to read a sibling inventory file from), just the
+		// user-supplied list.
+		srcfile.ZipPasswords = func(string) []string { return zippasswords.Passwords() }
 		carve.Register(encryptedExpander())
 	})
 	if secretsLoaded() == 0 {
@@ -143,9 +150,12 @@ func listNode(n *carve.Node, indent string, depth int) error {
 		label := "directory"
 		name := k.Name
 		isContainer := k.IsDirNode()
-		if isContainer {
+		switch {
+		case isContainer:
 			name += "/"
-		} else {
+		case k.ZipLocked():
+			label = "zip-encrypted (no working password)"
+		default:
 			label = cachedTypeLabel(k.Name, k.Head())
 			if k.Size == 0 {
 				label = "empty"
@@ -495,6 +505,8 @@ func (t *treePrinter) printFile(f *carve.Node, name, prefix, branch, next, at st
 	switch {
 	case kind != "":
 		label = "  [" + kind + "]"
+	case f.ZipLocked():
+		label = "  [zip-encrypted (no working password)]"
 	case t.types:
 		label = "  [" + cachedTypeLabel(name, f.Head()) + "]"
 	}

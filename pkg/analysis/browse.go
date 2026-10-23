@@ -182,6 +182,9 @@ func ListGroup(g Group) *BrowseLevel {
 		}
 		name := strings.TrimPrefix(k.Name, g.Prefix)
 		label := TypeLabel(k.Name, k.Head())
+		if k.ZipLocked() {
+			label = "zip-encrypted (no working password)"
+		}
 		if label == string(filetype.Unknown) && probes < deepProbesPerLevel {
 			l2, probed := deepLabel(k.Size, k.Head(), k.Bytes)
 			if probed {

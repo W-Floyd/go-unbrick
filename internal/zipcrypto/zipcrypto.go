@@ -119,6 +119,25 @@ type ReaderAt struct {
 	}
 }
 
+// TryPasswords attempts every password in passwords, in order, against src
+// (an encrypted member's data starting at its 12-byte header, size its
+// plaintext length), under each of checks (a zip's check byte is the high
+// byte of its CRC-32 or, with a data descriptor, of its DOS time -- vendors
+// have been seen to use either, so a caller unsure which passes both). The
+// first password to pass the header check wins; returns it alongside the
+// opened reader. Shared by every caller that tries a zip password (a nested
+// member, a top-level archive input) so the trying logic lives in one place.
+func TryPasswords(src io.ReaderAt, size int64, passwords []string, checks ...byte) (r *ReaderAt, password string, ok bool) {
+	for _, pw := range passwords {
+		for _, c := range checks {
+			if r, err := NewReaderAt(src, size, []byte(pw), c); err == nil {
+				return r, pw, true
+			}
+		}
+	}
+	return nil, "", false
+}
+
 // NewReaderAt opens a member: src is its data starting at the 12-byte header, size
 // its plaintext length. It fails with ErrPassword if the header refutes the
 // password.

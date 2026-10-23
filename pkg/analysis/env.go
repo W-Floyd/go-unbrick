@@ -5,6 +5,7 @@ import (
 
 	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
 	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 )
@@ -26,6 +27,11 @@ func UseVendors() {
 	vendorsOnce.Do(func() {
 		carve.Register(vendor.CarveExpanders()...)
 		carve.ZipPasswords = zippasswords.WithVendor(vendor.ZipPasswords)
+		// A zip given directly as the input, not nested inside another
+		// container, is read through srcfile instead -- no vendor derivation
+		// there (no container to read a sibling inventory file from), just
+		// the user-supplied list.
+		srcfile.ZipPasswords = func(string) []string { return zippasswords.Passwords() }
 	})
 }
 
