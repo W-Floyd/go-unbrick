@@ -61,6 +61,20 @@ func (s Secret) DecryptHead(blk cipher.Block, head []byte) []byte {
 	return out
 }
 
+// Opens reports whether s decrypts head to plaintext rather than the noise a wrong key leaves: the test a
+// loaded secret passes to open a member, for a candidate that is not loaded.
+func (s Secret) Opens(head []byte) bool {
+	if len(head) < 2*aes.BlockSize {
+		return false
+	}
+	blk, err := aes.NewCipher(s.Key)
+	if err != nil {
+		return false
+	}
+	plain := s.DecryptHead(blk, head)
+	return plain != nil && Proven(plain)
+}
+
 // HighEntropy reports bytes as close to uniform as ciphertext or compressed data, and enough of
 // them to tell: what is left once no format is seen.
 func HighEntropy(b []byte) bool {
