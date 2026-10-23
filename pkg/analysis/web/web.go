@@ -366,7 +366,7 @@ func (s *server) raw(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, errors.New("only a file on one side has a raw form"))
 		return
 	}
-	serveRaw(w, r, be, s.opts.ImageCap, s.opts.AllowDownload, s.fail)
+	serveRaw(w, r, be, s.opts.ImageCap, s.opts.AllowDownload, nil, s.fail) // a comparison's downloads do not feed a host's content-hash cache
 }
 
 // progressHandler lists the long-running work in flight (unpacking an archive,

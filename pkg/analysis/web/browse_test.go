@@ -1,6 +1,9 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -181,4 +184,37 @@ func TestBrowsePreviewOfABinaryListsItsStrings(t *testing.T) {
 	if p.Kind != "binary" || len(p.Strings) != 1 || p.Strings[0] != "a printable string here" {
 		t.Errorf("%+v", p)
 	}
+}
+
+// A download has OnRead told the sha256 of the whole entry, only once it is all read; an inline image preview
+// (never the whole file, and not a download) does not call it.
+func TestBrowseRawDownloadCallsOnRead(t *testing.T) {
+	var got []string
+	srv := browseServe(t, BrowseOptions{OnRead: func(e analysis.BrowseEntry, sha256 string, size int64) {
+		got = append(got, fmt.Sprintf("%s:%s:%d", e.Name, sha256, size))
+	}})
+	body := "hello <b>world</b>\n"
+	want := sha256Hex([]byte(body))
+	resp, err := http.Get(srv.URL + "/api/raw?name=notes.txt&download=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("download: %s", resp.Status)
+	}
+	if want2 := fmt.Sprintf("notes.txt:%s:%d", want, len(body)); len(got) != 1 || got[0] != want2 {
+		t.Errorf("OnRead = %v, want [%q]", got, want2)
+	}
+	if resp, _ := http.Get(srv.URL + "/api/raw?name=pic.png"); resp != nil {
+		resp.Body.Close()
+	}
+	if len(got) != 1 {
+		t.Errorf("an inline image preview called OnRead too: %v", got)
+	}
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

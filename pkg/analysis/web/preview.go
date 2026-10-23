@@ -2,8 +2,11 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"strings"
@@ -88,7 +91,7 @@ func buildPreview(e analysis.BrowseEntry, raw bool, previewCap int64, redact fun
 
 // serveRaw streams an entry: an image inline (capped), or any file as a download
 // if the caller may.
-func serveRaw(w http.ResponseWriter, r *http.Request, e analysis.BrowseEntry, imageCap int64, allowDownload func(*http.Request) bool, fail func(http.ResponseWriter, int, error)) {
+func serveRaw(w http.ResponseWriter, r *http.Request, e analysis.BrowseEntry, imageCap int64, allowDownload func(*http.Request) bool, onRead func(e analysis.BrowseEntry, sha256 string, size int64), fail func(http.ResponseWriter, int, error)) {
 	if e.Dir || (e.OSPath == "" && e.Node == nil) {
 		fail(w, http.StatusBadRequest, errors.New("nothing to read"))
 		return
@@ -124,5 +127,13 @@ func serveRaw(w http.ResponseWriter, r *http.Request, e analysis.BrowseEntry, im
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		body = io.LimitReader(body, imageCap)
 	}
-	io.Copy(w, body)
+	var h hash.Hash
+	if download && onRead != nil {
+		h = sha256.New()
+		body = io.TeeReader(body, h)
+	}
+	n2, err := io.Copy(w, body)
+	if h != nil && err == nil {
+		onRead(e, hex.EncodeToString(h.Sum(nil)), n2) // the whole entry has now been read, successfully
+	}
 }

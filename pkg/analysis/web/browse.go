@@ -35,6 +35,11 @@ type BrowseOptions struct {
 	// Recon, when set, adds a report to the preview of every file, run in the
 	// background.
 	Recon ReconFunc
+	// OnRead, when set, is told the sha256 and size of an entry's whole content the moment a download
+	// (GET /api/raw?download=1) has read all of it: the handler has to read it anyway, so a host that
+	// keeps its own content-hash cache can save the bytes it was going to compute itself. Not called for
+	// the capped inline preview of an image, which never reads the whole entry.
+	OnRead func(e analysis.BrowseEntry, sha256 string, size int64)
 	// Redact is applied to the errors the handler sends (see Options.Redact).
 	Redact func(string) string
 }
@@ -133,13 +138,17 @@ func (s *browseServer) locate(r *http.Request) (*analysis.BrowseLevel, analysis.
 // applyFilters compiles match/grep and, if they differ from what is currently
 // applied, updates the browser's filters (analysis.Browser.SetFilters) to match.
 // A no-op when both are already current, so navigating within an unchanged
-// filter doesn't re-open the input on every request.
+// filter doesn't re-open the input on every request. filterMu is held for the
+// whole call, not just the check: a page's own first several requests can
+// land before any has finished, all finding the filter not yet set, and
+// SetFilters (it writes the process-global BrowseMatch/BrowseGrep/BrowseDepth,
+// and swaps what the browser's level cache points to) is not meant to be
+// called twice at once for the one browser.
 func (s *browseServer) applyFilters(match, grep string) error {
 	key := match + "\x00" + grep
 	s.filterMu.Lock()
-	unchanged := key == s.curFilter
-	s.filterMu.Unlock()
-	if unchanged {
+	defer s.filterMu.Unlock()
+	if key == s.curFilter {
 		return nil
 	}
 	var matchRe, grepRe *regexp.Regexp
@@ -157,9 +166,7 @@ func (s *browseServer) applyFilters(match, grep string) error {
 	if err := s.b.SetFilters(matchRe, grepRe, analysis.BrowseDepth); err != nil {
 		return err
 	}
-	s.filterMu.Lock()
 	s.curFilter = key
-	s.filterMu.Unlock()
 	return nil
 }
 
@@ -247,7 +254,7 @@ func (s *browseServer) raw(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusNotFound, err)
 		return
 	}
-	serveRaw(w, r, e, s.opts.ImageCap, s.opts.AllowDownload, s.fail)
+	serveRaw(w, r, e, s.opts.ImageCap, s.opts.AllowDownload, s.opts.OnRead, s.fail)
 }
 
 // ---- syntax highlighting ----

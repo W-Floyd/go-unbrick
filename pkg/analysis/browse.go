@@ -618,7 +618,10 @@ type Browser struct {
 
 	mu   sync.RWMutex // guards root and lc: SetFilters replaces both under a live server
 	root *BrowseLevel
-	lc   levelCache[*BrowseLevel]
+	// lc is a pointer so SetFilters can swap in a fresh one: LevelAt reads it once, under mu, and then uses that
+	// value without mu held, so replacing what it points to (not what is at its address) is what keeps a LevelAt
+	// already under way safe, on its own cache, instead of racing SetFilters for the same memory.
+	lc *levelCache[*BrowseLevel]
 
 	// OnOpen, when set, is told about an entry the moment LevelAt opens it (lists its children, decrypting it
 	// first if it is an encrypted image a loaded key opens): e is the entry, sub its children, nil if it could
@@ -633,14 +636,14 @@ func NewBrowser(input string, skip []string) (*Browser, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Browser{input: input, skip: skip, root: root}, nil
+	return &Browser{input: input, skip: skip, root: root, lc: &levelCache[*BrowseLevel]{}}, nil
 }
 
 // LevelAt is the level at a path of entry names. Entry names that are directories
 // or containers are as listed ("sub", "pkg.tar").
 func (b *Browser) LevelAt(path []string) (*BrowseLevel, error) {
 	b.mu.RLock()
-	root, lc := b.root, &b.lc
+	root, lc := b.root, b.lc
 	b.mu.RUnlock()
 	return lc.at(root, path, func(cur *BrowseLevel, name string) (*BrowseLevel, error) {
 		e, ok := cur.Find(name)
@@ -669,7 +672,7 @@ func (b *Browser) SetFilters(match, grep *regexp.Regexp, depth int) error {
 		return err
 	}
 	b.mu.Lock()
-	b.root, b.lc = root, levelCache[*BrowseLevel]{}
+	b.root, b.lc = root, &levelCache[*BrowseLevel]{} // a new one: a LevelAt already under way keeps the old, intact
 	b.mu.Unlock()
 	return nil
 }

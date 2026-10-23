@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -290,4 +291,45 @@ func TestBrowserOnOpen(t *testing.T) {
 	if len(seen) != 3 || seen[2] != "pkg.tar/m.txt:fail" {
 		t.Errorf("a failed open: %v", seen)
 	}
+}
+
+// LevelAt already under way must not race a concurrent SetFilters reopening the input and discarding the
+// cache: a Browser is shared by every request a browse page serves, and SetFilters (the caller's job to not
+// call twice at once: it also writes the process-global BrowseMatch/BrowseGrep/BrowseDepth) can land while
+// others are already reading levels. Under -race this failed before LevelAt stopped holding the address of a
+// field SetFilters replaces in place.
+func TestBrowserLevelAtDuringSetFiltersIsSafe(t *testing.T) {
+	old := BrowseMatch
+	t.Cleanup(func() { BrowseMatch = old })
+	dir := browseFixture(t)
+	b, err := NewBrowser(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.LevelAt(nil); err != nil { // warm the cache SetFilters will discard
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					b.LevelAt(nil)
+					b.LevelAt([]string{"sub"})
+				}
+			}
+		}()
+	}
+	re := regexp.MustCompile(`^sub/`)
+	if err := b.SetFilters(re, nil, 3); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	wg.Wait()
 }
