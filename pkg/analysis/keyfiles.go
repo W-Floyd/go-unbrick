@@ -103,8 +103,8 @@ func RefreshKnown(files []KeyFile) {
 func (k *KeyScan) Done() { resolveIVNames(k.Files) }
 
 // FindKeyFiles is ScanKeys' key files alone.
-func FindKeyFiles(ctx context.Context, input string, depth int, progress func(opened, found int, at string)) ([]KeyFile, error) {
-	k, err := ScanKeys(ctx, input, depth, progress)
+func FindKeyFiles(ctx context.Context, input string, depth int, skip []string, progress func(opened, found int, at string)) ([]KeyFile, error) {
+	k, err := ScanKeys(ctx, input, depth, skip, progress)
 	if k == nil {
 		return nil, err
 	}
@@ -114,10 +114,11 @@ func FindKeyFiles(ctx context.Context, input string, depth int, progress func(op
 // ScanKeys looks through input (a directory, or a file carve opens), going into containers down to depth
 // levels as the secrets loaded (LoadSecrets) allow, for the key files the vendors name
 // (vendor.KeyFilePatterns), and for which loaded secret opens each encrypted member. An encrypted image is
-// only gone into if a key opens it. It stops, with what it has so far, when ctx ends. progress, if set, is told
+// only gone into if a key opens it. skip leaves out entries whose path matches (see SkipPath); a skipped
+// container is not opened. It stops, with what it has so far, when ctx ends. progress, if set, is told
 // after each container is opened how many have been, how many key files are found so far, and the path of
 // the container just opened.
-func ScanKeys(ctx context.Context, input string, depth int, progress func(opened, found int, at string)) (*KeyScan, error) {
+func ScanKeys(ctx context.Context, input string, depth int, skip []string, progress func(opened, found int, at string)) (*KeyScan, error) {
 	opened := 0
 	top, err := OpenInput(input, nil)
 	if err != nil {
@@ -129,6 +130,9 @@ func ScanKeys(ctx context.Context, input string, depth int, progress func(opened
 		for _, e := range l.Entries {
 			if ctx.Err() != nil {
 				return
+			}
+			if SkipPath(skip, e.Path) {
+				continue
 			}
 			dir := e.Dir || e.Group != nil
 			if !dir && IsKeyFile(e.Path) {

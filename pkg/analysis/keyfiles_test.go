@@ -45,7 +45,7 @@ func TestFindKeyFiles(t *testing.T) {
 
 	var opened int
 	var last string
-	got, err := FindKeyFiles(context.Background(), dir, 3, func(o, f int, at string) { opened, last = o, at })
+	got, err := FindKeyFiles(context.Background(), dir, 3, nil, func(o, f int, at string) { opened, last = o, at })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestFindKeyFiles(t *testing.T) {
 		t.Errorf("progress said %d containers opened, last %q", opened, last)
 	}
 	// Depth 0 does not open containers.
-	got, _ = FindKeyFiles(context.Background(), dir, 0, nil)
+	got, _ = FindKeyFiles(context.Background(), dir, 0, nil, nil)
 	for _, k := range got {
 		if k.Path == "pkg.tar/enc/etc/iv.dat" {
 			t.Error("depth 0 opened a container")
@@ -78,7 +78,7 @@ func TestFindKeyFiles(t *testing.T) {
 	// A cancelled search says so.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := FindKeyFiles(ctx, dir, 3, nil); err == nil {
+	if _, err := FindKeyFiles(ctx, dir, 3, nil, nil); err == nil {
 		t.Error("a cancelled search did not say so")
 	}
 }
@@ -113,7 +113,7 @@ func TestScanKeysSaysWhichSecretOpensWhichMember(t *testing.T) {
 	rand.New(rand.NewSource(1)).Read(noise)
 	os.WriteFile(filepath.Join(dir, "enc_noise.bin"), noise, 0o644)
 
-	got, err := ScanKeys(context.Background(), dir, 5, nil)
+	got, err := ScanKeys(context.Background(), dir, 5, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestKeyFilesNameTheIVFileThatGoesWithTheKeyBeside(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, sys, "etc", "image.dat"), []byte(hex.EncodeToString(key)+"\n"), 0o644)
 		os.WriteFile(filepath.Join(dir, sys, "etc", "iv.dat"), []byte(hex.EncodeToString(iv)+"\n"), 0o644)
 	}
-	got, err := ScanKeys(context.Background(), dir, 3, nil)
+	got, err := ScanKeys(context.Background(), dir, 3, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,5 +190,25 @@ func TestRefreshKnownSeesKeysAddedSince(t *testing.T) {
 	RefreshKnown(files)
 	if !strings.Contains(files[0].Known, "later") {
 		t.Errorf("after the key was added: %q", files[0].Known)
+	}
+}
+
+// skip leaves entries out: a container that matches is not opened, so what it holds (a key file deep inside
+// it) is never found either.
+func TestScanKeysSkip(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "navi_backup.tar1"), 0o755) // stands in for a container nothing should open
+	os.WriteFile(filepath.Join(dir, "navi_backup.tar1", "iv.dat"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, "iv.dat"), []byte("y"), 0o644)
+	got, err := ScanKeys(context.Background(), dir, 3, []string{`(^|/)navi_backup\.tar\d*$`}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, f := range got.Files {
+		paths = append(paths, f.Path)
+	}
+	if strings.Join(paths, ",") != "iv.dat" {
+		t.Errorf("found %v, want only the top-level iv.dat", paths)
 	}
 }
