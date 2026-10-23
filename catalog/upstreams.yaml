@@ -27,7 +27,7 @@
 upstreams:
   - id: u-boot
     names: [uboot]
-    repo: https://source.denx.de/u-boot/u-boot.git
+    repo: https://git.u-boot-project.org/u-boot/u-boot.git
     osv: https://github.com/u-boot/u-boot
     tag: "v{version}"
     version:
