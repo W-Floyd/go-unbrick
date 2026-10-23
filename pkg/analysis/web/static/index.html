@@ -36,7 +36,7 @@
   </template>
 </nav>
 
-<main :class="{ 'detail-open': detail }">
+<main :class="'layout-' + layout">
   <section class="list" role="listbox" aria-label="Differences">
     <div class="row up" x-show="path.length" @click="up()">↑ ..</div>
     <template x-for="e in entries" :key="e.name">
@@ -53,7 +53,10 @@
 
   <section class="pane">
     <div class="tabs">
-      <button class="back" type="button" @click="hideDetail()">&larr; list</button>
+      <span class="layout">
+        <button type="button" @click="setLayout(layout === 'list' ? 'split' : 'list')" :aria-pressed="layout === 'list'" x-text="layout === 'list' ? '\u25b4 show' : '\u25be hide'" title="collapse this panel"></button>
+        <button type="button" @click="setLayout(layout === 'full' ? 'split' : 'full')" :aria-pressed="layout === 'full'" x-text="layout === 'full' ? '\u2921 list' : '\u2922 full'" title="make this panel the whole screen"></button>
+      </span>
       <template x-for="v in views" :key="v">
         <button :class="{on: view === v}" @click="setView(v)" x-text="v"></button>
       </template>

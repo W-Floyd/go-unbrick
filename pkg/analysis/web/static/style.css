@@ -61,19 +61,25 @@ table.meta { font: 12.5px ui-monospace, monospace; margin-top: 8px; } table.meta
 .hx .asc { margin-left: 1ch; color: var(--dim); }
 .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--mid); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.back { display: none; }
-/* A phone shows one pane at a time: the list, then the entry you tapped, with a way back. */
+.layout { display: none; }
+/* A phone: the list over the entry. The entry's panel can be collapsed to its bar, or made the whole screen. */
 @media (max-width: 760px) {
   main { flex-direction: column; }
-  .list { width: auto; flex: 1; border-right: 0; }
-  main.detail-open .list, main:not(.detail-open) .pane { display: none; }
-  .back { display: inline-block; }
+  .list { width: auto; flex: 0 0 40%; border-right: 0; border-bottom: 1px solid var(--line); }
+  main.layout-list .list { flex: 1; }
+  main.layout-list .pane { flex: none; }
+  main.layout-list .pane .detail { display: none; }
+  main.layout-list .pane .tabs > :not(.layout) { display: none; }
+  main.layout-full .list { display: none; }
+  .layout { display: inline-flex; gap: 6px; margin-left: auto; }
   header { padding: 6px 10px; gap: 2px 10px; }
   header strong { font-size: 14px; overflow-wrap: anywhere; }
   .summary { font-size: 12px; }
   nav.crumbs { padding: 6px 10px; overflow-x: auto; white-space: nowrap; }
   .row { padding: 9px 12px; }
-  .row .go { padding: 6px 12px; font-size: 20px; }
+  /* the open button is the whole height of the row, at its edge, and wide enough for a thumb */
+  .row { align-items: center; }
+  .list .row .go { align-self: stretch; display: flex; align-items: center; justify-content: center; min-width: 52px; margin: -9px -12px -9px 4px; padding: 0 14px; font-size: 22px; border-left: 1px solid var(--line); border-radius: 0; }
   .tabs { flex-wrap: wrap; padding: 6px 10px; }
   .tabs button, button.open { padding: 7px 12px; }
   .filters { flex-wrap: wrap; padding: 6px 10px; }

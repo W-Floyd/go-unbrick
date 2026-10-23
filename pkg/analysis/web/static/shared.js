@@ -37,7 +37,7 @@ window.unbrick = (() => {
     path: [],
     sel: '',
     entries: [],
-    detail: false, // on a phone, the entry is shown instead of the list
+    layout: 'split', // on a phone: the list over the entry ('split'), the list alone ('list'), or the entry alone ('full')
     _urlPath: '',
 
     levelQuery() { return this.path.map((p) => ['p', p]); },
@@ -69,10 +69,7 @@ window.unbrick = (() => {
       this.fromFragment(location.hash);
       this._urlPath = this.path.join('\0');
       for (const k of ['path', 'sel', ...(cfg.watch || [])]) this.$watch(k, () => this.toFragment());
-      window.addEventListener('popstate', () => {
-        if (this.detail) { this.detail = false; return; } // Back from an entry to the list
-        this.restore();
-      });
+      window.addEventListener('popstate', () => this.restore());
     },
     async restore() {
       this.fromFragment(location.hash);
@@ -82,7 +79,6 @@ window.unbrick = (() => {
     },
 
     async up() {
-      this.detail = false;
       if (!this.path.length) return;
       const from = this.path[this.path.length - 1];
       this.path = this.path.slice(0, -1);
@@ -93,29 +89,24 @@ window.unbrick = (() => {
     async goTo(n) { while (this.path.length > n) await this.up(); },
     // enter goes into a level: the page decides first whether there is one.
     async enter(name) {
-      this.detail = false;
       this.path = [...this.path, name];
       this.sel = ''; this.entries = [];
       if (cfg.onMove) cfg.onMove(this);
       await this.loadLevel();
     },
 
-    // narrow says the window is a phone's: one pane at a time, the list or the entry.
+    // narrow says the window is a phone's: the list over the entry, rather than beside it.
     narrow() { return window.matchMedia('(max-width: 760px)').matches; },
-    // tap is a touch on a row: it selects it, and on a phone goes into a directory or shows the entry.
+    // tap is a touch on a row: it selects it, and on a phone goes into a directory, or brings the entry back
+    // if the bottom panel had been collapsed.
     async tap(e) {
       await this.select(e);
       if (!this.narrow()) return;
       if (cfg.isDir ? cfg.isDir(e) : e.dir) { await this.open(e); return; }
-      this.detail = true;
-      history.pushState({ detail: true }, '', location.href);
-      this.$nextTick(() => document.querySelector('.detail')?.scrollTo(0, 0));
+      if (this.layout === 'list') this.layout = 'split';
     },
-    // hideDetail goes back from the entry to the list, as Back does.
-    hideDetail() {
-      if (history.state && history.state.detail) history.back();
-      else this.detail = false;
-    },
+    // setLayout collapses the bottom panel, or makes it the whole screen, or puts the split back.
+    setLayout(l) { this.layout = l; },
 
     key(ev) {
       if (ev.target.closest('input,textarea') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -128,7 +119,7 @@ window.unbrick = (() => {
         case 'j': case 'ArrowDown': move(1); break;
         case 'k': case 'ArrowUp': move(-1); break;
         case 'Enter': case 'l': case 'ArrowRight': if (this.entries[i]) this.open(this.entries[i]); break;
-        case 'h': case 'ArrowLeft': case 'Backspace': if (this.detail) this.hideDetail(); else this.up(); break;
+        case 'h': case 'ArrowLeft': case 'Backspace': this.up(); break;
         default:
           if (!cfg.keys || !cfg.keys(ev, this)) return;
       }

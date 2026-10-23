@@ -33,7 +33,7 @@
   <span class="err" x-show="filterError" x-text="filterError"></span>
 </div>
 
-<main :class="{ 'detail-open': detail }">
+<main :class="'layout-' + layout">
   <section class="list" role="listbox" aria-label="Entries">
     <div class="row up" x-show="path.length" @click="up()">↑ ..</div>
     <template x-for="e in entries" :key="e.name + e.size">
@@ -50,7 +50,10 @@
 
   <section class="pane">
     <div class="tabs">
-      <button class="back" type="button" @click="hideDetail()">&larr; list</button>
+      <span class="layout">
+        <button type="button" @click="setLayout(layout === 'list' ? 'split' : 'list')" :aria-pressed="layout === 'list'" x-text="layout === 'list' ? '\u25b4 show' : '\u25be hide'" title="collapse this panel"></button>
+        <button type="button" @click="setLayout(layout === 'full' ? 'split' : 'full')" :aria-pressed="layout === 'full'" x-text="layout === 'full' ? '\u2921 list' : '\u2922 full'" title="make this panel the whole screen"></button>
+      </span>
       <label x-show="cur && cur.canPretty"><input type="checkbox" x-model="pretty" @change="reload()"> pretty</label>
       <label x-show="cur && cur.kind === 'text'"><input type="checkbox" x-model="wrap"> wrap</label>
       <button x-show="cur && cur.kind !== 'dir' && info.canFullDownload" @click="fullDownload()" title="fetch this file in full and redo its report">download &amp; recon</button>
