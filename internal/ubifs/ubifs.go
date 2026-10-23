@@ -21,6 +21,11 @@ import (
 	"github.com/anchore/go-lzo"
 )
 
+// Version is this package's current behavior version, for pkg/analysis/cache:
+// raise it whenever parsing changes in a way that could change what is
+// reported for bytes already seen.
+const Version = 1
+
 const (
 	nodeMagic = 0x06101831
 	chSize    = 24

@@ -57,31 +57,30 @@ import (
 	"github.com/W-Floyd/go-unbrick/pkg/analysis/recognize"
 )
 
-// Versions is every format parser this cache's callers depend on that is not
-// a pkg/analysis/recognize.Recognizer, named, at its current behavior
-// version. A Recognizer carries its own Version instead (see its doc) --
-// looked up by name in recognize.Default first, falling back to this map --
-// so its version is set in the same file as the recognizer itself, not here.
+// Versions is for a member with no other place to keep its version: nothing
+// here implements recognize.Recognizer or has registered a VersionFuncs
+// entry. Today that is just "facts" -- the whole fact-derivation graph recon
+// runs (internal/facts providers), which has no single owning package a
+// version could live next to (dozens of facts.Rule literals across many
+// files). Everything else should prefer a Recognizer or a VersionFuncs entry
+// instead of growing this map.
 //
 // Add an entry the first time a parser's result is cached; from then on,
 // raise its number -- never reuse, remove, or renumber one others already
 // refer to by name -- whenever its behavior changes for bytes it would
 // already have been asked about.
 var Versions = map[string]int{
-	"filetype":         1, // internal/filetype.Detect: the neutral magic-byte switch
-	"lkrom":            1, // internal/telechips (LKROM parsing)
-	"dtbo":             1, // internal/dtbo
-	"fdt":              1, // internal/fdt (bare device tree)
-	"ubi":              1, // internal/ubi
-	"ubifs":            1, // internal/ubifs
-	"qcdt":             1, // internal/qcdt
-	"bootimg":          1, // internal/bootimg
-	"blankflash":       1, // internal/blankflash (SINGLE_N_LONELY)
-	"bootelf":          1, // internal/bootelf
-	"secboot":          1, // internal/secboot (signing identity)
-	"carve-containers": 1, // internal/carve's own neutral container Expanders (zip/tar/ext4/...)
-	"facts":            1, // the fact-derivation graph recon runs (internal/facts providers)
+	"facts": 1, // the fact-derivation graph recon runs (internal/facts providers)
 }
+
+// VersionFuncs lets a package that is not a recognize.Recognizer (a plain
+// parser with no Claims/Label/Report of its own: internal/dtbo, internal/ubi,
+// ...) still keep its cache version as a const next to its own code, instead
+// of in this package's Versions map. The host wires it up once, typically
+// from the same init() that populates recognize.Default (see
+// cmd_recon_registry.go): cache.VersionFuncs["dtbo"] = func() int { return
+// dtbo.Version }.
+var VersionFuncs = map[string]func() int{}
 
 // Domain is a named, independently versioned slice of the cache: see the
 // package doc for what one is and why operations are grouped this way instead
@@ -95,14 +94,16 @@ type Domain struct {
 // member -- equal across runs (and processes) exactly when every member's
 // version is unchanged, nothing more. It is what a Store entry is stamped
 // with. A member resolves against recognize.Default first (a Recognizer's own
-// Version), then against Versions, so a Domain can mix recognizer names with
-// plain Versions keys freely.
+// Version), then VersionFuncs, then Versions, so a Domain can mix recognizer
+// names, VersionFuncs names and plain Versions keys freely.
 func (d Domain) Version() string {
 	pairs := make([]string, 0, len(d.Members))
 	for _, m := range d.Members {
 		v := Versions[m]
 		if r, ok := recognize.Default.ByName(m); ok {
 			v = r.Version()
+		} else if f, ok := VersionFuncs[m]; ok {
+			v = f()
 		}
 		pairs = append(pairs, m+"="+strconv.Itoa(v))
 	}

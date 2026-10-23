@@ -22,6 +22,11 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/secboot"
 )
 
+// Version is this package's current behavior version, for pkg/analysis/cache:
+// raise it whenever parsing changes in a way that could change what is
+// reported for bytes already seen.
+const Version = 1
+
 // ELF machine architecture codes (e_machine), mapped to debug/elf.
 const (
 	MachineNone    uint16 = uint16(elf.EM_NONE)

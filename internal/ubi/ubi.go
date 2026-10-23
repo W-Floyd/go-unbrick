@@ -19,6 +19,11 @@ const (
 	headerSize    = 64
 )
 
+// Version is this package's current behavior version, for pkg/analysis/cache:
+// raise it whenever parsing changes in a way that could change what is
+// reported for bytes already seen.
+const Version = 1
+
 // Volume is one named UBI volume. Dynamic is false for a static volume.
 type Volume struct {
 	ID      uint32

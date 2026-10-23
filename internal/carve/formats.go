@@ -39,6 +39,13 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/ubifs"
 )
 
+// FormatsVersion is the current behavior version of every neutral container
+// Expander registered below, for pkg/analysis/cache: raise it whenever one of
+// them changes in a way that could change what is reported for bytes already
+// seen. One number for the whole chain, not per-Expander, since they're all
+// registered -- and so all versioned -- together, right here.
+const FormatsVersion = 1
+
 func init() {
 	Register(
 		// The input itself, when it is an archive: srcfile knows how to reach

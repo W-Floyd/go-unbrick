@@ -11,6 +11,11 @@ import (
 	"unicode/utf8"
 )
 
+// Version is this package's current behavior version, for pkg/analysis/cache:
+// raise it whenever Detect's behavior changes in a way that could change what
+// is reported for bytes already seen.
+const Version = 1
+
 type Kind string
 
 const (

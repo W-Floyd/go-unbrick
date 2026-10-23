@@ -2,10 +2,23 @@ package main
 
 import (
 	"github.com/W-Floyd/go-unbrick/internal/androidkeys"
+	"github.com/W-Floyd/go-unbrick/internal/blankflash"
+	"github.com/W-Floyd/go-unbrick/internal/bootelf"
+	"github.com/W-Floyd/go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/dtbo"
+	"github.com/W-Floyd/go-unbrick/internal/fdt"
+	"github.com/W-Floyd/go-unbrick/internal/filetype"
 	"github.com/W-Floyd/go-unbrick/internal/npkg"
 	"github.com/W-Floyd/go-unbrick/internal/pemfile"
+	"github.com/W-Floyd/go-unbrick/internal/qcdt"
+	"github.com/W-Floyd/go-unbrick/internal/secboot"
+	"github.com/W-Floyd/go-unbrick/internal/telechips"
+	"github.com/W-Floyd/go-unbrick/internal/ubi"
+	"github.com/W-Floyd/go-unbrick/internal/ubifs"
 	"github.com/W-Floyd/go-unbrick/internal/unixauth"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/pkg/analysis/cache"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis/recognize"
 )
 
@@ -18,6 +31,23 @@ import (
 // place that order is written down now.
 func init() {
 	vendor.ActiveCatalog = activeCatalog
+
+	// Plain parsers with no Claims/Label/Report of their own (not
+	// recognize.Recognizer): their cache version still lives as a const next
+	// to their own code, wired in here instead of a hand-maintained number in
+	// cache.go.
+	cache.VersionFuncs["filetype"] = func() int { return filetype.Version }
+	cache.VersionFuncs["dtbo"] = func() int { return dtbo.Version }
+	cache.VersionFuncs["fdt"] = func() int { return fdt.Version }
+	cache.VersionFuncs["ubi"] = func() int { return ubi.Version }
+	cache.VersionFuncs["ubifs"] = func() int { return ubifs.Version }
+	cache.VersionFuncs["qcdt"] = func() int { return qcdt.Version }
+	cache.VersionFuncs["bootimg"] = func() int { return bootimg.Version }
+	cache.VersionFuncs["blankflash"] = func() int { return blankflash.SingleImageVersion }
+	cache.VersionFuncs["bootelf"] = func() int { return bootelf.Version }
+	cache.VersionFuncs["secboot"] = func() int { return secboot.Version }
+	cache.VersionFuncs["lkrom"] = func() int { return telechips.LKROMVersion }
+	cache.VersionFuncs["carve-containers"] = func() int { return carve.FormatsVersion }
 
 	for _, r := range []recognize.Recognizer{
 		kernelLabelRecognizer{},

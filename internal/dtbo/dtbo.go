@@ -11,6 +11,11 @@ import (
 
 const magic = 0xd7b7ab1e
 
+// Version is this package's current behavior version, for pkg/analysis/cache:
+// raise it whenever parsing changes in a way that could change what is
+// reported for bytes already seen.
+const Version = 1
+
 // Entry is one device tree in the table.
 type Entry struct {
 	Size   uint32

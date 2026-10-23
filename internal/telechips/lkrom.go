@@ -32,6 +32,13 @@ import (
 // trailing image with its own distinct header (a `b` instruction then a
 // "Ver:..." tag) -- large enough on known samples to be a second, separately
 // linked payload (OP-TEE core has been found inside it), not padding.
+// LKROMVersion is this LKROM codec's current behavior version, for
+// pkg/analysis/cache: raise it whenever parsing changes in a way that could
+// change what is reported for bytes already seen. Scoped to this file, not
+// the whole telechips package, which also parses the boot-stage wrapper
+// (telechips.go) and other things cache.Versions tracks separately.
+const LKROMVersion = 1
+
 const (
 	lkromMagic      = "ANDROID@"
 	lkromTableOff   = 0x20

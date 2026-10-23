@@ -22,6 +22,11 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
+// Version is this package's current behavior version, for pkg/analysis/cache:
+// raise it whenever parsing changes in a way that could change what is
+// reported for bytes already seen.
+const Version = 1
+
 const (
 	headerSize    = 12
 	extEntrySize  = 72

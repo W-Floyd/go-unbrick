@@ -28,6 +28,11 @@ import (
 
 var Magic = []byte("SINGLE_N_LONELY\x00")
 
+// SingleImageVersion is this codec's current behavior version, for
+// pkg/analysis/cache: raise it whenever parsing changes in a way that could
+// change what is reported for bytes already seen.
+const SingleImageVersion = 1
+
 const (
 	Trailer = "LONELY_N_SINGLE"
 	hdr     = 0x100
