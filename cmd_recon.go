@@ -900,7 +900,7 @@ func runDirRecon(dir string) error {
 			continue
 		}
 		fmt.Println(cHdr(fmt.Sprintf("=== %s ===", rel)))
-		out, rerr := captureStdout(func() error { return runFileRecon(p) })
+		out, rerr := reconCachedText(p)
 		fmt.Print(briefRecon(out))
 		if rerr != nil {
 			fmt.Printf("  %s %v\n", cWarn("[!]"), rerr)

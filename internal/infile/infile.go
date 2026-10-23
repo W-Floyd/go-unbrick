@@ -8,6 +8,8 @@ package infile
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -17,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/W-Floyd/go-unbrick/internal/hashcache"
 )
 
 // IsRemote reports whether p names an http(s) or ssh:// URL rather than a local path.
@@ -125,10 +129,15 @@ func ReadFile(p string) ([]byte, error) {
 		if _, err := f.ReadAt(b, 0); err != nil && err != io.EOF {
 			return nil, err
 		}
+		recordDigest(p, b)
 		return b, nil
 	}
 	if !IsRemote(p) {
-		return os.ReadFile(p)
+		b, err := os.ReadFile(p)
+		if err == nil {
+			recordDigest(p, b)
+		}
+		return b, err
 	}
 	f, err := Open(p)
 	if err != nil {
@@ -142,7 +151,29 @@ func ReadFile(p string) ([]byte, error) {
 	if _, err := f.ReadAt(b, 0); err != nil && err != io.EOF {
 		return nil, err
 	}
+	recordDigest(p, b)
 	return b, nil
+}
+
+// recordDigest opportunistically remembers b's sha256 under p's Identity, in
+// hashcache, keyed the same way digests already are elsewhere (see
+// pkg/analysis's cacheKey): so a later caller — this recon's own cache key
+// builder, a diff, anything that asks hashcache first — inherits it, even for
+// an unrelated path whose content turns out to be byte-identical (the same
+// partition image shared across two firmware packages). Cheap: ReadFile just
+// paid for these bytes anyway, sha256 over what's already in memory is small
+// next to that.
+func recordDigest(p string, b []byte) {
+	id := Identity(p)
+	if id == "" {
+		return
+	}
+	key := id + "\x00sha256"
+	if _, ok := hashcache.Get(key, int64(len(b)), false); ok {
+		return
+	}
+	sum := sha256.Sum256(b)
+	hashcache.Put(key, int64(len(b)), hex.EncodeToString(sum[:]), false)
 }
 
 // ZipReader is a zip.ReadCloser over any input.
