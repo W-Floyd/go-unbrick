@@ -84,6 +84,20 @@ func (k *KeyScan) Observe(path string, e BrowseEntry, sub *BrowseLevel) {
 	}
 }
 
+// RefreshKnown works out afresh, from the values, which loaded file each key file's content is: a key added to the
+// secrets since a package was searched turns what was new into what is known, with nothing read again. It changes
+// files in place.
+func RefreshKnown(files []KeyFile) {
+	for i, f := range files {
+		b, err := hex.DecodeString(strings.TrimSuffix(strings.TrimSpace(f.Value), "…"))
+		if err != nil {
+			continue
+		}
+		files[i].Known = knownKey(b, f.Name)
+	}
+	resolveIVNames(files)
+}
+
 // Done settles what needs the whole scan: an IV several loaded files hold is named for the one that goes with the
 // key beside it.
 func (k *KeyScan) Done() { resolveIVNames(k.Files) }

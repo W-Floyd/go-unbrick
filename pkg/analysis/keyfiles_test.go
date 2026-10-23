@@ -172,3 +172,23 @@ func TestKeyFilesNameTheIVFileThatGoesWithTheKeyBeside(t *testing.T) {
 		t.Errorf("the IV beside the second key: %q", known["b/etc/iv.dat"])
 	}
 }
+
+// A key added after a package was searched makes what was new known, with nothing read again.
+func TestRefreshKnownSeesKeysAddedSince(t *testing.T) {
+	key := bytes.Repeat([]byte{0x3c, 0xa1, 0x07, 0xd5}, 4)
+	secrets := t.TempDir()
+	old := aeskeys.Secrets()
+	t.Cleanup(func() { aeskeys.Set(old) })
+	LoadSecrets(secrets) // none
+	files := []KeyFile{{Path: "etc/image.dat", Name: "image.dat", Value: hex.EncodeToString(key)}}
+	RefreshKnown(files)
+	if files[0].Known != "" {
+		t.Fatalf("known with no keys: %q", files[0].Known)
+	}
+	os.WriteFile(filepath.Join(secrets, "later_image_dat_key.hex"), []byte(hex.EncodeToString(key)+"\n"), 0o600)
+	LoadSecrets(secrets)
+	RefreshKnown(files)
+	if !strings.Contains(files[0].Known, "later") {
+		t.Errorf("after the key was added: %q", files[0].Known)
+	}
+}

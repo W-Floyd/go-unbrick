@@ -85,6 +85,15 @@ func Open(p string) (*Node, error) {
 	return n, nil
 }
 
+// ForgetRoots drops the root nodes Open has kept, so the next Open of a path starts afresh: what a node expanded
+// (and what it could not) is expanded again. For a host whose keys changed: a file no key opened stays shut to a
+// node that has already tried it. Nodes already handed out keep what they have.
+func ForgetRoots() {
+	roots.Lock()
+	roots.m = map[string]*Node{}
+	roots.Unlock()
+}
+
 var roots = struct {
 	sync.Mutex
 	m map[string]*Node
