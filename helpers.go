@@ -25,7 +25,7 @@ var carveSecrets string
 
 // addSecrets gives a command that reads encrypted members --secrets.
 func addSecrets(c *cobra.Command) *cobra.Command {
-	c.Flags().StringVar(&carveSecrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members; default: ./secrets or ../secrets beside the input")
+	c.Flags().StringVar(&carveSecrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members, and *password*/*passwd*/*wordlist* files (one candidate per line) tried on encrypted zip members; default: ./secrets or ../secrets beside the input")
 	return c
 }
 

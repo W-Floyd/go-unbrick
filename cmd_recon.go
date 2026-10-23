@@ -51,6 +51,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/sparse"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis/recognize"
 )
@@ -82,7 +83,11 @@ func newReconCmd() *cobra.Command {
 				if err := loadSecrets(secrets); err != nil {
 					return fmt.Errorf("--secrets: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "note: %d key/IV pair(s) from %s\n", secretsLoaded(), secrets)
+				msg := fmt.Sprintf("note: %d key/IV pair(s)", secretsLoaded())
+				if n := zippasswords.Count(); n > 0 {
+					msg += fmt.Sprintf(", %d zip password(s)", n)
+				}
+				fmt.Fprintf(os.Stderr, "%s from %s\n", msg, secrets)
 			}
 			var err error
 			if reconSkip, err = checkSkips(reconSkip); err != nil {
@@ -112,7 +117,7 @@ func newReconCmd() *cobra.Command {
 			return runFileReconCached(args[0])
 		},
 	}
-	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members; a directory input finds ./secrets or ../secrets itself")
+	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members, and *password*/*passwd*/*wordlist* files (one candidate per line) tried on encrypted zip members; a directory input finds ./secrets or ../secrets itself")
 	addSkipFlag(c, &reconSkip, "directory mode and --exhaustive-key-learn (files in a directory are still checked against the manifest)")
 	c.Flags().IntVar(&depth, "depth", 4, "how many container levels to cascade into (zip → radio → NON-HLOS → ext4)")
 	c.Flags().StringVar(&carve, "carve", "", "write every unique embedded cert (PEM+DER) and key (PEM) to this directory")

@@ -15,6 +15,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 )
 
 // A secrets directory holds hex files: *key* (AES key) and *iv* (16-byte IV), found by the
@@ -22,12 +23,25 @@ import (
 // nor readable text is tried against every key and IV pair, as continuous AES-CBC over its head,
 // and labelled only if the plaintext is a format typeLabel recognises.
 //
+// The same directory also holds *password*/*passwd*/*wordlist* files (internal/zippasswords):
+// plain-text lists, one candidate per line, tried against an encrypted zip member after whatever
+// a vendor derives for its own formats.
+//
 // The keys, and what they open, are in internal/aeskeys (an embedding program loads them through
 // pkg/analysis); this is what recon does with them.
 
 var inDecrypt bool
 
-func loadSecrets(dir string) error      { return aeskeys.Load(dir) }
+// loadSecrets loads everything a secrets directory can hold: AES keys/IVs
+// (internal/aeskeys) and zip passwords (internal/zippasswords), both found by
+// file name convention, so one --secrets directory covers both without the
+// caller needing to know which it has.
+func loadSecrets(dir string) error {
+	if err := aeskeys.Load(dir); err != nil {
+		return err
+	}
+	return zippasswords.Load(dir)
+}
 func findSecrets(dir string) string     { return aeskeys.Find(dir) }
 func encryptedExpander() carve.Expander { return aeskeys.Expander() }
 func secretsLoaded() int                { return aeskeys.Count() }

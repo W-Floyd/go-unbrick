@@ -17,6 +17,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
 
@@ -26,7 +27,7 @@ var carveOnce sync.Once
 func carveRoot(input string) (*carve.Node, error) {
 	carveOnce.Do(func() {
 		carve.Register(vendor.CarveExpanders()...)
-		carve.ZipPasswords = vendor.ZipPasswords
+		carve.ZipPasswords = zippasswords.WithVendor(vendor.ZipPasswords)
 		carve.Register(encryptedExpander())
 	})
 	if secretsLoaded() == 0 {

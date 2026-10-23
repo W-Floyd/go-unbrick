@@ -6,6 +6,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 )
 
 // What a program that embeds the engine gets by default is the plain way of opening inputs.
@@ -24,19 +25,27 @@ var (
 func UseVendors() {
 	vendorsOnce.Do(func() {
 		carve.Register(vendor.CarveExpanders()...)
-		carve.ZipPasswords = vendor.ZipPasswords
+		carve.ZipPasswords = zippasswords.WithVendor(vendor.ZipPasswords)
 	})
 }
 
-// LoadSecrets loads the AES keys and IVs in dir, so images encrypted with them (an enc_*.ext4 or
-// enc_boot.img in a package) open: hex files, a *key* and *iv* in the name saying which, as the
-// command's --secrets. It returns how many key and IV candidates were loaded, and replaces any
-// loaded before. Call UseVendors first, so the vendors' formats are tried ahead of this.
+// LoadSecrets loads everything a secrets directory can hold: AES keys and IVs
+// (hex files, a *key* and *iv* in the name saying which), so images encrypted
+// with them (an enc_*.ext4 or enc_boot.img in a package) open; and zip
+// passwords (*password*/*passwd*/*wordlist* files, one candidate per line),
+// tried against an encrypted zip member after whatever a vendor derives for
+// its own formats. Both as the command's --secrets. It returns how many AES
+// key/IV candidates were loaded (zippasswords.Count has the password side),
+// and replaces any of either loaded before. Call UseVendors first, so the
+// vendors' formats are tried ahead of this.
 //
 // The plaintext of what they open is as readable as any other file: a program that serves
 // the engine's pages to others serves it to them too.
 func LoadSecrets(dir string) (int, error) {
 	if err := aeskeys.Load(dir); err != nil {
+		return 0, err
+	}
+	if err := zippasswords.Load(dir); err != nil {
 		return 0, err
 	}
 	secretsOnce.Do(func() { carve.Register(aeskeys.Expander()) })
