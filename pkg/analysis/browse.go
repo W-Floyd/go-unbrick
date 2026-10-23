@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -305,6 +306,78 @@ var holdsCache = struct {
 	m map[string]bool
 }{m: map[string]bool{}}
 
+// grepSem bounds how many BrowseGrep content reads run at once: the CPUs,
+// capped, the same default --exhaustive-key-learn uses for the same reason
+// (KeySweepOptions.Workers).
+var grepSem = make(chan struct{}, min(runtime.NumCPU(), 8))
+
+// contentMatchCache remembers each entry's BrowseGrep result, keyed by its
+// content identity (contentMatchKey) rather than per BrowseEntry value, so
+// the same file reached through two different listings (a package's member
+// and a plain directory copy of it, say) is only ever read once.
+var contentMatchCache sync.Map // key (string) -> bool
+
+// contentMatchKey identifies e's content for contentMatchCache: its OS path,
+// or its node's own content identity (carve.Node.ID -- "" when unknown, in
+// which case e is never cached, only computed fresh each time it's asked).
+func contentMatchKey(e BrowseEntry) string {
+	switch {
+	case e.OSPath != "":
+		return "os:" + e.OSPath
+	case e.Node != nil:
+		return e.Node.ID()
+	default:
+		return ""
+	}
+}
+
+// precomputeContentMatches evaluates BrowseGrep against every leaf in entries
+// that can be read concurrently, ahead of the sequential match logic that
+// actually decides what to keep (place, matchEntry): the only expensive, and
+// mutually independent, step in that decision. A leaf that can't be read at
+// random (sequential-only) is left for matchEntry to compute inline instead.
+func precomputeContentMatches(entries []BrowseEntry) {
+	if BrowseGrep == nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, e := range entries {
+		if e.Dir || e.Group != nil {
+			continue
+		}
+		key := contentMatchKey(e)
+		if key == "" {
+			continue
+		}
+		if _, ok := contentMatchCache.Load(key); ok {
+			continue
+		}
+		if e.OSPath == "" && (e.Node == nil || !e.Node.RandomAccess()) {
+			continue
+		}
+		e := e
+		grepSem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-grepSem }()
+			contentMatchCache.Store(key, contentMatches(e))
+		}()
+	}
+	wg.Wait()
+}
+
+// contentMatchCached is contentMatches, from precomputeContentMatches's cache
+// when it got there first; computed inline otherwise.
+func contentMatchCached(e BrowseEntry) bool {
+	if key := contentMatchKey(e); key != "" {
+		if v, ok := contentMatchCache.Load(key); ok {
+			return v.(bool)
+		}
+	}
+	return contentMatches(e)
+}
+
 // Place gives the level's entries their paths, under prefix ("" for the input's
 // own level, else the path of what was opened and a slash), and applies
 // BrowseMatch. A level made by ListDir, ListNode or ListGroup is placed before use.
@@ -315,6 +388,7 @@ func (l *BrowseLevel) place(prefix string, skip []string) {
 	if len(skip) == 0 && BrowseMatch == nil && BrowseGrep == nil {
 		return
 	}
+	precomputeContentMatches(l.Entries)
 	kept := l.Entries[:0]
 	for _, e := range l.Entries {
 		if SkipPath(skip, e.Path) {
@@ -352,7 +426,7 @@ func matchEntry(e BrowseEntry, skip []string, depth int) bool {
 		}
 	} else {
 		pathOK := BrowseMatch == nil || BrowseMatch.MatchString(e.Path)
-		if pathOK && (BrowseGrep == nil || contentMatches(e)) {
+		if pathOK && (BrowseGrep == nil || contentMatchCached(e)) {
 			return true
 		}
 	}
@@ -375,6 +449,7 @@ func matchEntry(e BrowseEntry, skip []string, depth int) bool {
 	v = false
 	if l, err := openRaw(e, skip); err == nil {
 		l.setPaths(e.Path + "/")
+		precomputeContentMatches(l.Entries)
 		for _, c := range l.Entries {
 			if !SkipPath(skip, c.Path) && matchEntry(c, skip, depth) {
 				v = true

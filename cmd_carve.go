@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -212,6 +213,7 @@ name its format, which over a URL means fetching it.
 				if t.grep, err = regexp.Compile(grep); err != nil {
 					return fmt.Errorf("--grep: %w", err)
 				}
+				t.sem = make(chan struct{}, grepWorkers())
 			}
 			fmt.Printf("%s  [%s]\n", n.Name, kind)
 			t.print(kids, "", "", depth-1)
@@ -268,6 +270,15 @@ type treePrinter struct {
 	grepMax           int64          // bytes of a file --grep reads before giving up on it; 0 = ContentMatch's default
 	containers, files int
 	left              int // entries a skip left out
+
+	// sem bounds how many --grep content reads run at once (nil: unbounded,
+	// e.g. grep == nil, so there is none to bound); contentCache remembers
+	// each leaf's answer, computed once by precomputeContentMatches rather
+	// than inline by matches. See precomputeContentMatches for why this is
+	// only ever acquired for a leaf's own read, never while already holding
+	// one: recursing into a container cannot deadlock the pool this way.
+	sem          chan struct{}
+	contentCache sync.Map // *carve.Node -> bool
 }
 
 // skipped says whether the entry at path (a directory with a trailing slash) is left out.
@@ -328,14 +339,67 @@ func (t *treePrinter) opens(f *carve.Node, depth int) []*carve.Node {
 	return nil
 }
 
-// hits reports whether d, at path at, holds an entry whose path matches --match.
+// grepWorkers bounds how many --grep content reads run at once, across
+// tree/extract: the CPUs, capped, the same default --exhaustive-key-learn
+// uses for the same reason (KeySweepOptions.Workers).
+func grepWorkers() int { return min(runtime.NumCPU(), 8) }
+
+// hits reports whether d, at path at, holds an entry whose path matches
+// --match or whose content matches --grep. Every item's own content check (if
+// any) runs concurrently first, bounded by t.sem -- the only expensive, and
+// mutually independent, step in deciding this -- before the existing
+// sequential match logic below, which now just reads each leaf's answer
+// instead of computing it inline.
 func (t *treePrinter) hits(d *treeDir, at string, depth int) bool {
-	for _, it := range t.items(d, at, false) {
+	items := t.items(d, at, false)
+	t.precomputeContentMatches(items, at)
+	for _, it := range items {
 		if t.matches(it, at, depth) {
 			return true
 		}
 	}
 	return false
+}
+
+// precomputeContentMatches evaluates --grep against every leaf in items that
+// can be read at random, concurrently, storing each result in t.contentCache
+// for matches to consult. Only ever acquires t.sem for this, a leaf's own
+// read -- never while already holding one -- so recursing into a container
+// (which calls hits, which calls this again, for the next level down) cannot
+// deadlock the pool: a nested call's own sem acquisitions happen only after
+// this one's goroutines have already returned theirs.
+func (t *treePrinter) precomputeContentMatches(items []treeItem, at string) {
+	if t.grep == nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, it := range items {
+		if it.dir != nil || it.file.IsDirNode() || !it.file.RandomAccess() {
+			continue // nothing of its own to check here, or can't be read concurrently
+		}
+		if _, ok := t.contentCache.Load(it.file); ok {
+			continue
+		}
+		f := it.file
+		t.sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-t.sem }()
+			t.contentCache.Store(f, t.matchesContent(f))
+		}()
+	}
+	wg.Wait()
+}
+
+// contentMatchCached is matchesContent, from precomputeContentMatches's cache
+// when it got there first; computed inline otherwise (a sequential-only
+// source precomputeContentMatches skipped, or a cache miss some other way).
+func (t *treePrinter) contentMatchCached(f *carve.Node) bool {
+	if v, ok := t.contentCache.Load(f); ok {
+		return v.(bool)
+	}
+	return t.matchesContent(f)
 }
 
 // matches reports whether an entry is, or holds, a match: its full path for
@@ -359,7 +423,7 @@ func (t *treePrinter) matches(it treeItem, at string, depth int) bool {
 		switch {
 		case t.grep == nil:
 			return true
-		case t.matchesContent(it.file):
+		case t.contentMatchCached(it.file):
 			return true
 		}
 	}
@@ -539,8 +603,13 @@ under a directory instead, named by their paths; nested containers stay whole.
 // must hold for the same entry when both are given), and containers are
 // opened, while depth > 0, to look for them.
 func extractKids(kids []*carve.Node, at, out string, re, grep *regexp.Regexp, skip []string, depth int, force bool) (int, error) {
+	// --grep's content read is the only expensive, and mutually independent,
+	// part of deciding what to write at this level: evaluate every leaf's
+	// match concurrently first, then do the (fast, sequential) writing and
+	// recursion below using those answers instead of computing them inline.
+	matched := parallelGrepMatch(kids, at, re, grep)
 	written := 0
-	for _, k := range kids {
+	for i, k := range kids {
 		p := at + k.Name
 		if analysis.SkipPath(skip, p) {
 			continue
@@ -556,7 +625,7 @@ func extractKids(kids []*carve.Node, at, out string, re, grep *regexp.Regexp, sk
 			if err != nil {
 				return written, err
 			}
-		case (re == nil || re.MatchString(p)) && contentOK(k, grep):
+		case matched[i]:
 			dst, err := within(out, p)
 			if err != nil {
 				return written, err
@@ -584,6 +653,37 @@ func extractKids(kids []*carve.Node, at, out string, re, grep *regexp.Regexp, sk
 		}
 	}
 	return written, nil
+}
+
+// parallelGrepMatch evaluates, for every non-directory kid, whether its path
+// matches re (if given) and its content matches grep (if given) -- extractKids'
+// own per-leaf rule, computed concurrently (bounded by grepWorkers) since
+// contentOK's read is independent per kid. A kid that can't be read at random
+// (sequential-only) is checked inline instead of backgrounded.
+func parallelGrepMatch(kids []*carve.Node, at string, re, grep *regexp.Regexp) []bool {
+	matched := make([]bool, len(kids))
+	check := func(k *carve.Node, p string) bool { return (re == nil || re.MatchString(p)) && contentOK(k, grep) }
+	sem := make(chan struct{}, grepWorkers())
+	var wg sync.WaitGroup
+	for i, k := range kids {
+		if k.IsDirNode() {
+			continue
+		}
+		p := at + k.Name
+		if !k.RandomAccess() {
+			matched[i] = check(k, p)
+			continue
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int, k *carve.Node) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			matched[i] = check(k, p)
+		}(i, k)
+	}
+	wg.Wait()
+	return matched
 }
 
 // contentOK reports whether k's bytes satisfy grep ("" i.e. nil: always true).
