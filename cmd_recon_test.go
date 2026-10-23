@@ -22,15 +22,19 @@ func TestServregNote(t *testing.T) {
 	}
 }
 
-func TestWithinRefusesEscape(t *testing.T) {
-	for name, ok := range map[string]bool{
-		"image/adsp.mdt":   true,
-		"/abs/path":        true, // made relative
-		"../../etc/passwd": false,
-		"a/../../b":        false,
-	} {
-		if _, err := within("out", name); (err == nil) != ok {
-			t.Errorf("within(%q): err %v", name, err)
+// within clamps a name that would otherwise land outside "out" (an archive
+// member can be named exactly that, see browseEntry.literalNote) rather than
+// following it there or refusing it outright - see cmd_carve.go's own
+// comment on within for why (github.com/cyphar/filepath-securejoin).
+func TestWithinClampsEscape(t *testing.T) {
+	for _, name := range []string{"image/adsp.mdt", "/abs/path", "../../etc/passwd", "a/../../b"} {
+		dst, err := within("out", name)
+		if err != nil {
+			t.Errorf("within(%q): %v", name, err)
+			continue
+		}
+		if !strings.HasPrefix(dst, "out") {
+			t.Errorf("within(%q) = %q, lands outside out", name, dst)
 		}
 	}
 }

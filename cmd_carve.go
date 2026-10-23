@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/spf13/cobra"
 
 	"github.com/W-Floyd/go-unbrick/internal/carve"
@@ -643,6 +644,9 @@ func extractKids(kids []*carve.Node, at, out string, re, grep *regexp.Regexp, sk
 			if err != nil {
 				return written, err
 			}
+			if looksUnsafe(p) {
+				fmt.Fprintf(os.Stderr, "warning: %s: a literal \".\"/\"..\" in the name, not navigation - written as %s instead\n", p, dst)
+			}
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return written, err
 			}
@@ -710,14 +714,25 @@ func contentOK(k *carve.Node, grep *regexp.Regexp) bool {
 	return err == nil && ok
 }
 
-// within joins a member name under dir, refusing one that would land outside
-// it: names come from the input, and an archive can say "../../x".
+// within joins a member name under dir, clamping one that would otherwise
+// land outside it (names come from the input, and an archive can say
+// "../../x") rather than following it there or refusing it outright - see
+// github.com/cyphar/filepath-securejoin, also used by Docker/containerd/the
+// OCI tools for this exact problem. It also resolves symlinks component by
+// component as it goes, which a purely lexical check can't.
 func within(dir, name string) (string, error) {
-	rel := filepath.FromSlash(strings.TrimLeft(name, "/"))
-	if !filepath.IsLocal(rel) {
-		return "", fmt.Errorf("refusing to write %q outside %s", name, dir)
-	}
-	return filepath.Join(dir, rel), nil
+	return securejoin.SecureJoin(dir, name)
+}
+
+// looksUnsafe reports whether name, read as a slash-separated archive path,
+// has a ".." (or a leading "/") that would escape dir on its own - not a
+// safety check (within already guarantees that), just whether to warn that a
+// member's name wasn't navigation and landed somewhere other than its literal
+// path. Comparing within's actual output to a naive join instead would also
+// fire on an ordinary symlinked output directory (macOS's /tmp, say) and say
+// nothing about the one thing worth a warning: the input itself.
+func looksUnsafe(name string) bool {
+	return !filepath.IsLocal(filepath.FromSlash(strings.TrimLeft(name, "/")))
 }
 
 // writeNode streams n to dst, or to stdout for "-".

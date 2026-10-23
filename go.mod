@@ -15,7 +15,9 @@ require (
 	github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/anchore/go-lzo v0.1.0
+	github.com/bodgit/sevenzip v1.6.5
 	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/electricbubble/gadb v0.1.0
 	github.com/go-git/go-git/v5 v5.19.3
@@ -43,7 +45,6 @@ require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
-	github.com/bodgit/sevenzip v1.6.5 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/harmonica v0.2.0 // indirect
@@ -54,7 +55,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
-	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
