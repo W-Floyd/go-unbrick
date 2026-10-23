@@ -128,7 +128,7 @@ func listNode(n *carve.Node, indent string, depth int) error {
 		return err
 	}
 	if kind == "" {
-		return fmt.Errorf("%s is not a container (%s)", n.Name, typeLabel(n.Name, n.Head()))
+		return fmt.Errorf("%s is not a container (%s)", n.Name, cachedTypeLabel(n.Name, n.Head()))
 	}
 	if indent == "" {
 		fmt.Printf("%s  [%s] — %d entries\n", n.Name, kind, len(kids))
@@ -144,7 +144,7 @@ func listNode(n *carve.Node, indent string, depth int) error {
 		if isContainer {
 			name += "/"
 		} else {
-			label = typeLabel(k.Name, k.Head())
+			label = cachedTypeLabel(k.Name, k.Head())
 			if k.Size == 0 {
 				label = "empty"
 			}
@@ -196,7 +196,7 @@ name its format, which over a URL means fetching it.
 				return err
 			}
 			if kind == "" {
-				return fmt.Errorf("%s is not a container (%s)", n.Name, typeLabel(n.Name, n.Head()))
+				return fmt.Errorf("%s is not a container (%s)", n.Name, cachedTypeLabel(n.Name, n.Head()))
 			}
 			skip, err = checkSkips(skip)
 			if err != nil {
@@ -431,7 +431,7 @@ func (t *treePrinter) printFile(f *carve.Node, name, prefix, branch, next, at st
 	case kind != "":
 		label = "  [" + kind + "]"
 	case t.types:
-		label = "  [" + typeLabel(name, f.Head()) + "]"
+		label = "  [" + cachedTypeLabel(name, f.Head()) + "]"
 	}
 	if kind != "" && depth > 0 {
 		_, ks, err := f.Children()

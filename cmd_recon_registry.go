@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	"github.com/W-Floyd/go-unbrick/internal/androidkeys"
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
@@ -71,4 +74,28 @@ func init() {
 	} {
 		recognize.Default.Register(r)
 	}
+}
+
+// cachedTypeLabel wraps typeLabel through pkg/analysis/cache's Label domain
+// (the same recognizer chain as Recon -- see cache.Label's doc). ls, tree,
+// browse and extract all reach format recognition through the one
+// analysis.TypeLabel hook (see cmd_diff.go's init, pkg/analysis/browse.go,
+// run.go, engine_similar.go), so caching it here benefits all four at once
+// without touching any of them individually.
+//
+// Keyed by name and a hash of head, typeLabel's only two inputs -- not by the
+// node's full content identity, which this hook isn't even given access to.
+// head is already in memory and bounded (around 8KiB), so hashing it costs
+// essentially nothing regardless of hit or miss; the recognizer chain itself
+// (PEM parsing, an NPKG section table, ...) is what repeats across a
+// package's many same-shaped members, and across reruns, that this spares.
+func cachedTypeLabel(name string, head []byte) string {
+	sum := sha256.Sum256(head)
+	key := name + "\x00" + hex.EncodeToString(sum[:])
+	if label, ok := cache.Get(cache.Label, key); ok {
+		return label
+	}
+	label := typeLabel(name, head)
+	cache.Put(cache.Label, key, label)
+	return label
 }

@@ -13,7 +13,7 @@ import (
 
 func init() {
 	analysis.OpenRoot = carveRoot
-	analysis.TypeLabel = typeLabel
+	analysis.TypeLabel = cachedTypeLabel
 }
 
 // ---- diff ----
