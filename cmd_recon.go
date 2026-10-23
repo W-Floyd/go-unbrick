@@ -112,7 +112,7 @@ func newReconCmd() *cobra.Command {
 				}
 				return runDirRecon(args[0])
 			}
-			return runFileRecon(args[0])
+			return runFileReconCached(args[0])
 		},
 	}
 	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members; a directory input finds ./secrets or ../secrets itself")
