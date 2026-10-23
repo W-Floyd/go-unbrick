@@ -53,41 +53,34 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/W-Floyd/go-unbrick/pkg/analysis/recognize"
 )
 
-// Versions is every format recognizer/parser this cache's callers depend on,
-// named, at its current behavior version. Add an entry the first time a
-// recognizer's result is cached; from then on, raise its number -- never
-// reuse, remove, or renumber one others already refer to by name -- whenever
-// its behavior changes for bytes it would already have been asked about.
+// Versions is every format parser this cache's callers depend on that is not
+// a pkg/analysis/recognize.Recognizer, named, at its current behavior
+// version. A Recognizer carries its own Version instead (see its doc) --
+// looked up by name in recognize.Default first, falling back to this map --
+// so its version is set in the same file as the recognizer itself, not here.
 //
-// Names are the package or check they stand for, not the Domain that uses
-// them: "npkg" might gate both the "recon" and "listing" Domains at once.
+// Add an entry the first time a parser's result is cached; from then on,
+// raise its number -- never reuse, remove, or renumber one others already
+// refer to by name -- whenever its behavior changes for bytes it would
+// already have been asked about.
 var Versions = map[string]int{
-	"filetype":           1, // internal/filetype.Detect: the neutral magic-byte switch
-	"motorola-artifact":  1, // internal/vendor.MotorolaRecognizer
-	"hkmc-artifact":      1, // internal/vendor.HKMCRecognizer
-	"telechips-artifact": 1, // internal/vendor.TelechipsArtifactRecognizer
-	"fsg-artifact":       1, // internal/vendor.FSGRecognizer
-	"qcom-artifact":      1, // internal/vendor.QcomRecognizer
-	"mediatek-artifact":  1, // internal/vendor.MediatekRecognizer
-	"samsung-pit":        1, // internal/vendor.SamsungPITRecognizer
-	"androidkeys":        1, // internal/androidkeys
-	"pemfile":            1, // internal/pemfile
-	"unixauth":           1, // internal/unixauth
-	"npkg":               1, // internal/npkg
-	"lkrom":              1, // internal/telechips (LKROM parsing)
-	"dtbo":               1, // internal/dtbo
-	"fdt":                1, // internal/fdt (bare device tree)
-	"ubi":                1, // internal/ubi
-	"ubifs":              1, // internal/ubifs
-	"qcdt":               1, // internal/qcdt
-	"bootimg":            1, // internal/bootimg
-	"blankflash":         1, // internal/blankflash (SINGLE_N_LONELY)
-	"bootelf":            1, // internal/bootelf
-	"secboot":            1, // internal/secboot (signing identity)
-	"carve-containers":   1, // internal/carve's own neutral container Expanders (zip/tar/ext4/...)
-	"facts":              1, // the fact-derivation graph recon runs (internal/facts providers)
+	"filetype":         1, // internal/filetype.Detect: the neutral magic-byte switch
+	"lkrom":            1, // internal/telechips (LKROM parsing)
+	"dtbo":             1, // internal/dtbo
+	"fdt":              1, // internal/fdt (bare device tree)
+	"ubi":              1, // internal/ubi
+	"ubifs":            1, // internal/ubifs
+	"qcdt":             1, // internal/qcdt
+	"bootimg":          1, // internal/bootimg
+	"blankflash":       1, // internal/blankflash (SINGLE_N_LONELY)
+	"bootelf":          1, // internal/bootelf
+	"secboot":          1, // internal/secboot (signing identity)
+	"carve-containers": 1, // internal/carve's own neutral container Expanders (zip/tar/ext4/...)
+	"facts":            1, // the fact-derivation graph recon runs (internal/facts providers)
 }
 
 // Domain is a named, independently versioned slice of the cache: see the
@@ -95,16 +88,23 @@ var Versions = map[string]int{
 // of per-recognizer.
 type Domain struct {
 	Name    string
-	Members []string // keys into Versions
+	Members []string // a recognize.Recognizer's Name, or a key into Versions
 }
 
-// Version is a short, stable string standing for the current Versions of every
+// Version is a short, stable string standing for the current version of every
 // member -- equal across runs (and processes) exactly when every member's
-// number is unchanged, nothing more. It is what a Store entry is stamped with.
+// version is unchanged, nothing more. It is what a Store entry is stamped
+// with. A member resolves against recognize.Default first (a Recognizer's own
+// Version), then against Versions, so a Domain can mix recognizer names with
+// plain Versions keys freely.
 func (d Domain) Version() string {
 	pairs := make([]string, 0, len(d.Members))
 	for _, m := range d.Members {
-		pairs = append(pairs, m+"="+strconv.Itoa(Versions[m]))
+		v := Versions[m]
+		if r, ok := recognize.Default.ByName(m); ok {
+			v = r.Version()
+		}
+		pairs = append(pairs, m+"="+strconv.Itoa(v))
 	}
 	sort.Strings(pairs)
 	sum := sha256.Sum256([]byte(strings.Join(pairs, ",")))
@@ -113,8 +113,8 @@ func (d Domain) Version() string {
 
 // Predefined Domains for this tool's own operations. A library consumer with
 // its own recognizers defines its own Domain the same way: a name and the
-// Versions keys it depends on (adding its own entries to Versions, or to a
-// Store-local copy -- see Store.Versions).
+// member names it depends on -- a recognizer's own Name() needs nothing
+// further, a plain parser needs an entry added to Versions.
 var (
 	// Recon is a file's full text report (recon <file>): every recognizer in the
 	// chain cmd_recon.go's runFileRecon tries, since it is tried on every file

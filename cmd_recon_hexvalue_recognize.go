@@ -9,6 +9,8 @@ type hexValueRecognizer struct{}
 
 func (hexValueRecognizer) Name() string { return "hex-value" }
 
+func (hexValueRecognizer) Version() int { return 1 }
+
 func (hexValueRecognizer) Claims(name string, head []byte) bool {
 	_, ok := hexValue(head)
 	return ok

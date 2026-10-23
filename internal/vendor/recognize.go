@@ -41,6 +41,8 @@ var _ recognize.Recognizer = MotorolaRecognizer{}
 
 func (MotorolaRecognizer) Name() string { return "motorola-artifact" }
 
+func (MotorolaRecognizer) Version() int { return 1 }
+
 func (MotorolaRecognizer) Claims(name string, head []byte) bool {
 	_, ok := motorolaArtifact(activeCatalog(), name, head)
 	return ok
@@ -65,6 +67,8 @@ type HKMCRecognizer struct{}
 var _ recognize.Recognizer = HKMCRecognizer{}
 
 func (HKMCRecognizer) Name() string { return "hkmc-artifact" }
+
+func (HKMCRecognizer) Version() int { return 1 }
 
 func (HKMCRecognizer) Claims(name string, head []byte) bool {
 	_, ok := hkmcArtifact(name, head)
@@ -95,6 +99,8 @@ var _ recognize.Recognizer = TelechipsArtifactRecognizer{}
 
 func (TelechipsArtifactRecognizer) Name() string { return "telechips-artifact" }
 
+func (TelechipsArtifactRecognizer) Version() int { return 1 }
+
 func (TelechipsArtifactRecognizer) Claims(name string, head []byte) bool {
 	_, ok := tccArtifact(head)
 	return ok
@@ -121,6 +127,8 @@ var _ recognize.Recognizer = FSGRecognizer{}
 
 func (FSGRecognizer) Name() string { return "fsg-artifact" }
 
+func (FSGRecognizer) Version() int { return 1 }
+
 func (FSGRecognizer) Claims(name string, head []byte) bool {
 	_, ok := fsgArtifact(head)
 	return ok
@@ -144,6 +152,8 @@ type QcomRecognizer struct{}
 var _ recognize.Recognizer = QcomRecognizer{}
 
 func (QcomRecognizer) Name() string { return "qcom-artifact" }
+
+func (QcomRecognizer) Version() int { return 1 }
 
 func (QcomRecognizer) Claims(name string, head []byte) bool {
 	_, ok := qcomArtifact(head)
@@ -170,6 +180,8 @@ var _ recognize.Recognizer = MediatekRecognizer{}
 
 func (MediatekRecognizer) Name() string { return "mediatek-artifact" }
 
+func (MediatekRecognizer) Version() int { return 1 }
+
 func (MediatekRecognizer) Claims(name string, head []byte) bool {
 	_, ok := mediatekArtifact(head)
 	return ok
@@ -193,6 +205,8 @@ type SamsungPITRecognizer struct{}
 var _ recognize.Recognizer = SamsungPITRecognizer{}
 
 func (SamsungPITRecognizer) Name() string { return "samsung-pit" }
+
+func (SamsungPITRecognizer) Version() int { return 1 }
 
 func (SamsungPITRecognizer) Claims(name string, head []byte) bool {
 	_, err := ParsePIT(head)

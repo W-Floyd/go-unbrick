@@ -13,6 +13,8 @@ type superMetadataRecognizer struct{}
 
 func (superMetadataRecognizer) Name() string { return "lp-super" }
 
+func (superMetadataRecognizer) Version() int { return 1 }
+
 func (superMetadataRecognizer) Claims(name string, head []byte) bool { return lp.IsSuper(head) }
 
 func (superMetadataRecognizer) Label(name string, head []byte) string { return "super metadata" }

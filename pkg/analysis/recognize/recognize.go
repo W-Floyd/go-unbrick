@@ -20,10 +20,14 @@ package recognize
 // hook, the way pkg/analysis's OpenRoot/TypeLabel hooks already work -- kept
 // out of this interface so it stays usable without that context wired up.
 type Recognizer interface {
-	// Name is this recognizer's key in pkg/analysis/cache's Versions registry:
-	// bump cache.Versions[r.Name()] whenever Claims, Label, Summary or Report's
-	// behavior changes for bytes it would already have been asked about.
+	// Name is this recognizer's key in pkg/analysis/cache's Domains.
 	Name() string
+	// Version is this recognizer's current behavior version, for
+	// pkg/analysis/cache: raise it whenever Claims, Label, Summary or Report's
+	// behavior changes for bytes it would already have been asked about. Never
+	// reuse or lower a number a cached result may already have been stamped
+	// with.
+	Version() int
 	// Claims reports whether this recognizer owns the file, from its head
 	// bytes and name (name is "" where no filename is in scope -- only a
 	// content-shape check can still match). Cheap: a registry tries every
@@ -91,6 +95,18 @@ func (reg *Registry) Names() []string {
 		names[i] = r.Name()
 	}
 	return names
+}
+
+// ByName is the first registered Recognizer with this Name, if any -- how
+// pkg/analysis/cache resolves a Domain member to its current Version without
+// a parallel, hand-maintained version table.
+func (reg *Registry) ByName(name string) (Recognizer, bool) {
+	for _, r := range reg.recognizers {
+		if r.Name() == name {
+			return r, true
+		}
+	}
+	return nil, false
 }
 
 // Default is the registry go-unbrick's own CLI wires its recognizers into

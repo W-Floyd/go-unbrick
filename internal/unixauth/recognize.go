@@ -8,6 +8,8 @@ type Recognizer struct{}
 
 func (Recognizer) Name() string { return "unixauth" }
 
+func (Recognizer) Version() int { return 1 }
+
 func (Recognizer) Claims(name string, head []byte) bool {
 	_, _, ok := Identify(name, head)
 	return ok

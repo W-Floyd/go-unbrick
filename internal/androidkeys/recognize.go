@@ -10,6 +10,8 @@ type Recognizer struct{}
 
 func (Recognizer) Name() string { return "androidkeys" }
 
+func (Recognizer) Version() int { return 1 }
+
 func (Recognizer) Claims(name string, head []byte) bool { return Is(head) }
 
 func (Recognizer) Label(name string, head []byte) string { return "Android recovery keys" }

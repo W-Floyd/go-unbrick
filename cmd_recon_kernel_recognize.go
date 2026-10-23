@@ -10,6 +10,8 @@ type kernelLabelRecognizer struct{}
 
 func (kernelLabelRecognizer) Name() string { return "kernel-label" }
 
+func (kernelLabelRecognizer) Version() int { return 1 }
+
 func (kernelLabelRecognizer) Claims(name string, head []byte) bool {
 	_, ok := kernelLabel(name, head)
 	return ok
