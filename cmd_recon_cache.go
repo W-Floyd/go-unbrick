@@ -81,12 +81,34 @@ func reconCacheKey(path string) string {
 	}, "\x00")
 }
 
-// contentOrPathIdentity prefers path's content digest over its path+size+mtime
-// Identity, when infile.ReadFile has already recorded one (hashcache) for it:
-// two different paths sharing byte-identical content then converge onto the
-// same recon cache row instead of each paying for its own recon -- the same
-// partition image carried in two firmware packages, say. Never forces a read
-// just to find one; falls back to Identity when no digest is known yet.
+// contentOrPathIdentity prefers path's content digest, qualified by its own
+// bare name, over its path+size+mtime Identity, when a digest is already
+// known for it: two different paths of the same name sharing byte-identical
+// content then converge onto the same recon cache row instead of each paying
+// for its own recon -- the same member name recurring across two firmware
+// packages, say. The name stays in the key even though the digest is
+// content-based: recon's output can genuinely depend on it (a vendor
+// recognizer matching by filename, the bare-extension fallback in typeLabel),
+// not only on bytes, so two files sharing content under *different* names
+// must not share a cache row even once both digests are known. Two ways a
+// digest can already be known:
+//
+//   - infile.ReadFile has already recorded one for this exact path (someone
+//     fully read it before: recon's own earlier pass, a diff, --creds-audit).
+//   - hashcache.GetBySize has a digest for some OTHER path of the same size --
+//     a cheap, stat-only signal (no bytes read to produce it) that this might
+//     be that same content. On that signal alone this does force a read:
+//     infile.ReadFile, to actually hash and confirm, rather than doing a full
+//     recon on the strength of a size guess. Worth it even when the guess is
+//     wrong (coincidence, not identity): most of recon's own per-format
+//     handlers (reconELF, reconGPT, the entropy fallback, ...) already read
+//     the file in full themselves, so this mostly just moves that read
+//     earlier rather than adding one, and the digest is cached either way for
+//     next time -- and worth it even when the name turns out to differ from
+//     whatever first cached that content, since the digest is still useful on
+//     its own (GetBySize, a future same-named match).
+//
+// Falls back to plain Identity when no digest is known either way.
 func contentOrPathIdentity(path string) string {
 	id := infile.Identity(path)
 	if id == "" {
@@ -96,8 +118,16 @@ func contentOrPathIdentity(path string) string {
 	if err != nil {
 		return id
 	}
+	name := infile.Base(path)
 	if sum, ok := hashcache.Get(id+"\x00sha256", fi.Size(), false); ok {
-		return "sha256:" + sum
+		return "sha256:" + sum + "\x00name=" + name
+	}
+	if _, ok := hashcache.GetBySize(fi.Size()); ok {
+		if b, err := infile.ReadFile(path); err == nil {
+			if sum, ok := hashcache.Get(id+"\x00sha256", int64(len(b)), false); ok {
+				return "sha256:" + sum + "\x00name=" + name
+			}
+		}
 	}
 	return id
 }

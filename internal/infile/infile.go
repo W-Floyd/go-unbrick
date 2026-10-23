@@ -160,20 +160,26 @@ func ReadFile(p string) ([]byte, error) {
 // pkg/analysis's cacheKey): so a later caller — this recon's own cache key
 // builder, a diff, anything that asks hashcache first — inherits it, even for
 // an unrelated path whose content turns out to be byte-identical (the same
-// partition image shared across two firmware packages). Cheap: ReadFile just
-// paid for these bytes anyway, sha256 over what's already in memory is small
-// next to that.
+// partition image shared across two firmware packages, under the same name or
+// a different one). Cheap: ReadFile just paid for these bytes anyway, sha256
+// over what's already in memory is small next to that.
+//
+// hashcache.Put also indexes the sum by size alone (GetBySize), a cheap
+// stat-only signal a later, unrelated path can use to decide it's worth
+// reading and hashing on the strength of that alone -- see
+// contentOrPathIdentity's use of it.
 func recordDigest(p string, b []byte) {
 	id := Identity(p)
 	if id == "" {
 		return
 	}
 	key := id + "\x00sha256"
-	if _, ok := hashcache.Get(key, int64(len(b)), false); ok {
+	size := int64(len(b))
+	if _, ok := hashcache.Get(key, size, false); ok {
 		return
 	}
-	sum := sha256.Sum256(b)
-	hashcache.Put(key, int64(len(b)), hex.EncodeToString(sum[:]), false)
+	digest := sha256.Sum256(b)
+	hashcache.Put(key, size, hex.EncodeToString(digest[:]), false)
 }
 
 // ZipReader is a zip.ReadCloser over any input.

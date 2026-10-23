@@ -33,6 +33,13 @@ var (
 	mu     sync.Mutex
 	loaded bool
 	sums   = map[string]record{}
+	// bySize indexes the last sum seen for any content of a given size, across
+	// every key ever Put -- see GetBySize. Keyed on size alone, not a path or
+	// name: two unrelated files of the same size do sometimes collide here,
+	// but confirming one is cheap (GetBySize is only ever a hint, the caller
+	// still hashes the actual bytes), and most callers were going to read
+	// those bytes in full anyway for their own reasons.
+	bySize = map[int64]string{}
 	out    *os.File
 )
 
@@ -72,6 +79,7 @@ func load() {
 		var r record
 		if json.Unmarshal(sc.Bytes(), &r) == nil && r.Key != "" && r.Sum != "" {
 			sums[r.Key] = r
+			bySize[r.Size] = r.Sum
 		}
 	}
 }
@@ -93,6 +101,20 @@ func Get(key string, size int64, trustClaims bool) (string, bool) {
 	return r.Sum, true
 }
 
+// GetBySize returns the digest last seen for ANY content of this size,
+// regardless of what key it was Put under -- a cheap hint (no bytes read to
+// produce it) that an unfamiliar file might be that same content. It is only
+// ever a hint: the caller still has to read and hash its own file to confirm
+// before trusting the match (two unrelated files can share a size by
+// coincidence).
+func GetBySize(size int64) (string, bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	load()
+	sum, ok := bySize[size]
+	return sum, ok
+}
+
 // Put records sum for key; claimed says it came from a manifest rather than
 // from the bytes. A claim never replaces a computed hash. Failing to persist
 // is not an error.
@@ -111,6 +133,7 @@ func Put(key string, size int64, sum string, claimed bool) {
 		return
 	}
 	sums[key] = r
+	bySize[size] = sum
 	if out == nil {
 		p := path()
 		if p == "" || os.MkdirAll(filepath.Dir(p), 0o755) != nil {
@@ -136,4 +159,5 @@ func Reset() {
 	}
 	loaded = false
 	sums = map[string]record{}
+	bySize = map[int64]string{}
 }
