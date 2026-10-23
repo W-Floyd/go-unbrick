@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"regexp"
 	"sync"
 
 	"github.com/alecthomas/chroma/v2"
@@ -78,6 +79,9 @@ type browseServer struct {
 	mu    sync.Mutex
 	jobs  map[string]*reconJob
 	queue chan *reconJob
+
+	filterMu  sync.Mutex
+	curFilter string // the match/grep pair currently applied, so an unchanged request skips re-opening
 }
 
 type reconJob struct {
@@ -105,6 +109,9 @@ func (s *browseServer) info(w http.ResponseWriter, r *http.Request) {
 // locate is the level and entry a request names, in analysis.Location's form.
 func (s *browseServer) locate(r *http.Request) (*analysis.BrowseLevel, analysis.BrowseEntry, error) {
 	loc := analysis.ParseLocation(r.URL.RawQuery)
+	if err := s.applyFilters(loc.Match, loc.Grep); err != nil {
+		return nil, analysis.BrowseEntry{}, err
+	}
 	l, err := s.b.LevelAt(loc.Path)
 	if err != nil {
 		return nil, analysis.BrowseEntry{}, err
@@ -121,6 +128,39 @@ func (s *browseServer) locate(r *http.Request) (*analysis.BrowseLevel, analysis.
 		return l, e, analysis.ErrNoSuchEntry
 	}
 	return l, e, nil
+}
+
+// applyFilters compiles match/grep and, if they differ from what is currently
+// applied, updates the browser's filters (analysis.Browser.SetFilters) to match.
+// A no-op when both are already current, so navigating within an unchanged
+// filter doesn't re-open the input on every request.
+func (s *browseServer) applyFilters(match, grep string) error {
+	key := match + "\x00" + grep
+	s.filterMu.Lock()
+	unchanged := key == s.curFilter
+	s.filterMu.Unlock()
+	if unchanged {
+		return nil
+	}
+	var matchRe, grepRe *regexp.Regexp
+	var err error
+	if match != "" {
+		if matchRe, err = regexp.Compile(match); err != nil {
+			return fmt.Errorf("match: %w", err)
+		}
+	}
+	if grep != "" {
+		if grepRe, err = regexp.Compile(grep); err != nil {
+			return fmt.Errorf("grep: %w", err)
+		}
+	}
+	if err := s.b.SetFilters(matchRe, grepRe, analysis.BrowseDepth); err != nil {
+		return err
+	}
+	s.filterMu.Lock()
+	s.curFilter = key
+	s.filterMu.Unlock()
+	return nil
 }
 
 func (s *browseServer) level(w http.ResponseWriter, r *http.Request) {

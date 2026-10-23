@@ -26,6 +26,13 @@
   </template>
 </nav>
 
+<div class="filters">
+  <input type="text" x-model="match" @input="filterChanged()" placeholder="--match: path regex" spellcheck="false">
+  <input type="text" x-model="grep" @input="filterChanged()" placeholder="--grep: content regex" spellcheck="false">
+  <span class="loading" x-show="filtering">filtering…</span>
+  <span class="err" x-show="filterError" x-text="filterError"></span>
+</div>
+
 <main>
   <section class="list" role="listbox" aria-label="Entries">
     <div class="row up" x-show="path.length" @click="up()">↑ ..</div>

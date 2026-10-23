@@ -80,3 +80,7 @@ img.preview-img { max-width: 100%; max-height: 70vh; margin: 8px 0; background: 
 a.dl { color: var(--dim); font-size: 12px; margin-left: auto; }
 
 .entropy-bars { display: block; width: 100%; max-width: 40rem; height: 4rem; margin: 0 0 .75rem; fill: currentColor; opacity: .75; }
+
+.filters { display: flex; gap: 8px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.filters input { flex: 1 1 auto; min-width: 0; max-width: 320px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font: 13px ui-monospace, monospace; }
+.filters input::placeholder { color: var(--dim); }

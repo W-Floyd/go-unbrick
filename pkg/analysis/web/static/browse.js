@@ -4,7 +4,15 @@ function browse() {
   const u = window.unbrick;
   return {
     ...u.nav({
-      watch: [],
+      watch: ['match', 'grep'],
+      writeExtra: (c, u) => {
+        if (c.match) u.set('match', c.match);
+        if (c.grep) u.set('grep', c.grep);
+      },
+      readExtra: (c, u) => {
+        c.match = u.get('match') || '';
+        c.grep = u.get('grep') || '';
+      },
       keys: (ev, c) => {
         switch (ev.key) {
           case 'w': c.wrap = !c.wrap; return true;
@@ -15,6 +23,11 @@ function browse() {
       onMove: (c) => { c.cur = null; },
       onRestore: (c) => { c.cur = null; },
     }),
+    match: '',
+    grep: '',
+    filtering: false,
+    filterError: '',
+    _filterTimer: null,
     info: { title: '', recon: false },
     cur: null,
     pretty: true,
@@ -79,6 +92,29 @@ function browse() {
     preview() { return this.cur ? u.previewHTML(this.cur, (d) => this.rawUrl(d)) : ''; },
 
     // ---- formatting ----
+    // levelQuery override: --match/--grep ride on every api/level, api/preview and
+    // api/raw request, same as the path, so the server applies them to whichever
+    // level is being asked for (see browseServer.applyFilters).
+    levelQuery() {
+      const q = this.path.map((p) => ['p', p]);
+      if (this.match) q.push(['match', this.match]);
+      if (this.grep) q.push(['grep', this.grep]);
+      return q;
+    },
+    // filterChanged debounces typing in either box, then reloads under the new
+    // filters; a bad regex comes back as an error from the server, shown by the
+    // inputs rather than in the page's general error line.
+    filterChanged() {
+      clearTimeout(this._filterTimer);
+      this._filterTimer = setTimeout(async () => {
+        this.filtering = true;
+        await this.loadLevel();
+        if (this.error) { this.filterError = this.error; this.error = ''; }
+        else { this.filterError = ''; }
+        this.filtering = false;
+      }, 350);
+    },
+
     trim: u.trim,
     size: u.size,
     kind(e) { return e.dir ? 'dir' : e.container ? 'container' : e.image ? 'image' : e.text ? 'text' : 'file'; },

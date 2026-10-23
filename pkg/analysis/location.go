@@ -18,6 +18,10 @@ type Location struct {
 	Entry   string   // the entry selected in that level; "" for none
 	View    View     // "" is ViewAuto
 	NoWords bool     // words within changed lines are not marked
+	// Match and Grep are a browse page's --match/--grep, as typed: a path and a
+	// content regular expression (uncompiled; the caller compiles and applies
+	// them, same text --match/--grep take on the command line). "" means unset.
+	Match, Grep string
 }
 
 // Fragment is the location as a query string (no leading "#" or "?").
@@ -35,12 +39,18 @@ func (l Location) Fragment() string {
 	if l.NoWords {
 		v.Set("words", "0")
 	}
+	if l.Match != "" {
+		v.Set("match", l.Match)
+	}
+	if l.Grep != "" {
+		v.Set("grep", l.Grep)
+	}
 	// url.Values.Encode sorts by key, which would put sel before p: build in order.
 	var parts []string
 	for _, p := range l.Path {
 		parts = append(parts, "p="+url.QueryEscape(p))
 	}
-	for _, k := range []string{"sel", "view", "words"} {
+	for _, k := range []string{"sel", "view", "words", "match", "grep"} {
 		if x := v.Get(k); x != "" {
 			parts = append(parts, k+"="+url.QueryEscape(x))
 		}
@@ -53,7 +63,8 @@ func (l Location) Fragment() string {
 func ParseLocation(s string) Location {
 	s = strings.TrimLeft(s, "#?")
 	v, _ := url.ParseQuery(s)
-	l := Location{Path: v["p"], Entry: v.Get("sel"), NoWords: v.Get("words") == "0"}
+	l := Location{Path: v["p"], Entry: v.Get("sel"), NoWords: v.Get("words") == "0",
+		Match: v.Get("match"), Grep: v.Get("grep")}
 	switch View(v.Get("view")) {
 	case ViewStrings:
 		l.View = ViewStrings
