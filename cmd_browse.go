@@ -41,7 +41,7 @@ import (
 // directory on disk, and anything carve can open inside a file.
 func newBrowseCmd() *cobra.Command {
 	var skip []string
-	var webAddr, match string
+	var webAddr, match, grep string
 	var depth int
 	var noCrawl bool
 	c := &cobra.Command{
@@ -93,6 +93,13 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 				}
 				analysis.BrowseMatch, analysis.BrowseDepth = re, depth
 			}
+			if grep != "" {
+				re, err := regexp.Compile(grep)
+				if err != nil {
+					return fmt.Errorf("--grep: %w", err)
+				}
+				analysis.BrowseGrep, analysis.BrowseDepth = re, depth
+			}
 			if webAddr != "" {
 				return runBrowseWeb(args[0], skip, webAddr)
 			}
@@ -132,7 +139,8 @@ terminal. Use ls/tree/recon/extract directly for scripting or piping.`,
 	}
 	addSkipFlag(c, &skip, "listings (what is left out is never listed, so never preemptively reconned either)")
 	c.Flags().StringVarP(&match, "match", "m", "", "list only entries whose full path (from the input's root, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression, and the directories and containers that hold one; containers are opened to look, down to --depth")
-	c.Flags().IntVar(&depth, "depth", 3, "with --match, how many container levels to open looking for matches, the first included")
+	c.Flags().StringVarP(&grep, "grep", "g", "", "list only entries whose content matches this regular expression (a byte-level search, binary data included, not just printable strings), and the directories and containers that hold one; containers are opened to look, down to --depth. With --match too, both must hold for the same leaf")
+	c.Flags().IntVar(&depth, "depth", 3, "with --match/--grep, how many container levels to open looking for matches, the first included")
 	c.Flags().BoolVar(&noCrawl, "no-auto-recon", false, "recon only what is listed and highlighted; by default the rest is reconned too, to any depth, in the background and behind whatever you navigate to")
 	c.Flags().StringVar(&webAddr, "web", "", "serve the browser as a web page on this address instead, e.g. 127.0.0.1:8765 (port 0 picks one)")
 	return addSecrets(addFullDownload(c))

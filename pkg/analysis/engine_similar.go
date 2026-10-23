@@ -273,7 +273,7 @@ func (t *treeDiffTally) compareInside(x, y *carve.Node, path, indent string, dep
 	sub.pairRenames()
 	sub.pairSimilar()
 	switch {
-	case !t.hit(path) && sub.differences() == 0:
+	case !(t.hit(path) && t.hitContent(x, y)) && sub.differences() == 0:
 		// Opened only to look for matches, and none differ.
 		live(func() { line.subT, line.drop = nil, true })
 	case sub.differences() == 0 && bytesDiffer:

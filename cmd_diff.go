@@ -23,7 +23,7 @@ func init() {
 // point: it is routinely an order of magnitude larger than the real change.
 func newDiffCmd() *cobra.Command {
 	var verbose, verify, profile, interactive bool
-	var member, view, webAddr, match string
+	var member, view, webAddr, match, grep string
 	var context int
 	var fetchAheadMiB int64
 	var skip []string
@@ -43,6 +43,13 @@ func newDiffCmd() *cobra.Command {
 					return fmt.Errorf("--match: %w", err)
 				}
 				cfg.Match = re
+			}
+			if grep != "" {
+				re, err := regexp.Compile(grep)
+				if err != nil {
+					return fmt.Errorf("--grep: %w", err)
+				}
+				cfg.Grep = re
 			}
 			var err error
 			if cfg.Skip, err = checkSkips(skip); err != nil {
@@ -178,6 +185,7 @@ func newDiffCmd() *cobra.Command {
 	_ = c.Flags().MarkHidden("profile")
 	c.Flags().BoolVar(&verify, "verify", false, "packages: read every file instead of trusting vendor manifests (.ver, update.info, TarList) for their hashes")
 	c.Flags().StringVarP(&match, "match", "m", "", "packages: compare only members whose full path (from the inputs' roots, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression; containers are opened to look, down to --depth")
+	c.Flags().StringVarP(&grep, "grep", "g", "", "packages: compare only members whose content, on either side, matches this regular expression (a byte-level search, binary data included); containers are opened to look, down to --depth. With --match too, both must hold for the same member")
 	addSkipFlag(c, &skip, "packages")
 	c.Flags().IntVar(&depth, "depth", 3, "packages: how many container levels to compare into")
 	c.Flags().IntVar(&autoDepth, "auto-depth", 2, "interactive and web: levels beyond --depth to compare on their own, per path, nearest what you are looking at first, when a worker is spare (0 = only when asked, with D; negative = no limit)")

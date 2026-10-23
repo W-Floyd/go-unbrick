@@ -210,6 +210,11 @@ func (t *treeDiffTally) out(format string, args ...any) *diffLine {
 // (--match); containers are opened to look for them.
 var diffMatch *regexp.Regexp
 
+// diffGrep, when set, limits a comparison to members whose content (on either
+// side) matches (--grep); containers are opened to look for them. With
+// diffMatch too, both must hold for the same member.
+var diffGrep *regexp.Regexp
+
 // diffSkip are the --skip regular expressions: a member whose full path matches is left
 // out of the comparison, and a container that matches is not opened.
 var diffSkip []string
@@ -217,6 +222,25 @@ var diffSkip []string
 // hit reports whether the member at path is one --match asks for.
 func (t *treeDiffTally) hit(path string) bool {
 	return diffMatch == nil || diffMatch.MatchString(t.base+path)
+}
+
+// hitContent reports whether --grep is satisfied by either side's content. A
+// directory has no content to search -- not a match, but not a read error
+// either -- and a side that is missing (nil, an add/remove) or unreadable
+// (opaque/undecryptable) is skipped rather than counted against the other.
+func (t *treeDiffTally) hitContent(x, y *carve.Node) bool {
+	if diffGrep == nil {
+		return true
+	}
+	for _, n := range [2]*carve.Node{x, y} {
+		if n == nil || n.IsDirNode() {
+			continue
+		}
+		if ok, err := ContentMatch(n, diffGrep, 0); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // diffStep, when set, is called as the comparison reaches each member. A test
@@ -328,7 +352,7 @@ func (t *treeDiffTally) addOnly(n *carve.Node, path, indent string, isNew bool) 
 		}
 		return
 	}
-	if !t.hit(path) {
+	if !t.hit(path) || !t.hitContent(n, nil) {
 		return
 	}
 	e := &diffEnt{path: path, node: n}
@@ -397,7 +421,7 @@ func diffNodes(a, b *carve.Node, prefix, indent string, depth int, verbose bool,
 		}
 		// Under --match a member that does not match is looked at only for what
 		// is inside it: a directory, or a container both sides open.
-		hit := t.hit(path)
+		hit := t.hit(path) && t.hitContent(x, y)
 		if !hit && !(x != nil && x.IsDirNode()) && !(y != nil && y.IsDirNode()) &&
 			!(x != nil && y != nil && depth > 1 && x.IsContainer() && y.IsContainer()) {
 			continue

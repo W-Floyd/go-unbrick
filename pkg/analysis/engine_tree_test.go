@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -460,5 +461,102 @@ func TestDiffManifestsInTwoAlgorithms(t *testing.T) {
 	}
 	if opened != 0 {
 		t.Errorf("opened pkg.tar %d times; its stated hashes agree on both sides", opened)
+	}
+}
+
+func writeFiles(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	root := t.TempDir()
+	for n, c := range files {
+		p := filepath.Join(root, n)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, c, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+func TestDiffGrepFindsBinaryAndTextContentOnEitherSide(t *testing.T) {
+	old := diffGrep
+	t.Cleanup(func() { diffGrep = old })
+	diffGrep = regexp.MustCompile("secretvalue")
+
+	a := writeFiles(t, map[string][]byte{
+		"same.txt":     []byte("same content\n"),
+		"mixed.bin":    append([]byte("hello\x00\x01"), []byte("secretvalue")...),
+		"sub/deep.txt": []byte("xsecretvaluex"),
+		"plain.txt":    []byte("no match here"),
+		"gone.txt":     []byte("removed secretvalue here"),
+	})
+	b := writeFiles(t, map[string][]byte{
+		"same.txt":     []byte("same content\n"),
+		"mixed.bin":    append([]byte("hello\x00\x01"), []byte("DIFFERENT")...), // still a hit: A's side still matched
+		"sub/deep.txt": []byte("xsecretvaluex-changed"),
+		"plain.txt":    []byte("no match here either"),
+		"new.txt":      []byte("added secretvalue here"),
+	})
+	out, err := captureStdout(func() error { _, err := diffContainers(a, b, 3, false); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"~ mixed.bin", "~ sub/deep.txt", "- gone.txt", "+ new.txt",
+		"2 changed, 1 added, 1 removed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "plain.txt") || strings.Contains(out, "same.txt") {
+		t.Errorf("non-matching members should not appear:\n%s", out)
+	}
+}
+
+func TestDiffGrepAndMatchAreCombinedWithAnd(t *testing.T) {
+	oldG, oldM := diffGrep, diffMatch
+	t.Cleanup(func() { diffGrep, diffMatch = oldG, oldM })
+
+	files := func(v string) map[string][]byte {
+		return map[string][]byte{"mixed.bin": []byte("secretvalue " + v), "sub/deep.txt": []byte("secretvalue " + v)}
+	}
+	a := writeFiles(t, files("a"))
+	b := writeFiles(t, files("b"))
+
+	diffGrep, diffMatch = regexp.MustCompile("secretvalue"), nil
+	out, err := captureStdout(func() error { _, err := diffContainers(a, b, 3, false); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "mixed.bin") || !strings.Contains(out, "deep.txt") {
+		t.Errorf("content-only should find both:\n%s", out)
+	}
+
+	diffMatch = regexp.MustCompile(`^sub/`)
+	out, err = captureStdout(func() error { _, err := diffContainers(a, b, 3, false); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "mixed.bin") {
+		t.Errorf("mixed.bin matches content but not path, should not appear:\n%s", out)
+	}
+	if !strings.Contains(out, "deep.txt") {
+		t.Errorf("sub/deep.txt matches both, should appear:\n%s", out)
+	}
+}
+
+func TestDiffGrepNoMatchIsEmptyNotACrash(t *testing.T) {
+	old := diffGrep
+	t.Cleanup(func() { diffGrep = old })
+	diffGrep = regexp.MustCompile("nothing-matches-this")
+
+	a := writeFiles(t, map[string][]byte{"sub/f.txt": []byte("x")})
+	b := writeFiles(t, map[string][]byte{"sub/f.txt": []byte("y")})
+	out, err := captureStdout(func() error { _, err := diffContainers(a, b, 3, false); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "0 changed, 0 added, 0 removed") {
+		t.Errorf("nothing should match:\n%s", out)
 	}
 }

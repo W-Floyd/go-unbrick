@@ -168,7 +168,7 @@ func newTreeCmd() *cobra.Command {
 	var depth int
 	var types bool
 	var skip []string
-	var match string
+	var match, grep string
 	c := &cobra.Command{
 		Use:   "tree <file | url> [path]",
 		Short: "draw what is inside anything as a tree, through nested containers",
@@ -208,6 +208,11 @@ name its format, which over a URL means fetching it.
 					return fmt.Errorf("--match: %w", err)
 				}
 			}
+			if grep != "" {
+				if t.grep, err = regexp.Compile(grep); err != nil {
+					return fmt.Errorf("--grep: %w", err)
+				}
+			}
 			fmt.Printf("%s  [%s]\n", n.Name, kind)
 			t.print(kids, "", "", depth-1)
 			fmt.Printf("\n%d containers, %d files", t.containers, t.files)
@@ -222,6 +227,7 @@ name its format, which over a URL means fetching it.
 	c.Flags().BoolVarP(&types, "types", "t", false, "name each file's format (reads every head)")
 	addSkipFlag(c, &skip, "files and directories")
 	c.Flags().StringVarP(&match, "match", "m", "", "draw only entries whose full path (from the tree's root, through nested containers, e.g. enc_system/enc_system.ext4/etc/iv.dat) matches this regular expression, with the directories above them; containers are opened to look, down to --depth")
+	c.Flags().StringVarP(&grep, "grep", "g", "", "draw only entries whose content matches this regular expression (a byte-level search, so a hit sitting in otherwise-binary data is found too, not just printable strings), with the directories above them; containers are opened to look, down to --depth. With --match too, both must hold for the same leaf")
 	return addSecrets(addFullDownload(c))
 }
 
@@ -257,7 +263,9 @@ func buildTreeDir(kids []*carve.Node) *treeDir {
 type treePrinter struct {
 	types             bool
 	skip              []string       // regular expressions on an entry's full path: left out, files and directories alike
-	match             *regexp.Regexp // when set, only entries that are or hold a match are drawn
+	match             *regexp.Regexp // when set, only entries whose full path is or holds a match are drawn
+	grep              *regexp.Regexp // when set, only entries whose content is or holds a match are drawn (binary data included, not just printable strings); with match too, both must hold for the same leaf
+	grepMax           int64          // bytes of a file --grep reads before giving up on it; 0 = ContentMatch's default
 	containers, files int
 	left              int // entries a skip left out
 }
@@ -330,14 +338,30 @@ func (t *treePrinter) hits(d *treeDir, at string, depth int) bool {
 	return false
 }
 
-// matches reports whether an entry is, or holds, a match.
+// matches reports whether an entry is, or holds, a match: its full path for
+// --match, its content for --grep, both for the same leaf when both are given.
+// A directory has no content, so only --match (never --grep) can make a
+// directory count on its own name; either can still be satisfied by something
+// found inside it.
 func (t *treePrinter) matches(it treeItem, at string, depth int) bool {
 	p := at + strings.TrimSuffix(it.name, "/")
 	if it.dir != nil {
-		return t.match.MatchString(p) || t.hits(it.dir, p+"/", depth)
+		dirNamed := t.match != nil && t.match.MatchString(p)
+		return dirNamed || t.hits(it.dir, p+"/", depth)
 	}
-	if t.match.MatchString(p) {
-		return true
+	if it.file.IsDirNode() { // a directory on disk riding in treeItem.file (see items): same rule, no content to grep
+		dirNamed := t.match != nil && t.match.MatchString(p)
+		_, ks, _ := it.file.Children()
+		return dirNamed || t.hits(buildTreeDir(ks), p+"/", depth)
+	}
+	pathOK := t.match == nil || t.match.MatchString(p)
+	if pathOK {
+		switch {
+		case t.grep == nil:
+			return true
+		case t.matchesContent(it.file):
+			return true
+		}
 	}
 	if ks := t.opens(it.file, depth); ks != nil {
 		d := depth
@@ -349,9 +373,17 @@ func (t *treePrinter) matches(it treeItem, at string, depth int) bool {
 	return false
 }
 
+// matchesContent reports whether f's bytes satisfy --grep, treating a read
+// failure (an opaque/undecryptable member) as no match rather than an error the
+// tree draws nothing for.
+func (t *treePrinter) matchesContent(f *carve.Node) bool {
+	ok, err := analysis.ContentMatch(f, t.grep, t.grepMax)
+	return err == nil && ok
+}
+
 func (t *treePrinter) printDir(d *treeDir, prefix, at string, depth int) {
 	items := t.items(d, at, true)
-	if t.match != nil {
+	if t.match != nil || t.grep != nil {
 		kept := items[:0]
 		for _, it := range items {
 			if t.matches(it, at, depth) {
@@ -418,7 +450,7 @@ func (t *treePrinter) printFile(f *carve.Node, name, prefix, branch, next, at st
 }
 
 func newExtractCmd() *cobra.Command {
-	var out, match string
+	var out, match, grep string
 	var skip []string
 	var depth int
 	var recursive, force bool
@@ -441,7 +473,7 @@ under a directory instead, named by their paths; nested containers stay whole.
 			if err != nil {
 				return err
 			}
-			var re *regexp.Regexp
+			var re, grepRe *regexp.Regexp
 			if match != "" {
 				var err error
 				if re, err = regexp.Compile(match); err != nil {
@@ -449,6 +481,15 @@ under a directory instead, named by their paths; nested containers stay whole.
 				}
 				if !recursive {
 					return fmt.Errorf("--match needs -r")
+				}
+			}
+			if grep != "" {
+				var err error
+				if grepRe, err = regexp.Compile(grep); err != nil {
+					return fmt.Errorf("--grep: %w", err)
+				}
+				if !recursive {
+					return fmt.Errorf("--grep needs -r")
 				}
 			}
 			n, err := carvePath(args[0], p)
@@ -474,7 +515,7 @@ under a directory instead, named by their paths; nested containers stay whole.
 			if kids == nil {
 				return fmt.Errorf("%s is not a container", n.Name)
 			}
-			written, err := extractKids(kids, "", out, re, skip, depth-1, force)
+			written, err := extractKids(kids, "", out, re, grepRe, skip, depth-1, force)
 			if err != nil {
 				return err
 			}
@@ -486,16 +527,18 @@ under a directory instead, named by their paths; nested containers stay whole.
 	c.Flags().BoolVarP(&recursive, "recursive", "r", false, "write a container's children under a directory")
 	c.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing files")
 	c.Flags().StringVarP(&match, "match", "m", "", "with -r, write only entries whose full path (from the extracted node, through nested containers) matches this regular expression; containers are opened to look, down to --depth, and a matching one is written whole")
-	c.Flags().IntVar(&depth, "depth", 3, "with --match, how many container levels to open, the first included")
+	c.Flags().StringVarP(&grep, "grep", "g", "", "with -r, write only entries whose content matches this regular expression (a byte-level search, binary data included); containers are opened to look, down to --depth. With --match too, both must hold for the same entry")
+	c.Flags().IntVar(&depth, "depth", 3, "with --match/--grep, how many container levels to open, the first included")
 	addSkipFlag(c, &skip, "with -r")
 	return addSecrets(addFullDownload(c))
 }
 
 // extractKids writes kids under out, named by their paths from the extracted
-// node (at is the path of kids). A directory is always descended. With re, only
-// entries whose path matches are written, and containers are opened, while
-// depth > 0, to look for them.
-func extractKids(kids []*carve.Node, at, out string, re *regexp.Regexp, skip []string, depth int, force bool) (int, error) {
+// node (at is the path of kids). A directory is always descended. With re
+// and/or grep, only entries whose path and/or content match are written (both
+// must hold for the same entry when both are given), and containers are
+// opened, while depth > 0, to look for them.
+func extractKids(kids []*carve.Node, at, out string, re, grep *regexp.Regexp, skip []string, depth int, force bool) (int, error) {
 	written := 0
 	for _, k := range kids {
 		p := at + k.Name
@@ -508,12 +551,12 @@ func extractKids(kids []*carve.Node, at, out string, re *regexp.Regexp, skip []s
 			if err != nil {
 				return written, err
 			}
-			n, err := extractKids(ks, p+"/", out, re, skip, depth, force)
+			n, err := extractKids(ks, p+"/", out, re, grep, skip, depth, force)
 			written += n
 			if err != nil {
 				return written, err
 			}
-		case re == nil || re.MatchString(p):
+		case (re == nil || re.MatchString(p)) && contentOK(k, grep):
 			dst, err := within(out, p)
 			if err != nil {
 				return written, err
@@ -533,7 +576,7 @@ func extractKids(kids []*carve.Node, at, out string, re *regexp.Regexp, skip []s
 			if err != nil {
 				continue // not readable as a container: nothing to find in it
 			}
-			n, err := extractKids(ks, p+"/", out, re, skip, depth-1, force)
+			n, err := extractKids(ks, p+"/", out, re, grep, skip, depth-1, force)
 			written += n
 			if err != nil {
 				return written, err
@@ -541,6 +584,17 @@ func extractKids(kids []*carve.Node, at, out string, re *regexp.Regexp, skip []s
 		}
 	}
 	return written, nil
+}
+
+// contentOK reports whether k's bytes satisfy grep ("" i.e. nil: always true).
+// A read failure (an opaque/undecryptable member) counts as no match rather
+// than aborting the whole extraction.
+func contentOK(k *carve.Node, grep *regexp.Regexp) bool {
+	if grep == nil {
+		return true
+	}
+	ok, err := analysis.ContentMatch(k, grep, 0)
+	return err == nil && ok
 }
 
 // within joins a member name under dir, refusing one that would land outside

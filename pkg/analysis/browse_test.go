@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -143,5 +144,106 @@ func TestSkipIsARegexOnTheFullPath(t *testing.T) {
 	}
 	if !SkipPath([]string{"", `a/b`}, "x/a/b/c") || SkipPath([]string{"", `[`}, "x") {
 		t.Error("SkipPath: empty and invalid patterns match nothing, others search the path")
+	}
+}
+
+func TestBrowseGrepFindsContentIncludingInsideAContainer(t *testing.T) {
+	old := BrowseGrep
+	t.Cleanup(func() { BrowseGrep = old })
+	BrowseGrep = regexp.MustCompile("abc")
+	BrowseDepth = 3
+
+	top, err := OpenInput(browseFixture(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "abc" is pkg.tar's one member's content, not any top-level file's own
+	// bytes: the archive must be opened to find it, and only it (plus dirs
+	// that hold it) should be kept.
+	if names := entryNames(top); names != "pkg.tar" {
+		t.Errorf("top level: %q", names)
+	}
+	inner, err := Open(mustFind(t, top, "pkg.tar"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := entryNames(inner); names != "m.txt" {
+		t.Errorf("inside pkg.tar: %q", names)
+	}
+}
+
+func TestBrowseGrepAndMatchAreCombinedWithAnd(t *testing.T) {
+	old, oldM := BrowseGrep, BrowseMatch
+	t.Cleanup(func() { BrowseGrep, BrowseMatch = old, oldM })
+	BrowseDepth = 3
+
+	dir := browseFixture(t)
+	BrowseGrep, BrowseMatch = regexp.MustCompile("hello|inner"), nil
+	top, err := OpenInput(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := entryNames(top); names != "notes.txt sub" {
+		t.Errorf("content-only: %q", names)
+	}
+	BrowseMatch = regexp.MustCompile(`^sub/`)
+	top, err = OpenInput(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := entryNames(top); names != "sub" {
+		t.Errorf("content+path AND: %q (notes.txt matches content but not path)", names)
+	}
+}
+
+func mustFind(t *testing.T, l *BrowseLevel, name string) BrowseEntry {
+	t.Helper()
+	e, ok := l.Find(name)
+	if !ok {
+		t.Fatalf("no %q in %s", name, entryNames(l))
+	}
+	return e
+}
+
+func TestBrowserSetFiltersReopensAndClearsCache(t *testing.T) {
+	old := BrowseMatch
+	t.Cleanup(func() { BrowseMatch = old })
+
+	dir := browseFixture(t)
+	b, err := NewBrowser(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, err := b.LevelAt(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(entryNames(top), "notes.txt") {
+		t.Fatalf("expected the unfiltered listing, got %q", entryNames(top))
+	}
+
+	re := regexp.MustCompile(`^sub/`)
+	if err := b.SetFilters(re, nil, 3); err != nil {
+		t.Fatal(err)
+	}
+	top, err = b.LevelAt(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := entryNames(top); names != "sub" {
+		t.Errorf("after SetFilters: %q", names)
+	}
+
+	// Clearing filters must restore the full listing, not reuse anything cached
+	// under the narrower one.
+	if err := b.SetFilters(nil, nil, 3); err != nil {
+		t.Fatal(err)
+	}
+	top, err = b.LevelAt(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(entryNames(top), "notes.txt") {
+		t.Errorf("after clearing filters: %q", entryNames(top))
 	}
 }

@@ -256,8 +256,15 @@ func (l *BrowseLevel) Refresh(skip []string) (*BrowseLevel, error) {
 }
 
 // OpenInput is the top level of an input: a directory, or the members of whatever
-// carve opens it as.
+// carve opens it as. This is also where a fresh browsing session begins, so it
+// resets holdsCache: that cache is keyed by an entry's path relative to ITS OWN
+// root, not by which root, and a session only ever has the one root BrowseMatch
+// and BrowseGrep (fixed for the session) are judged against -- carrying a stale
+// answer over from a previous root would be wrong, not just stale.
 func OpenInput(input string, skip []string) (*BrowseLevel, error) {
+	holdsCache.Lock()
+	holdsCache.m = map[string]bool{}
+	holdsCache.Unlock()
 	var l *BrowseLevel
 	if infile.IsDir(input) {
 		var err error
@@ -282,6 +289,14 @@ func OpenInput(input string, skip []string) (*BrowseLevel, error) {
 // containers that hold one, opened down to BrowseDepth container levels to look.
 var BrowseMatch *regexp.Regexp
 
+// BrowseGrep, when set, limits listings to entries whose content matches (a
+// byte-level search, binary data included, not just printable strings), and to
+// the directories and containers that hold one, opened the same way BrowseMatch
+// is. With BrowseMatch too, both must hold for the same leaf; a directory has no
+// content, so only BrowseMatch (never BrowseGrep) can make one count on its own
+// name.
+var BrowseGrep *regexp.Regexp
+
 // BrowseDepth is how many container levels BrowseMatch opens, the first included.
 var BrowseDepth = 3
 
@@ -297,7 +312,7 @@ func (l *BrowseLevel) Place(prefix string, skip []string) { l.place(prefix, skip
 
 func (l *BrowseLevel) place(prefix string, skip []string) {
 	l.setPaths(prefix)
-	if len(skip) == 0 && BrowseMatch == nil {
+	if len(skip) == 0 && BrowseMatch == nil && BrowseGrep == nil {
 		return
 	}
 	kept := l.Entries[:0]
@@ -305,7 +320,7 @@ func (l *BrowseLevel) place(prefix string, skip []string) {
 		if SkipPath(skip, e.Path) {
 			continue
 		}
-		if BrowseMatch != nil && !matchEntry(e, skip, BrowseDepth) {
+		if (BrowseMatch != nil || BrowseGrep != nil) && !matchEntry(e, skip, BrowseDepth) {
 			continue
 		}
 		kept = append(kept, e)
@@ -320,14 +335,27 @@ func (l *BrowseLevel) setPaths(prefix string) {
 	}
 }
 
-// matchEntry reports whether an entry is, or holds, a BrowseMatch match, opening
-// containers while depth allows. A file on disk that is not text or an image may
-// be a container: it is tried.
+// matchEntry reports whether an entry is, or holds, a BrowseMatch/BrowseGrep
+// match (both, for the same leaf, when both are set), opening containers while
+// depth allows. A file on disk that is not text or an image may be a container:
+// it is tried.
 func matchEntry(e BrowseEntry, skip []string, depth int) bool {
-	if BrowseMatch.MatchString(e.Path) {
-		return true
-	}
 	dir := e.Dir || e.Group != nil
+	if dir {
+		// A directory has no content: BrowseGrep never makes one count on its
+		// own name, and "no BrowseMatch set" must not be read as "trivially
+		// satisfied" here the way it safely is for a leaf below — that would
+		// include every directory outright instead of only ones actually
+		// named by BrowseMatch, independent of whatever is or isn't inside them.
+		if BrowseMatch != nil && BrowseMatch.MatchString(e.Path) {
+			return true
+		}
+	} else {
+		pathOK := BrowseMatch == nil || BrowseMatch.MatchString(e.Path)
+		if pathOK && (BrowseGrep == nil || contentMatches(e)) {
+			return true
+		}
+	}
 	if !dir && (e.Text || e.Image || (e.OSPath == "" && !e.Container)) {
 		return false
 	}
@@ -358,6 +386,14 @@ func matchEntry(e BrowseEntry, skip []string, depth int) bool {
 	holdsCache.m[key] = v
 	holdsCache.Unlock()
 	return v
+}
+
+// contentMatches reports whether e's bytes satisfy BrowseGrep. A read failure
+// (an opaque/undecryptable member) counts as no match rather than an error the
+// listing breaks on.
+func contentMatches(e BrowseEntry) bool {
+	data, _, err := ReadEntry(e, defaultGrepMaxFile)
+	return err == nil && BrowseGrep.Match(data)
 }
 
 // PreviewCap bounds how much of a file ReadEntry reads for a preview.
@@ -502,10 +538,12 @@ func LooksLikeText(name string, head []byte) bool {
 // Browser is an input being browsed, with its levels reachable by a path of entry
 // names from the top. Levels are listed on first use and kept.
 type Browser struct {
-	skip []string
-	root *BrowseLevel
+	input string
+	skip  []string
 
-	lc levelCache[*BrowseLevel]
+	mu   sync.RWMutex // guards root and lc: SetFilters replaces both under a live server
+	root *BrowseLevel
+	lc   levelCache[*BrowseLevel]
 }
 
 // NewBrowser opens an input for browsing.
@@ -514,19 +552,41 @@ func NewBrowser(input string, skip []string) (*Browser, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Browser{skip: skip, root: root}, nil
+	return &Browser{input: input, skip: skip, root: root}, nil
 }
 
 // LevelAt is the level at a path of entry names. Entry names that are directories
 // or containers are as listed ("sub", "pkg.tar").
 func (b *Browser) LevelAt(path []string) (*BrowseLevel, error) {
-	return b.lc.at(b.root, path, func(cur *BrowseLevel, name string) (*BrowseLevel, error) {
+	b.mu.RLock()
+	root, lc := b.root, &b.lc
+	b.mu.RUnlock()
+	return lc.at(root, path, func(cur *BrowseLevel, name string) (*BrowseLevel, error) {
 		e, ok := cur.Find(name)
 		if !ok {
 			return nil, ErrNoSuchEntry
 		}
 		return Open(e, b.skip)
 	})
+}
+
+// SetFilters changes the --match/--grep patterns this browser applies and
+// re-opens its input under them, discarding every level cached under the old
+// ones. BrowseMatch/BrowseGrep/BrowseDepth are process-global (the same state
+// the command-line flags set), so this affects every Browser and every request
+// being served concurrently, same as if the process had been started with
+// different flags -- fine for the one local, single-user server this is, not a
+// per-request isolation primitive. A nil match and nil grep clear filtering.
+func (b *Browser) SetFilters(match, grep *regexp.Regexp, depth int) error {
+	BrowseMatch, BrowseGrep, BrowseDepth = match, grep, depth
+	root, err := OpenInput(b.input, b.skip)
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.root, b.lc = root, levelCache[*BrowseLevel]{}
+	b.mu.Unlock()
+	return nil
 }
 
 // Find is the entry called name in the level.
