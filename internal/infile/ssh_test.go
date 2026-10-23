@@ -72,7 +72,8 @@ func TestSSH(t *testing.T) {
 	SSHDial = func(target string) (*ssh.Client, error) {
 		return ssh.Dial("tcp", addr, &ssh.ClientConfig{User: "u", HostKeyCallback: ssh.InsecureIgnoreHostKey()})
 	}
-	t.Cleanup(func() { SSHDial = nil; sshConns = map[string]*sshConn{} })
+	SSHCacheDir = t.TempDir()
+	t.Cleanup(func() { SSHDial = nil; sshConns = map[string]*sshConn{}; SSHCacheDir = "" })
 	sshConns = map[string]*sshConn{}
 
 	dir := t.TempDir()
@@ -140,7 +141,8 @@ func TestSSHReadAheadWarmEvict(t *testing.T) {
 	SSHDial = func(target string) (*ssh.Client, error) {
 		return ssh.Dial("tcp", addr, &ssh.ClientConfig{User: "u", HostKeyCallback: ssh.InsecureIgnoreHostKey()})
 	}
-	t.Cleanup(func() { SSHDial = nil; sshConns = map[string]*sshConn{}; resetSSHFiles() })
+	SSHCacheDir = t.TempDir()
+	t.Cleanup(func() { SSHDial = nil; sshConns = map[string]*sshConn{}; resetSSHFiles(); SSHCacheDir = "" })
 	sshConns = map[string]*sshConn{}
 	resetSSHFiles()
 
@@ -192,6 +194,74 @@ func TestSSHReadAheadWarmEvict(t *testing.T) {
 
 func bytes_equal(a, b []byte) bool { return string(a) == string(b) }
 
+// TestSSHDiskCacheSurvivesRestart: a read warms the on-disk cache; dropping
+// the in-process handles (as a fresh "unbrick ls"/"extract" invocation would)
+// and reading the same range again costs no network round trip at all, not
+// just a cheaper one. That is the whole point of the disk cache - a recon
+// that touches the same remote file across many separate commands fetches
+// each byte once, not once per command.
+func TestSSHDiskCacheSurvivesRestart(t *testing.T) {
+	addr := sftpServer(t)
+	SSHDial = func(target string) (*ssh.Client, error) {
+		return ssh.Dial("tcp", addr, &ssh.ClientConfig{User: "u", HostKeyCallback: ssh.InsecureIgnoreHostKey()})
+	}
+	SSHCacheDir = t.TempDir()
+	t.Cleanup(func() {
+		SSHDial = nil
+		sshConns = map[string]*sshConn{}
+		resetSSHFiles()
+		OnSSHRead = nil
+		SSHCacheDir = ""
+	})
+
+	dir := t.TempDir()
+	body := make([]byte, 5<<20+777)
+	for i := range body {
+		body[i] = byte(i * 13)
+	}
+	os.WriteFile(filepath.Join(dir, "a.bin"), body, 0o644)
+	u := "ssh://me@host" + dir + "/a.bin"
+
+	var mu sync.Mutex
+	var reads int64
+	OnSSHRead = func(int, time.Duration) { mu.Lock(); reads++; mu.Unlock() }
+	snapReads := func() int64 { mu.Lock(); defer mu.Unlock(); return reads }
+
+	sshConns = map[string]*sshConn{}
+	resetSSHFiles()
+	f, err := Open(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(body))
+	if _, err := io.ReadFull(f, got); err != nil || !bytes_equal(got, body) {
+		t.Fatalf("first read: %v", err)
+	}
+	if snapReads() == 0 {
+		t.Fatal("expected network reads on a cold cache")
+	}
+
+	// Drop every in-process handle, as a new invocation would, but keep the
+	// disk cache. Reopening and stat'ing the remote file still happens (there
+	// is no way to know it is unchanged without asking), but no block of it
+	// should be fetched again: that is what the disk cache is for.
+	sshConns = map[string]*sshConn{}
+	resetSSHFiles()
+	before := snapReads()
+
+	g, err := Open(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2 := make([]byte, len(body))
+	if _, err := io.ReadFull(g, got2); err != nil || !bytes_equal(got2, body) {
+		t.Fatalf("second read: %v", err)
+	}
+	if after := snapReads(); after != before {
+		t.Fatalf("second read over a warm disk cache still fetched %d blocks over the network", after-before)
+	}
+}
+
 // Reading a few bytes every megabyte (a tar's headers) fetches about a block
 // per read, not the file; reading it through fetches it in few large requests.
 func TestSSHStridedVersusSequential(t *testing.T) {
@@ -199,7 +269,14 @@ func TestSSHStridedVersusSequential(t *testing.T) {
 	SSHDial = func(target string) (*ssh.Client, error) {
 		return ssh.Dial("tcp", addr, &ssh.ClientConfig{User: "u", HostKeyCallback: ssh.InsecureIgnoreHostKey()})
 	}
-	t.Cleanup(func() { SSHDial = nil; sshConns = map[string]*sshConn{}; resetSSHFiles(); OnSSHRead = nil })
+	SSHCacheDir = t.TempDir()
+	t.Cleanup(func() {
+		SSHDial = nil
+		sshConns = map[string]*sshConn{}
+		resetSSHFiles()
+		OnSSHRead = nil
+		SSHCacheDir = ""
+	})
 	sshConns = map[string]*sshConn{}
 	resetSSHFiles()
 

@@ -43,6 +43,7 @@ type blk struct {
 type sshFile struct {
 	f    *sftp.File
 	size int64
+	disk *sshDisk // nil when the disk cache is unavailable; reads just skip it
 
 	mu       sync.Mutex
 	blocks   map[int64]*blk
@@ -92,6 +93,15 @@ func (s *sshFile) fetchRun(lo, hi int64, background bool) {
 			warmSem <- struct{}{}
 			defer func() { <-warmSem }()
 		}
+		if s.disk != nil {
+			if data, ok := diskHit(s.disk, lo, hi); ok {
+				for k, b := range bs {
+					b.data = data[k]
+					close(b.done)
+				}
+				return
+			}
+		}
 		off := lo * blockSize
 		buf := make([]byte, min((hi-lo+1)*blockSize, s.size-off))
 		t := time.Now()
@@ -105,6 +115,7 @@ func (s *sshFile) fetchRun(lo, hi int64, background bool) {
 				b.err = err
 			} else {
 				b.data = buf[int64(k)*blockSize : min(int64(k+1)*blockSize, int64(len(buf)))]
+				s.disk.write(lo+int64(k), b.data)
 			}
 			close(b.done)
 		}
@@ -261,6 +272,9 @@ func sharedSSH(p string) (*sshFile, error) {
 			return
 		}
 		en.sf = &sshFile{f: f, size: fi.Size(), blocks: map[int64]*blk{}, lastEnd: -1}
+		// Best-effort: an unwritable or unavailable cache dir just means every
+		// block comes over the network, same as before this cache existed.
+		en.sf.disk, _ = openSSHDisk(p, fi.Size(), fi.ModTime().UnixNano())
 	})
 	return en.sf, en.err
 }

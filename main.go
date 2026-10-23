@@ -91,9 +91,12 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&sshOpts.Identity, "ssh-identity", "", "private key for ssh:// inputs (default: the agent, then ~/.ssh/id_*)")
 	root.PersistentFlags().StringVar(&sshOpts.HostKeys, "ssh-host-keys", linuxdev.HostKeysStrict, "host-key policy for ssh:// inputs: strict, accept-new, off")
 	root.PersistentFlags().StringVar(&sshOpts.KnownHosts, "ssh-known-hosts", "", "known_hosts file for ssh:// inputs (default ~/.ssh/known_hosts)")
+	root.PersistentFlags().String("ssh-cache", "", "cache for ssh:// inputs, across separate runs (env UNBRICK_SSH_CACHE; default <user cache>/go-unbrick/ssh)")
+	_ = v.BindPFlag("ssh-cache", root.PersistentFlags().Lookup("ssh-cache"))
 	cobra.OnInitialize(func() {
 		infile.SSHDial = func(target string) (*ssh.Client, error) { return linuxdev.DialSSH(target, sshOpts) }
 		infile.CacheDir = v.GetString("http-cache")
+		infile.SSHCacheDir = v.GetString("ssh-cache")
 		infile.Mirrors = vendor.Mirrors
 		if v.GetBool("debug-http") {
 			infile.Log = func(format string, args ...any) { fmt.Fprintf(os.Stderr, "[http] "+format+"\n", args...) }
