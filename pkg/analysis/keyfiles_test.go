@@ -136,7 +136,9 @@ func TestKeyFilesNameTheIVFileThatGoesWithTheKeyBeside(t *testing.T) {
 	keyB := bytes.Repeat([]byte{0x6b, 0xc2, 0x19, 0xf0}, 4)
 	iv := bytes.Repeat([]byte{0x91, 0x2e, 0xb8, 0x44}, 4) // the same bytes in two IV files
 	secrets := t.TempDir()
-	put := func(name string, b []byte) { os.WriteFile(filepath.Join(secrets, name), []byte(hex.EncodeToString(b)+"\n"), 0o600) }
+	put := func(name string, b []byte) {
+		os.WriteFile(filepath.Join(secrets, name), []byte(hex.EncodeToString(b)+"\n"), 0o600)
+	}
 	put("ev6-v1_image_dat_key.hex", keyA)
 	put("kona-v2_image_dat_key.hex", keyB)
 	put("ev6-v1_iv.hex", iv)

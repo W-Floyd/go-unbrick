@@ -58,6 +58,36 @@ type KeyScan struct {
 	Unopened []string  // members named enc_ that no loaded secret opens
 }
 
+// Observe records what one entry shows of keys, for a host that walks an input itself and wants this on the way:
+// a key file the vendors name is read, and an enc_ member is noted as opened by a loaded secret (with the key and
+// IV together) or as opened by none. path is the entry's full path from the input's root; sub is the level the
+// entry opened into, nil if it did not open. It reads a few bytes of a key file and the head of an enc_ member.
+func (k *KeyScan) Observe(path string, e BrowseEntry, sub *BrowseLevel) {
+	if e.Dir || e.Group != nil {
+		return
+	}
+	if IsKeyFile(path) {
+		b, _, err := ReadEntry(e, keyFileMax)
+		if err == nil && len(b) > 0 {
+			k.Files = append(k.Files, KeyFile{Path: path, Name: e.Name, Size: len(b), Value: describeKey(b), Known: knownKey(b, e.Name)})
+		}
+		return
+	}
+	if strings.HasPrefix(e.Name, "enc_") {
+		if sub != nil {
+			if use, ok := secretFor(path, e, sub); ok {
+				k.Uses = append(k.Uses, use)
+				return
+			}
+		}
+		k.Unopened = append(k.Unopened, path)
+	}
+}
+
+// Done settles what needs the whole scan: an IV several loaded files hold is named for the one that goes with the
+// key beside it.
+func (k *KeyScan) Done() { resolveIVNames(k.Files) }
+
 // FindKeyFiles is ScanKeys' key files alone.
 func FindKeyFiles(ctx context.Context, input string, depth int, progress func(opened, found int, at string)) ([]KeyFile, error) {
 	k, err := ScanKeys(ctx, input, depth, progress)
@@ -88,16 +118,15 @@ func ScanKeys(ctx context.Context, input string, depth int, progress func(opened
 			}
 			dir := e.Dir || e.Group != nil
 			if !dir && IsKeyFile(e.Path) {
-				b, _, err := ReadEntry(e, keyFileMax)
-				if err == nil && len(b) > 0 {
-					name := e.Name
-					out.Files = append(out.Files, KeyFile{Path: e.Path, Name: name, Size: len(b), Value: describeKey(b), Known: knownKey(b, name)})
-				}
+				out.Observe(e.Path, e, nil)
 				continue
 			}
 			if !dir {
 				// Text and images are not containers; a file on disk that is neither may be one.
 				if e.Text || e.Image || (e.OSPath == "" && !e.Container) || depth <= 0 {
+					if !e.Text && !e.Image {
+						out.Observe(e.Path, e, nil) // an enc_ member that was not opened is noted
+					}
 					continue
 				}
 			}
@@ -106,19 +135,11 @@ func ScanKeys(ctx context.Context, input string, depth int, progress func(opened
 				next-- // opening a container spends a level; a directory does not
 			}
 			sub, err := openRaw(e, nil)
-			if err == nil && !dir && strings.HasPrefix(e.Name, "enc_") {
-				if use, ok := secretFor(e, sub); ok {
-					out.Uses = append(out.Uses, use)
-				} else {
-					out.Unopened = append(out.Unopened, e.Path)
-				}
-			}
 			if err != nil {
-				if !dir && strings.HasPrefix(e.Name, "enc_") {
-					out.Unopened = append(out.Unopened, e.Path)
-				}
+				out.Observe(e.Path, e, nil)
 				continue
 			}
+			out.Observe(e.Path, e, sub)
 			sub.setPaths(e.Path + "/")
 			if !dir {
 				opened++
@@ -130,13 +151,13 @@ func ScanKeys(ctx context.Context, input string, depth int, progress func(opened
 		}
 	}
 	walk(top, depth)
-	resolveIVNames(out.Files)
+	out.Done()
 	return out, ctx.Err()
 }
 
 // secretFor is the loaded secret that opened an enc_ member whose level is sub: it opened if its one child is the
 // decrypted image, named without the prefix, and the secret is the one that decrypts the member's head.
-func secretFor(e BrowseEntry, sub *BrowseLevel) (KeyUse, bool) {
+func secretFor(path string, e BrowseEntry, sub *BrowseLevel) (KeyUse, bool) {
 	if len(sub.Entries) != 1 || sub.Entries[0].Name != strings.TrimPrefix(e.Name, "enc_") {
 		return KeyUse{}, false
 	}
@@ -148,7 +169,7 @@ func secretFor(e BrowseEntry, sub *BrowseLevel) (KeyUse, bool) {
 	if !ok {
 		return KeyUse{}, false
 	}
-	return KeyUse{Path: e.Path, Secret: s.Name, KeyFile: strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(s.Name, " (zero IV)"), " (ecb)"), " (prefixed IV)"),
+	return KeyUse{Path: path, Secret: s.Name, KeyFile: strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(s.Name, " (zero IV)"), " (ecb)"), " (prefixed IV)"),
 		Key: hex.EncodeToString(s.Key), IVFile: s.IVName, IV: hex.EncodeToString(s.IV), Mode: s.Mode}, true
 }
 
