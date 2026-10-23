@@ -64,24 +64,30 @@ import (
 // Names are the package or check they stand for, not the Domain that uses
 // them: "npkg" might gate both the "recon" and "listing" Domains at once.
 var Versions = map[string]int{
-	"filetype":         1, // internal/filetype.Detect: the neutral magic-byte switch
-	"vendor-artifact":  1, // internal/vendor.RecognizeArtifact/ArtifactReport (all drivers)
-	"androidkeys":      1, // internal/androidkeys
-	"pemfile":          1, // internal/pemfile
-	"unixauth":         1, // internal/unixauth
-	"npkg":             1, // internal/npkg
-	"lkrom":            1, // internal/telechips (LKROM parsing)
-	"dtbo":             1, // internal/dtbo
-	"fdt":              1, // internal/fdt (bare device tree)
-	"ubi":              1, // internal/ubi
-	"ubifs":            1, // internal/ubifs
-	"qcdt":             1, // internal/qcdt
-	"bootimg":          1, // internal/bootimg
-	"blankflash":       1, // internal/blankflash (SINGLE_N_LONELY)
-	"bootelf":          1, // internal/bootelf
-	"secboot":          1, // internal/secboot (signing identity)
-	"carve-containers": 1, // internal/carve's own neutral container Expanders (zip/tar/ext4/...)
-	"facts":            1, // the fact-derivation graph recon runs (internal/facts providers)
+	"filetype":           1, // internal/filetype.Detect: the neutral magic-byte switch
+	"motorola-artifact":  1, // internal/vendor.MotorolaRecognizer
+	"hkmc-artifact":      1, // internal/vendor.HKMCRecognizer
+	"telechips-artifact": 1, // internal/vendor.TelechipsArtifactRecognizer
+	"fsg-artifact":       1, // internal/vendor.FSGRecognizer
+	"qcom-artifact":      1, // internal/vendor.QcomRecognizer
+	"mediatek-artifact":  1, // internal/vendor.MediatekRecognizer
+	"samsung-pit":        1, // internal/vendor.SamsungPITRecognizer
+	"androidkeys":        1, // internal/androidkeys
+	"pemfile":            1, // internal/pemfile
+	"unixauth":           1, // internal/unixauth
+	"npkg":               1, // internal/npkg
+	"lkrom":              1, // internal/telechips (LKROM parsing)
+	"dtbo":               1, // internal/dtbo
+	"fdt":                1, // internal/fdt (bare device tree)
+	"ubi":                1, // internal/ubi
+	"ubifs":              1, // internal/ubifs
+	"qcdt":               1, // internal/qcdt
+	"bootimg":            1, // internal/bootimg
+	"blankflash":         1, // internal/blankflash (SINGLE_N_LONELY)
+	"bootelf":            1, // internal/bootelf
+	"secboot":            1, // internal/secboot (signing identity)
+	"carve-containers":   1, // internal/carve's own neutral container Expanders (zip/tar/ext4/...)
+	"facts":              1, // the fact-derivation graph recon runs (internal/facts providers)
 }
 
 // Domain is a named, independently versioned slice of the cache: see the
@@ -114,7 +120,9 @@ var (
 	// chain cmd_recon.go's runFileRecon tries, since it is tried on every file
 	// regardless of what that file turns out to be.
 	Recon = Domain{"recon", []string{
-		"filetype", "vendor-artifact", "androidkeys", "pemfile", "unixauth",
+		"filetype", "motorola-artifact", "hkmc-artifact", "telechips-artifact",
+		"fsg-artifact", "qcom-artifact", "mediatek-artifact", "samsung-pit",
+		"androidkeys", "pemfile", "unixauth",
 		"npkg", "lkrom", "dtbo", "fdt", "ubi", "ubifs", "qcdt", "bootimg",
 		"blankflash", "bootelf", "secboot", "facts",
 	}}
@@ -122,7 +130,9 @@ var (
 	// neutral and vendor container Expanders that decide what a container
 	// holds and how its members are named.
 	Listing = Domain{"listing", []string{
-		"carve-containers", "npkg", "lkrom", "ubi", "ubifs", "vendor-artifact",
+		"carve-containers", "npkg", "lkrom", "ubi", "ubifs",
+		"motorola-artifact", "hkmc-artifact", "telechips-artifact",
+		"fsg-artifact", "qcom-artifact", "mediatek-artifact", "samsung-pit",
 	}}
 	// Label is the short one-line type name a listing or recon shows for a file
 	// (typeLabel): the same recognizer chain as Recon, since it is the same
