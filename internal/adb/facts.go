@@ -88,7 +88,7 @@ func FactProviders() []facts.Provider {
 		// reading as a third opinion.
 		facts.Rule{
 			Out: facts.SoC.Name(), In: []string{SourceADB.Name(), facts.SourceCatalog.Name()},
-			Price: 1, Level: facts.Derived,
+			Price: 1, Level: facts.Derived, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				r, ok := facts.Get(b, SourceADB)
 				cat, ok2 := facts.Get(b, facts.SourceCatalog)
@@ -115,7 +115,7 @@ func FactProviders() []facts.Provider {
 // property system says is Derived — see the package comment.
 func fromADB[T any](out facts.Fact[T], source string, fn func(*Recon) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourceADB.Name()}, Price: 1, Level: facts.Derived,
+		Out: out.Name(), In: []string{SourceADB.Name()}, Price: 1, Level: facts.Derived, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			r, ok := facts.Get(b, SourceADB)
 			if !ok || r == nil {

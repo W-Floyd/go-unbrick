@@ -169,7 +169,7 @@ func svOrZero(sv *SecurityVersions) int {
 func fromDevice[T any](out facts.Fact[T], level facts.Level, source string,
 	fn func(*fastboot.DeviceRecon) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{fastboot.SourceRecon.Name()}, Price: 1, Level: level,
+		Out: out.Name(), In: []string{fastboot.SourceRecon.Name()}, Price: 1, Level: level, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			r, ok := facts.Get(b, fastboot.SourceRecon)
 			if !ok || r == nil {
@@ -354,7 +354,7 @@ func motoDeriveRules() []facts.Provider {
 func parse[T any](out facts.Fact[T], in facts.Fact[[]byte], level facts.Level, source string,
 	fn func(*facts.Bag, []byte) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{in.Name()}, Price: 1, Level: level,
+		Out: out.Name(), In: []string{in.Name()}, Price: 1, Level: level, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			for _, data := range facts.GetAll(b, in) {
 				if v, ok := fn(b, data); ok {
@@ -377,7 +377,7 @@ func lookup(level facts.Level, source string, fn func(cid string, c *catalogLook
 		Out: facts.Carrier.Name(),
 		In:  []string{facts.CID.Name(), facts.SourceCatalog.Name()},
 		// A map lookup, but only after the CID itself was derived.
-		Price: 1, Level: level,
+		Price: 1, Level: level, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			cid, ok := facts.Get(b, facts.CID)
 			if !ok {
@@ -411,6 +411,7 @@ func (motorola) FactChecks() []facts.Check {
 		facts.CheckFunc{
 			On:    []string{facts.SourceStockZip.Name(), SourceFlashfile.Name()},
 			Heavy: true,
+			Ver:   1,
 			Fn:    verifyPackageIntegrity,
 		},
 		// The unlock challenge is minted against this unit's UID and serial. A
@@ -418,7 +419,8 @@ func (motorola) FactChecks() []facts.Check {
 		// so the code it yields would not unlock this device. Field names only —
 		// the identifiers themselves are per-device and the report masks them.
 		facts.CheckFunc{
-			On: []string{facts.UnlockChallenge.Name(), fastboot.SourceRecon.Name()},
+			On:  []string{facts.UnlockChallenge.Name(), fastboot.SourceRecon.Name()},
+			Ver: 1,
 			Fn: func(b *facts.Bag) []facts.Finding {
 				r, _ := facts.Get(b, fastboot.SourceRecon)
 				wire, _ := facts.Get(b, facts.UnlockChallenge)
@@ -447,7 +449,8 @@ func (motorola) FactChecks() []facts.Check {
 		// was signed under; a HAB_CID that is not the map's entry for that region
 		// means the package was assembled from mismatched signing inputs.
 		facts.CheckFunc{
-			On: []string{facts.SigningCID.Name(), facts.Region.Name(), SourceSigningInfo.Name()},
+			On:  []string{facts.SigningCID.Name(), facts.Region.Name(), SourceSigningInfo.Name()},
+			Ver: 1,
 			Fn: func(b *facts.Bag) []facts.Finding {
 				data, _ := facts.Get(b, SourceSigningInfo)
 				si := ParseSigningInfo(data)

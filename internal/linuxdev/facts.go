@@ -79,7 +79,7 @@ func FactProviders() []facts.Provider {
 func fromLinux[T any](out facts.Fact[T], level facts.Level, source string,
 	fn func(*Recon) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourceLinux.Name()}, Price: 1, Level: level,
+		Out: out.Name(), In: []string{SourceLinux.Name()}, Price: 1, Level: level, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			r, ok := facts.Get(b, SourceLinux)
 			if !ok || r == nil {

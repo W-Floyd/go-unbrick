@@ -29,7 +29,7 @@ func (mediatek) FactRecognizers() []facts.Recognizer {
 // catalog's spelling when it has one, else as the scatter states it.
 func (mediatek) FactProviders() []facts.Provider {
 	return []facts.Provider{facts.Rule{
-		Out: facts.SoC.Name(), In: []string{SourceScatter.Name(), facts.SourceCatalog.Name()}, Price: 2, Level: facts.Attested,
+		Out: facts.SoC.Name(), In: []string{SourceScatter.Name(), facts.SourceCatalog.Name()}, Price: 2, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			for _, v := range b.Values(SourceScatter.Name()) {
 				data, _ := v.Data.([]byte)

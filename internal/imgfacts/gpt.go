@@ -65,7 +65,7 @@ func recognizeGPT(b *facts.Bag, f facts.File) []string {
 // False" beside a GPT with _a/_b slots), and this is what the graph checks it
 // against.
 var abFromGPT = facts.Rule{
-	Out: facts.ABEnabled.Name(), In: []string{SourceGPT.Name()}, Price: 1, Level: facts.Attested,
+	Out: facts.ABEnabled.Name(), In: []string{SourceGPT.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 	Fn: func(b *facts.Bag) (bool, error) {
 		// A UFS package ships one table per LUN, and a LUN without boot says
 		// nothing about slots either way.

@@ -84,7 +84,7 @@ func (xiaomi) FactProviders() []facts.Provider {
 		// mi_ext overrides the build's incremental with the release's build
 		// number, where system's is an internal stamp on a China build.
 		facts.Rule{
-			Out: facts.SoftwareVersion.Name(), In: []string{imgfacts.SourcePartProps.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.SoftwareVersion.Name(), In: []string{imgfacts.SourcePartProps.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				for _, p := range facts.GetAll(b, imgfacts.SourcePartProps) {
 					if v := p.Props["ro.build.version.incremental"]; p.Partition == "mi_ext" && xiaomiBuildNumber.MatchString(v) {
@@ -96,7 +96,7 @@ func (xiaomi) FactProviders() []facts.Provider {
 			},
 		},
 		facts.Rule{
-			Out: facts.SoftwareVersion.Name(), In: []string{facts.BuildFingerprint.Name()}, Price: 1, Level: facts.Derived,
+			Out: facts.SoftwareVersion.Name(), In: []string{facts.BuildFingerprint.Name()}, Price: 1, Level: facts.Derived, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				fp, _ := facts.Get(b, facts.BuildFingerprint)
 				if v, ok := xiaomiIncremental(fp); ok {

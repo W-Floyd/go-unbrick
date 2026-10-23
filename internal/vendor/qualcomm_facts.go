@@ -83,7 +83,7 @@ func (qualcomm) FactRecognizers() []facts.Recognizer {
 // FactProviders implements FactDeriver.
 func (qualcomm) FactProviders() []facts.Provider {
 	return []facts.Provider{facts.Rule{
-		Out: facts.AntiRollbackTable.Name(), In: []string{sourceSignedStage.Name()}, Price: 1, Level: facts.Attested,
+		Out: facts.AntiRollbackTable.Name(), In: []string{sourceSignedStage.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			// Only a boot chain has a rollback table: without its application
 			// bootloader, a set of signed images is a collection, not a chain.

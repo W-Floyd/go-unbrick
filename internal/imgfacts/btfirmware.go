@@ -23,7 +23,7 @@ var btFile = regexp.MustCompile(`^([a-z]+)btfw([0-9a-z]+)\.(tlv|ver)$`)
 // HAL chooses among them from the chip's reported version, so a package alone
 // cannot say which is fitted.
 var btFirmwareRule = facts.Rule{
-	Out: facts.BluetoothFirmware.Name(), In: []string{SourceBTFirmware.Name()}, Price: 1, Level: facts.Attested,
+	Out: facts.BluetoothFirmware.Name(), In: []string{SourceBTFirmware.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 	Fn: func(b *facts.Bag) (bool, error) {
 		type chip struct {
 			vers  []string

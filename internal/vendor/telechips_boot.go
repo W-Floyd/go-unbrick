@@ -52,7 +52,7 @@ func bootEnv(v facts.Value) (map[string]string, bool) {
 func (tcc) FactProviders() []facts.Provider {
 	return []facts.Provider{
 		facts.Rule{
-			Out: TelechipsBootLoads.Name(), In: []string{SourceTelechipsBoot.Name()}, Price: 2, Level: facts.Attested,
+			Out: TelechipsBootLoads.Name(), In: []string{SourceTelechipsBoot.Name()}, Price: 2, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				for _, v := range b.Values(SourceTelechipsBoot.Name()) {
 					env, ok := bootEnv(v)
@@ -92,7 +92,7 @@ func (tcc) FactProviders() []facts.Provider {
 		// Which of those loads the vbmeta does not cover. It needs both, so a package
 		// holding only one of them says nothing rather than everything.
 		facts.Rule{
-			Out: TelechipsUnprotectedLoads.Name(), In: []string{SourceTelechipsBoot.Name(), facts.AVBProtected.Name()}, Price: 3, Level: facts.Derived,
+			Out: TelechipsUnprotectedLoads.Name(), In: []string{SourceTelechipsBoot.Name(), facts.AVBProtected.Name()}, Price: 3, Level: facts.Derived, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				protected, ok := facts.Get(b, facts.AVBProtected)
 				if !ok {

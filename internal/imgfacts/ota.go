@@ -137,7 +137,7 @@ func otaProviders() []facts.Provider {
 // sheetRule derives one fact from one source document.
 func sheetRule[T any](src facts.Fact[[]byte], out facts.Fact[T], source string, fn func([]byte) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{src.Name()}, Price: 1, Level: facts.Attested,
+		Out: out.Name(), In: []string{src.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			data, ok := facts.Get(b, src)
 			if !ok {

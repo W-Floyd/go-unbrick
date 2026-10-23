@@ -24,7 +24,7 @@ import (
 func ShellProviders(source string, key string, get func(*facts.Bag) (*ShellRecon, bool), level facts.Level) []facts.Provider {
 	rule := func(out string, price int, fn func(*facts.Bag, *ShellRecon) bool) facts.Rule {
 		return facts.Rule{
-			Out: out, In: []string{key}, Price: price, Level: level,
+			Out: out, In: []string{key}, Price: price, Level: level, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				r, ok := get(b)
 				if !ok || r == nil {
@@ -77,7 +77,7 @@ func ShellProviders(source string, key string, get func(*facts.Bag) (*ShellRecon
 		// agreeing sources read as corroboration rather than one guess.
 		facts.Rule{
 			Out: facts.SoC.Name(), In: []string{key, facts.SourceCatalog.Name()},
-			Price: 1, Level: level,
+			Price: 1, Level: level, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				r, ok := get(b)
 				cat, ok2 := facts.Get(b, facts.SourceCatalog)

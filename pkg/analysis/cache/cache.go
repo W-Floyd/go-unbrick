@@ -57,21 +57,18 @@ import (
 	"github.com/W-Floyd/go-unbrick/pkg/analysis/recognize"
 )
 
-// Versions is for a member with no other place to keep its version: nothing
-// here implements recognize.Recognizer or has registered a VersionFuncs
-// entry. Today that is just "facts" -- the whole fact-derivation graph recon
-// runs (internal/facts providers), which has no single owning package a
-// version could live next to (dozens of facts.Rule literals across many
-// files). Everything else should prefer a Recognizer or a VersionFuncs entry
-// instead of growing this map.
+// Versions is the last resort for a member with no other place to keep its
+// version: nothing here implements recognize.Recognizer or has registered a
+// VersionFuncs entry. Prefer a Recognizer, or a package-level Version const
+// wired through VersionFuncs, before adding an entry here -- a number in this
+// map is disconnected from the code it is meant to track, so it is easy to
+// forget to raise.
 //
-// Add an entry the first time a parser's result is cached; from then on,
-// raise its number -- never reuse, remove, or renumber one others already
-// refer to by name -- whenever its behavior changes for bytes it would
-// already have been asked about.
-var Versions = map[string]int{
-	"facts": 1, // the fact-derivation graph recon runs (internal/facts providers)
-}
+// Add an entry only once those don't fit; from then on, raise its number --
+// never reuse, remove, or renumber one others already refer to by name --
+// whenever its behavior changes for bytes it would already have been asked
+// about.
+var Versions = map[string]int{}
 
 // VersionFuncs lets a package that is not a recognize.Recognizer (a plain
 // parser with no Claims/Label/Report of its own: internal/dtbo, internal/ubi,

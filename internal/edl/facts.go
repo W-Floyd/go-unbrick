@@ -14,7 +14,7 @@ func FactProviders() []facts.Provider {
 		fromChip(facts.RootKeyHash, "Sahara OEM_PK_HASH", func(c *ChipInfo) string { return c.PKHash }),
 		facts.Rule{
 			Out: facts.SoC.Name(), In: []string{SourceEDL.Name(), facts.SourceCatalog.Name()},
-			Price: 1, Level: facts.Attested,
+			Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				s, ok := facts.Get(b, SourceEDL)
 				cat, ok2 := facts.Get(b, facts.SourceCatalog)
@@ -32,7 +32,7 @@ func FactProviders() []facts.Provider {
 			},
 		},
 		facts.Rule{
-			Out: facts.Slot.Name(), In: []string{SourceEDL.Name()}, Price: 1, Level: facts.Derived,
+			Out: facts.Slot.Name(), In: []string{SourceEDL.Name()}, Price: 1, Level: facts.Derived, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				s, ok := facts.Get(b, SourceEDL)
 				if !ok || s.Slot == "" {
@@ -48,7 +48,7 @@ func FactProviders() []facts.Provider {
 
 func fromChip(out facts.Fact[string], source string, pick func(*ChipInfo) string) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourceEDL.Name()}, Price: 1, Level: facts.Attested,
+		Out: out.Name(), In: []string{SourceEDL.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			s, ok := facts.Get(b, SourceEDL)
 			if !ok || s.Chip == nil {

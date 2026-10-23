@@ -53,7 +53,7 @@ func FactProviders() []facts.Provider {
 		facts.Rule{
 			Out:   facts.SoC.Name(),
 			In:    []string{SourceRecon.Name(), facts.SourceCatalog.Name()},
-			Price: 1, Level: facts.Attested,
+			Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				r, ok := facts.Get(b, SourceRecon)
 				cat, ok2 := facts.Get(b, facts.SourceCatalog)
@@ -76,7 +76,7 @@ func FactProviders() []facts.Provider {
 func fromRecon[T any](out facts.Fact[T], level facts.Level, source string,
 	fn func(*DeviceRecon) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourceRecon.Name()}, Price: 1, Level: level,
+		Out: out.Name(), In: []string{SourceRecon.Name()}, Price: 1, Level: level, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			r, ok := facts.Get(b, SourceRecon)
 			if !ok || r == nil {

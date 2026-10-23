@@ -330,6 +330,11 @@ type Provider interface {
 	Cost() int          // relative: a local parse is 1, a paced fastboot round trip 100
 	Authority() Level
 	Derive(in *Bag) (bool, error) // ok=false: this source does not carry the fact
+	// Version is this provider's own behavior version, for pkg/analysis/cache
+	// (folded into a recon fact graph's Version -- see Graph.Version): raise
+	// it whenever Derive's behavior changes in a way that could change what
+	// is reported for bytes/state already seen.
+	Version() int
 }
 
 // Rule is the ordinary Provider: a closure with its edges and price declared.
@@ -343,6 +348,7 @@ type Rule struct {
 	Price int
 	Level Level
 	Fn    func(*Bag) (bool, error)
+	Ver   int // this rule's own behavior version -- see Provider.Version
 }
 
 func (r Rule) Provides() string             { return r.Out }
@@ -350,6 +356,7 @@ func (r Rule) Requires() []string           { return r.In }
 func (r Rule) Cost() int                    { return r.Price }
 func (r Rule) Authority() Level             { return r.Level }
 func (r Rule) Derive(in *Bag) (bool, error) { return r.Fn(in) }
+func (r Rule) Version() int                 { return r.Ver }
 
 // Severity ranks a finding.
 type Severity int
@@ -416,6 +423,8 @@ func Recognize(b *Bag, rs []Recognizer, f File) []string {
 type Check interface {
 	Reads() []string
 	Verify(in *Bag) []Finding
+	// Version is this check's own behavior version -- see Provider.Version.
+	Version() int
 }
 
 // CheckFunc is the ordinary Check: a closure over the facts it inspects. A check
@@ -425,11 +434,13 @@ type CheckFunc struct {
 	On    []string
 	Heavy bool
 	Fn    func(*Bag) []Finding
+	Ver   int // this check's own behavior version -- see Provider.Version
 }
 
 func (c CheckFunc) Reads() []string          { return c.On }
 func (c CheckFunc) Verify(in *Bag) []Finding { return c.Fn(in) }
 func (c CheckFunc) VerifyOnly() bool         { return c.Heavy }
+func (c CheckFunc) Version() int             { return c.Ver }
 
 // VerifyGated is an optional Check capability: a check that declares itself too
 // heavy to run unless the caller opted into verification. The planner skips such

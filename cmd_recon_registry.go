@@ -48,6 +48,10 @@ func init() {
 	cache.VersionFuncs["secboot"] = func() int { return secboot.Version }
 	cache.VersionFuncs["lkrom"] = func() int { return telechips.LKROMVersion }
 	cache.VersionFuncs["carve-containers"] = func() int { return carve.FormatsVersion }
+	// facts: reconGraph() is the exact provider/check assembly recon's Bag
+	// construction uses (cmd_recon.go), so this can't drift from what's
+	// actually run the way a hand-maintained number could.
+	cache.VersionFuncs["facts"] = func() int { return reconGraph().Version() }
 
 	for _, r := range []recognize.Recognizer{
 		kernelLabelRecognizer{},

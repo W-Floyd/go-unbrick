@@ -1,6 +1,8 @@
 package facts
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,6 +30,26 @@ func New(providers []Provider, checks []Check) *Graph {
 
 // Providers returns the graph's edges, cheapest first.
 func (g *Graph) Providers() []Provider { return g.providers }
+
+// Checks returns the graph's invariants.
+func (g *Graph) Checks() []Check { return g.checks }
+
+// Version folds every provider's and check's own Version into one number, for
+// pkg/analysis/cache: it changes whenever any of them does. A stable hash of
+// each member's (identity, Version) pair, not a plain sum, so two unrelated
+// version bumps can't coincidentally cancel out.
+func (g *Graph) Version() int {
+	parts := make([]string, 0, len(g.providers)+len(g.checks))
+	for _, p := range g.providers {
+		parts = append(parts, fmt.Sprintf("p:%s:%d", p.Provides(), p.Version()))
+	}
+	for _, c := range g.checks {
+		parts = append(parts, fmt.Sprintf("c:%s:%d", strings.Join(c.Reads(), "+"), c.Version()))
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	return int(binary.BigEndian.Uint32(sum[:4]))
+}
 
 // Options tunes a resolution.
 type Options struct {

@@ -311,7 +311,7 @@ func FactProviders() []facts.Provider {
 		// parsed, which is what keeps a chain that starts from a package member
 		// cheaper than one that starts from an image.
 		facts.Rule{
-			Out: BootCertChain.Name(), In: []string{SourceImage.Name()}, Price: 5, Level: facts.Attested,
+			Out: BootCertChain.Name(), In: []string{SourceImage.Name()}, Price: 5, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				data, ok := facts.Get(b, SourceImage)
 				if !ok {
@@ -341,7 +341,7 @@ func FactProviders() []facts.Provider {
 		secbootRule(facts.RootKeyHash, "root cert SHA-256", func(id *secboot.Identity) string { return id.RootSHA256 }),
 		secbootRule(facts.RootKeyHash, "root cert SHA-384", func(id *secboot.Identity) string { return id.RootSHA384 }),
 		facts.Rule{
-			Out: OTACerts.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested,
+			Out: OTACerts.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				// Try every boot image; only the one carrying otacerts (recovery)
 				// yields, the rest decline. Merge across any that do.
@@ -364,7 +364,7 @@ func FactProviders() []facts.Provider {
 		// Motorola System Image identity (device=msi) in the system partition's own
 		// build.prop, read from super separately. So only the patch is taken here.
 		facts.Rule{
-			Out: facts.SecurityPatch.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested,
+			Out: facts.SecurityPatch.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				for _, data := range facts.GetAll(b, SourceBootImage) {
 					p := BuildProps(data)
@@ -383,7 +383,7 @@ func FactProviders() []facts.Provider {
 		// by the root's chain descriptor rather than its own header. So when any
 		// vbmeta present chains others, only those roots are read.
 		facts.Rule{
-			Out: facts.AVBKey.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.AVBKey.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				var imgs []*avb.Image
 				var chained []bool
@@ -421,7 +421,7 @@ func FactProviders() []facts.Provider {
 		// The partitions the vbmeta(s) cover. Every vbmeta present counts, root and
 		// chained: a partition is protected if any of them describes it.
 		facts.Rule{
-			Out: facts.AVBProtected.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.AVBProtected.Name(), In: []string{facts.SourceVBMeta.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				set := map[string]bool{}
 				for _, v := range b.Values(facts.SourceVBMeta.Name()) {
@@ -483,7 +483,7 @@ func chainsOthers(img *avb.Image) bool {
 // what the cross-check is for.
 func secbootRule(out facts.Fact[string], source string, pick func(*secboot.Identity) string) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourceImage.Name()}, Price: 5, Level: facts.Attested,
+		Out: out.Name(), In: []string{SourceImage.Name()}, Price: 5, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			set := false
 			for _, data := range facts.GetAll(b, SourceImage) {
@@ -681,7 +681,7 @@ func chainedName(source string) bool {
 // socRule and only taken when the image-derived path is unavailable.
 func socFromPlatform() facts.Rule {
 	return facts.Rule{
-		Out: facts.SoC.Name(), In: []string{facts.BoardPlatform.Name(), facts.SourceCatalog.Name()}, Price: 20, Level: facts.Derived,
+		Out: facts.SoC.Name(), In: []string{facts.BoardPlatform.Name(), facts.SourceCatalog.Name()}, Price: 20, Level: facts.Derived, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			plat, ok := facts.Get(b, facts.BoardPlatform)
 			if !ok || plat == "" {
@@ -705,7 +705,7 @@ func socFromPlatform() facts.Rule {
 // socRule reads the SoC an image was built for from in.
 func socRule(in facts.Fact[[]byte], label string) facts.Rule {
 	return facts.Rule{
-		Out: facts.SoC.Name(), In: []string{in.Name(), facts.SourceCatalog.Name()}, Price: 5, Level: facts.Derived,
+		Out: facts.SoC.Name(), In: []string{in.Name(), facts.SourceCatalog.Name()}, Price: 5, Level: facts.Derived, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			data, ok := facts.Get(b, in)
 			if !ok {
@@ -735,7 +735,7 @@ func ramdiskTrusted(brand string) bool { return brand != "" && !staleRamdisk[bra
 // accepts.
 func RamdiskProp(out facts.Fact[string], brandOK func(string) bool, keys ...string) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested,
+		Out: out.Name(), In: []string{SourceBootImage.Name()}, Price: 5, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			for _, data := range facts.GetAll(b, SourceBootImage) {
 				p := BuildProps(data)

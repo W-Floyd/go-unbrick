@@ -192,7 +192,7 @@ func partProps(b *facts.Bag, part string) []PartProps {
 // build.prop (not a per-SKU one).
 func vendorProp[T any](out facts.Fact[T], key string, conv func(string) (T, bool)) facts.Rule {
 	return facts.Rule{
-		Out: out.Name(), In: []string{SourcePartProps.Name()}, Price: 1, Level: facts.Attested,
+		Out: out.Name(), In: []string{SourcePartProps.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 		Fn: func(b *facts.Bag) (bool, error) {
 			for _, p := range partProps(b, "vendor") {
 				if v, ok := p.Props[key]; ok && p.SKU == "" {
@@ -223,7 +223,7 @@ func partitionProviders() []facts.Provider {
 		// Per-SKU odm props: each SKU's model number, and the market name when
 		// every SKU agrees on one.
 		facts.Rule{
-			Out: facts.SKUModels.Name(), In: []string{SourcePartProps.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.SKUModels.Name(), In: []string{SourcePartProps.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				models := map[string]string{}
 				names := map[string]bool{}
@@ -255,7 +255,7 @@ func partitionProviders() []facts.Provider {
 		// (a FiiO M21 is otherwise qti/bengal_515). A "model" that is just the
 		// device codename names nothing.
 		facts.Rule{
-			Out: facts.Model.Name(), In: []string{SourcePartProps.Name()}, Price: 2, Level: facts.Attested,
+			Out: facts.Model.Name(), In: []string{SourcePartProps.Name()}, Price: 2, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				ps := partProps(b, "odm")
 				for _, p := range ps {
@@ -276,7 +276,7 @@ func partitionProviders() []facts.Provider {
 		},
 
 		facts.Rule{
-			Out: facts.DataEncryption.Name(), In: []string{SourceFstab.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.DataEncryption.Name(), In: []string{SourceFstab.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				for _, data := range facts.GetAll(b, SourceFstab) {
 					enc, meta, ok := fstabEncryption(data)
@@ -292,7 +292,7 @@ func partitionProviders() []facts.Provider {
 			},
 		},
 		facts.Rule{
-			Out: facts.GSIKeys.Name(), In: []string{SourceFstab.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.GSIKeys.Name(), In: []string{SourceFstab.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				for _, data := range facts.GetAll(b, SourceFstab) {
 					if keys := fstabGSIKeys(data); len(keys) > 0 {
@@ -305,7 +305,7 @@ func partitionProviders() []facts.Provider {
 		},
 
 		facts.Rule{
-			Out: facts.PlatformCert.Name(), In: []string{SourceMacPermissions.Name()}, Price: 1, Level: facts.Attested,
+			Out: facts.PlatformCert.Name(), In: []string{SourceMacPermissions.Name()}, Price: 1, Level: facts.Attested, Ver: 1,
 			Fn: func(b *facts.Bag) (bool, error) {
 				set := false
 				for _, data := range facts.GetAll(b, SourceMacPermissions) {
@@ -455,7 +455,8 @@ var aospTestKeys = map[string]bool{
 func Checks() []facts.Check {
 	return []facts.Check{
 		facts.CheckFunc{
-			On: []string{facts.SecurityPatch.Name(), facts.VendorSecurityPatch.Name()},
+			On:  []string{facts.SecurityPatch.Name(), facts.VendorSecurityPatch.Name()},
+			Ver: 1,
 			Fn: func(b *facts.Bag) []facts.Finding {
 				sys, _ := facts.Get(b, facts.SecurityPatch)
 				ven, _ := facts.Get(b, facts.VendorSecurityPatch)
@@ -471,7 +472,8 @@ func Checks() []facts.Check {
 			},
 		},
 		facts.CheckFunc{
-			On: []string{facts.AOSPTestKeys.Name()},
+			On:  []string{facts.AOSPTestKeys.Name()},
+			Ver: 1,
 			Fn: func(b *facts.Bag) []facts.Finding {
 				roles, _ := facts.Get(b, facts.AOSPTestKeys)
 				if len(roles) == 0 {
