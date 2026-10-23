@@ -5,6 +5,7 @@ package vendor
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -56,6 +57,9 @@ func hkmcArtifact(name string, data []byte) (ArtifactInfo, bool) {
 	case strings.HasSuffix(filepath.Base(name), "_encrypted.rsa") && isRSASigLen(len(data)):
 		return ArtifactInfo{Label: fmt.Sprintf("RSA-%d signature (TarList)", len(data)*8)}, true
 	}
+	if n := jsonWithRSATrailerLen(data); n > 0 {
+		return ArtifactInfo{Label: fmt.Sprintf("JSON manifest + appended RSA-%d signature", n*8)}, true
+	}
 	return ArtifactInfo{}, false
 }
 
@@ -71,6 +75,24 @@ func isRSASigLen(n int) bool {
 		return true
 	}
 	return false
+}
+
+// jsonWithRSATrailerLen reports the length of a raw RSA signature appended
+// directly after a JSON document, with no separator, or 0 when data isn't
+// shaped like one: trimming a plausible signature length off the end must
+// leave exactly one complete, valid JSON value (MAINCONFIG_G1.json's update
+// notice is signed this way, unlike update.info/TarList, whose signature is
+// a sibling file instead - see hkmcArtifact's "_encrypted.rsa" case).
+func jsonWithRSATrailerLen(data []byte) int {
+	for _, n := range [...]int{512, 384, 256, 128} {
+		if len(data) <= n {
+			continue
+		}
+		if json.Valid(data[:len(data)-n]) {
+			return n
+		}
+	}
+	return 0
 }
 
 // looksLikeTarList checks only the first few bytes (decoded) for one of
