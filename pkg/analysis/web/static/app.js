@@ -8,6 +8,7 @@ function app() {
   return {
     ...u.nav({
       // The place is the level, the entry, the view and whether words are marked.
+      isDir: (e) => e.kind === 'dir',
       watch: ['view', 'words'],
       writeExtra: (c, p) => {
         if (c.view !== 'auto') p.set('view', c.view);

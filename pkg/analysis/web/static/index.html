@@ -36,12 +36,12 @@
   </template>
 </nav>
 
-<main>
+<main :class="{ 'detail-open': detail }">
   <section class="list" role="listbox" aria-label="Differences">
     <div class="row up" x-show="path.length" @click="up()">↑ ..</div>
     <template x-for="e in entries" :key="e.name">
       <div class="row" :class="'k-' + e.kind + (e.name === sel ? ' sel' : '')" role="option"
-           :aria-selected="e.name === sel" @click="select(e)" @dblclick="open(e)">
+           :aria-selected="e.name === sel" @click="tap(e)" @dblclick="open(e)">
         <span class="glyph"><span x-show="e.pending" class="spin"></span><span x-show="!e.pending" x-text="glyph(e.kind)"></span></span>
         <span class="name" x-text="e.name"></span>
         <span class="note" x-text="e.kind === 'dir' ? '(' + e.summary + ')' : e.sizeNote"></span>
@@ -53,6 +53,7 @@
 
   <section class="pane">
     <div class="tabs">
+      <button class="back" type="button" @click="hideDetail()">&larr; list</button>
       <template x-for="v in views" :key="v">
         <button :class="{on: view === v}" @click="setView(v)" x-text="v"></button>
       </template>
