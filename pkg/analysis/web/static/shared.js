@@ -145,9 +145,10 @@ window.unbrick = (() => {
   };
 
   // previewHTML is how both pages show one file on its own: its text, highlighted by
-  // the server (already escaped), or an image fetched from the raw route.
+  // the server (already escaped), or an image or PDF fetched from the raw route.
   const previewHTML = (p, rawUrl) => {
     if (p.kind === 'image') return `<img class="preview-img" src="${attr(rawUrl(false))}" alt="${attr(p.entry.name)}" loading="lazy">`;
+    if (p.kind === 'pdf') return `<iframe class="preview-pdf" src="${attr(rawUrl(false))}" title="${attr(p.entry.name)}" loading="lazy"></iframe>`;
     if (p.kind === 'binary') {
       return entropyHTML(p) + (p.strings && p.strings.length
         ? '<p class="dim">binary; the printable strings in its start:</p><pre class="text">' + p.strings.map(escapeHTML).join('\n') + '</pre>'

@@ -217,7 +217,7 @@ func (s *server) entry(w http.ResponseWriter, r *http.Request) {
 	s.load.Lock()
 	be, one := e.OneSided()
 	if one {
-		p := buildPreview(be, q.Get("raw") == "1", s.opts.PreviewCap, s.redact)
+		p := buildPreview(be, q.Get("raw") == "1", s.opts.PreviewCap, s.opts.ImageCap, s.redact)
 		s.load.Unlock()
 		resp.Preview = &p
 		writeJSON(w, resp)

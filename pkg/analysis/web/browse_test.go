@@ -23,6 +23,7 @@ func browseServe(t *testing.T, opts BrowseOptions) *httptest.Server {
 	write(t, dir, "data.json", []byte(`{"a":1,"b":[2,3]}`))
 	write(t, dir, "notes.txt", []byte("hello <b>world</b>\n"))
 	write(t, dir, "pic.png", png1x1)
+	write(t, dir, "doc.pdf", []byte("%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<</Type/Catalog>>\nendobj\n%%EOF\n"))
 	write(t, dir, "sub/inner.txt", []byte("inner\n"))
 	write(t, dir, "pkg.tar", mkTar(time.Unix(1_700_000_000, 0), "m.txt", "member text"))
 	b, err := analysis.NewBrowser(dir, nil)
@@ -65,7 +66,7 @@ func TestBrowsePageAndLevels(t *testing.T) {
 	for _, e := range lv.Entries {
 		names = append(names, e.Name)
 	}
-	if got := strings.Join(names, " "); got != "data.json notes.txt pic.png pkg.tar sub" {
+	if got := strings.Join(names, " "); got != "data.json doc.pdf notes.txt pic.png pkg.tar sub" {
 		t.Errorf("level: %s", got)
 	}
 	getJSON(t, srv, "/api/level?"+url.Values{"p": {"pkg.tar"}}.Encode(), &lv)
@@ -129,6 +130,26 @@ func TestBrowseRawImagesAndDownloads(t *testing.T) {
 	}
 	if r, _ := http.Get(locked.URL + "/api/raw?name=pic.png"); r.StatusCode != 200 {
 		t.Errorf("inline images stay: %s", r.Status)
+	}
+
+	// A PDF is previewed and served inline like an image, up to the same cap; past it,
+	// it is a binary to download.
+	for _, c := range []struct {
+		cap        int64
+		kind       string
+		inlineCode int
+	}{{0, "pdf", 200}, {10, "binary", 400}} {
+		s := browseServe(t, BrowseOptions{ImageCap: c.cap})
+		var p previewResp
+		getJSON(t, s, "/api/preview?name=doc.pdf", &p)
+		r, err := http.Get(s.URL + "/api/raw?name=doc.pdf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if p.Kind != c.kind || r.StatusCode != c.inlineCode || c.inlineCode == 200 && r.Header.Get("Content-Type") != "application/pdf" {
+			t.Errorf("cap %d: preview %q, inline %s %q", c.cap, p.Kind, r.Status, r.Header.Get("Content-Type"))
+		}
 	}
 }
 

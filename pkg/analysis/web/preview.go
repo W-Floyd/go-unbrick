@@ -20,7 +20,7 @@ import (
 // previewResp is what to show for an entry.
 type previewResp struct {
 	Entry     analysis.BrowseEntry     `json:"entry"`
-	Kind      string                   `json:"kind"` // text, image, binary, dir
+	Kind      string                   `json:"kind"` // text, image, pdf, binary, dir
 	Text      string                   `json:"text,omitempty"`
 	HTML      string                   `json:"html,omitempty"` // Text, syntax-highlighted
 	CanPretty bool                     `json:"canPretty"`      // the text can be shown reformatted
@@ -42,10 +42,16 @@ type reconResp struct {
 // maxPreviewStrings bounds the strings listed for a binary.
 const maxPreviewStrings = 200
 
+// isPDF is a PDF small enough to serve inline (inlineCap, as for an image): a viewer
+// shows it whole or not at all, so one cut short at the cap is no use.
+func isPDF(e analysis.BrowseEntry, head []byte, inlineCap int64) bool {
+	return bytes.HasPrefix(head, []byte("%PDF-")) && e.Size >= 0 && e.Size <= inlineCap
+}
+
 // buildPreview reads and classifies an entry for display: its text, highlighted
-// (reformatted too, if it can be and raw is not asked for), an image to fetch from
-// the raw route, or what it is.
-func buildPreview(e analysis.BrowseEntry, raw bool, previewCap int64, redact func(string) string) previewResp {
+// (reformatted too, if it can be and raw is not asked for), an image or PDF to fetch
+// from the raw route, or what it is.
+func buildPreview(e analysis.BrowseEntry, raw bool, previewCap, inlineCap int64, redact func(string) string) previewResp {
 	resp := previewResp{Entry: e, Kind: "binary"}
 	switch {
 	case e.Dir:
@@ -57,6 +63,11 @@ func buildPreview(e analysis.BrowseEntry, raw bool, previewCap int64, redact fun
 		data, trunc, err := analysis.ReadEntry(e, previewCap)
 		if err != nil {
 			resp.Err = redact(err.Error())
+			break
+		}
+		// A PDF can be all text; its viewer shows it better.
+		if isPDF(e, data, inlineCap) {
+			resp.Kind = "pdf"
 			break
 		}
 		resp.Truncated = trunc
@@ -71,7 +82,9 @@ func buildPreview(e analysis.BrowseEntry, raw bool, previewCap int64, redact fun
 		resp.HTML = highlightHTML(e.Name, show)
 	}
 	if resp.Kind == "binary" && (e.OSPath != "" || e.Node != nil) {
-		if data, trunc, err := analysis.ReadEntry(e, previewCap); err == nil {
+		if data, trunc, err := analysis.ReadEntry(e, previewCap); err == nil && isPDF(e, data, inlineCap) {
+			resp.Kind = "pdf"
+		} else if err == nil {
 			resp.Truncated = trunc
 			if len(data) >= 1024 {
 				p := analysis.Entropy(data)
@@ -89,8 +102,8 @@ func buildPreview(e analysis.BrowseEntry, raw bool, previewCap int64, redact fun
 	return resp
 }
 
-// serveRaw streams an entry: an image inline (capped), or any file as a download
-// if the caller may.
+// serveRaw streams an entry: an image inline (capped), a PDF inline (if under the
+// cap), or any file as a download if the caller may.
 func serveRaw(w http.ResponseWriter, r *http.Request, e analysis.BrowseEntry, imageCap int64, allowDownload func(*http.Request) bool, onRead func(e analysis.BrowseEntry, sha256 string, size int64), fail func(http.ResponseWriter, int, error)) {
 	if e.Dir || (e.OSPath == "" && e.Node == nil) {
 		fail(w, http.StatusBadRequest, errors.New("nothing to read"))
@@ -99,10 +112,6 @@ func serveRaw(w http.ResponseWriter, r *http.Request, e analysis.BrowseEntry, im
 	download := r.URL.Query().Get("download") == "1"
 	if download && allowDownload != nil && !allowDownload(r) {
 		fail(w, http.StatusForbidden, errors.New("downloads are not allowed"))
-		return
-	}
-	if !download && !e.Image {
-		fail(w, http.StatusBadRequest, errors.New("not an image: use download=1"))
 		return
 	}
 	rc, err := analysis.OpenEntryReader(e)
@@ -114,6 +123,10 @@ func serveRaw(w http.ResponseWriter, r *http.Request, e analysis.BrowseEntry, im
 	head := make([]byte, 512)
 	n, _ := io.ReadFull(rc, head)
 	head = head[:n]
+	if !download && !e.Image && !isPDF(e, head, imageCap) {
+		fail(w, http.StatusBadRequest, errors.New("not an image or a PDF: use download=1"))
+		return
+	}
 	var body io.Reader = io.MultiReader(bytes.NewReader(head), rc)
 	if download {
 		w.Header().Set("Content-Type", "application/octet-stream")

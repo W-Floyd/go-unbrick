@@ -229,7 +229,7 @@ func (s *browseServer) preview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusNotFound, err)
 		return
 	}
-	resp := buildPreview(e, r.URL.Query().Get("raw") == "1", s.opts.PreviewCap, s.redact)
+	resp := buildPreview(e, r.URL.Query().Get("raw") == "1", s.opts.PreviewCap, s.opts.ImageCap, s.redact)
 	if !e.Dir && s.opts.Recon != nil {
 		resp.Recon = s.recon(e)
 	}
