@@ -92,6 +92,13 @@ func TestTextDiff(t *testing.T) {
 	if lines[0].Op != '@' || !strings.HasPrefix(lines[0].Text, "@@ -8,") {
 		t.Errorf("first hunk header %q", lines[0].Text)
 	}
+	// A cut: at maxLines and said so; none at all for 0.
+	for maxLines, want := range map[int]int{5: 5, 0: len(lines), len(lines): len(lines)} {
+		cut, _, trunc := TextDiffMax([]byte(a.String()), []byte(b.String()), 2, maxLines)
+		if len(cut) != want || trunc != (want < len(lines)) {
+			t.Errorf("maxLines %d: %d lines, truncated %v", maxLines, len(cut), trunc)
+		}
+	}
 }
 
 func TestTextDiffIdenticalAndNoTrailingNewline(t *testing.T) {

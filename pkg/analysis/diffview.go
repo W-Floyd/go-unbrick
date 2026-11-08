@@ -67,6 +67,12 @@ const MaxTextLines = 20000
 // TextDiff is a line diff of a and b with context unchanged lines around each
 // change, as hunks. truncated is set when the output hit MaxTextLines.
 func TextDiff(a, b []byte, context int) (lines []Line, st Stats, truncated bool) {
+	return TextDiffMax(a, b, context, MaxTextLines)
+}
+
+// TextDiffMax is TextDiff cut at maxLines lines of output instead; 0 or less for
+// no cut, as for a diff written out whole.
+func TextDiffMax(a, b []byte, context, maxLines int) (lines []Line, st Stats, truncated bool) {
 	all := lineDiff(string(a), string(b))
 	for _, l := range all {
 		switch l.Op {
@@ -96,6 +102,9 @@ func TextDiff(a, b []byte, context int) (lines []Line, st Stats, truncated bool)
 			inHunk = false
 			continue
 		}
+		if maxLines > 0 && len(lines) >= maxLines {
+			return lines, st, true
+		}
 		if !inHunk {
 			inHunk = true
 			// Count the lines each side shows in this hunk for its header.
@@ -111,10 +120,10 @@ func TextDiff(a, b []byte, context int) (lines []Line, st Stats, truncated bool)
 			sa, sb := firstNum(all, i, true), firstNum(all, i, false)
 			lines = append(lines, Line{Op: '@', Text: fmt.Sprintf("@@ -%d,%d +%d,%d @@", sa, na, sb, nb)})
 		}
-		lines = append(lines, l)
-		if len(lines) >= MaxTextLines {
+		if maxLines > 0 && len(lines) >= maxLines { // the hunk header took the last place
 			return lines, st, true
 		}
+		lines = append(lines, l)
 	}
 	return lines, st, false
 }
@@ -314,9 +323,14 @@ const MaxStrings = 100000
 // StringDiff is a line diff of the printable strings in a and b, one string per
 // line, so what text a binary gained or lost shows without the bytes between.
 func StringDiff(a, b []byte, min, context int) (lines []Line, st Stats, truncated bool) {
+	return StringDiffMax(a, b, min, context, MaxTextLines)
+}
+
+// StringDiffMax is StringDiff cut as TextDiffMax is.
+func StringDiffMax(a, b []byte, min, context, maxLines int) (lines []Line, st Stats, truncated bool) {
 	sa := strings.Join(Strings(a, min), "\n") + "\n"
 	sb := strings.Join(Strings(b, min), "\n") + "\n"
-	return TextDiff([]byte(sa), []byte(sb), context)
+	return TextDiffMax([]byte(sa), []byte(sb), context, maxLines)
 }
 
 // Overlap is how much of two byte strings is the same content and how much is
