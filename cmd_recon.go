@@ -2088,6 +2088,10 @@ func typeLabel(name string, head []byte) string {
 		return "Dalvik DEX"
 	case filetype.ODEX:
 		return "Dalvik odex"
+	case filetype.AndroidXML:
+		return "Android binary XML"
+	case filetype.ARSC:
+		return "Android resource table"
 	case filetype.QCDT:
 		return "Qualcomm device-tree table"
 	case filetype.UBIFS:

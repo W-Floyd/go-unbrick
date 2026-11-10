@@ -22,9 +22,11 @@ import (
 	"github.com/W-Floyd/erofs"
 	"github.com/pierrec/lz4/v4"
 
+	"github.com/W-Floyd/go-unbrick/internal/arsc"
 	"github.com/W-Floyd/go-unbrick/internal/blankflash"
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
+	"github.com/W-Floyd/go-unbrick/internal/dex"
 	"github.com/W-Floyd/go-unbrick/internal/dtbo"
 	"github.com/W-Floyd/go-unbrick/internal/ext4fs"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
@@ -44,7 +46,7 @@ import (
 // them changes in a way that could change what is reported for bytes already
 // seen. One number for the whole chain, not per-Expander, since they're all
 // registered -- and so all versioned -- together, right here.
-const FormatsVersion = 1
+const FormatsVersion = 2
 
 func init() {
 	Register(
@@ -74,7 +76,87 @@ func init() {
 		Expander{Kind: "zimage", Match: func(_ *Node, h []byte) bool { return bootimg.IsZImage(h) }, Expand: expandZImage},
 		Expander{Kind: "ubi", Match: kind(filetype.UBI), Expand: expandUBI},
 		Expander{Kind: "ubifs", Match: kind(filetype.UBIFS), Expand: expandUBIFS, FS: ubifsFS},
+		Expander{Kind: "binary xml", Match: kind(filetype.AndroidXML), Expand: expandAndroidXML},
+		Expander{Kind: "resource table", Match: kind(filetype.ARSC), Expand: expandARSC},
+		Expander{Kind: "dex", Match: kind(filetype.DEX), Expand: expandDEX},
 	)
+}
+
+// expandDEX lists a DEX's classes and its string table, each as text.
+func expandDEX(n *Node) ([]*Node, error) {
+	ra, err := n.ReaderAt()
+	if err != nil {
+		return nil, err
+	}
+	classes, err := dex.Classes(ra, n.Size)
+	if err != nil {
+		return nil, err
+	}
+	strs, err := dex.Strings(ra, n.Size)
+	if err != nil {
+		return nil, err
+	}
+	return []*Node{FromBytes("classes.txt", []byte(classes)), FromBytes("strings.txt", []byte(strs))}, nil
+}
+
+// expandAndroidXML renders compiled XML as text, naming the references a
+// sibling resources.arsc (an APK's own) defines.
+func expandAndroidXML(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	s, err := arsc.DecodeXML(b, siblingTable(n.Parent()))
+	if err != nil {
+		return nil, err
+	}
+	return []*Node{FromBytes(strings.TrimSuffix(path.Base(n.Name), ".xml")+".decoded.xml", []byte(s))}, nil
+}
+
+// lastTable holds the most recent APK's table: an APK has thousands of
+// compiled XML files, and its table can run to tens of MiB.
+var lastTable struct {
+	sync.Mutex
+	apk *Node
+	t   *arsc.Table
+}
+
+// siblingTable is the resources.arsc beside an APK's compiled XML, or nil.
+func siblingTable(apk *Node) *arsc.Table {
+	if apk == nil {
+		return nil
+	}
+	lastTable.Lock()
+	defer lastTable.Unlock()
+	if lastTable.apk == apk {
+		return lastTable.t
+	}
+	var t *arsc.Table
+	if _, kids, _ := apk.Children(); kids != nil {
+		for _, k := range kids {
+			if k.Name == "resources.arsc" {
+				if b, err := k.Bytes(); err == nil {
+					t, _ = arsc.Parse(b)
+				}
+				break
+			}
+		}
+	}
+	lastTable.apk, lastTable.t = apk, t
+	return t
+}
+
+// expandARSC lists a resource table's entries as text.
+func expandARSC(n *Node) ([]*Node, error) {
+	b, err := n.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	t, err := arsc.Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	return []*Node{FromBytes(strings.TrimSuffix(path.Base(n.Name), ".arsc")+".txt", []byte(t.Text()))}, nil
 }
 
 // expandODEX lists the DEX an optimized-DEX file wraps: its header (magic,

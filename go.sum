@@ -13,6 +13,8 @@ github.com/NurramoX/streakboard v0.1.0 h1:8HwqpIIqpbgjKryseDgMKMd4wP+Phqr1Fl24/T
 github.com/NurramoX/streakboard v0.1.0/go.mod h1:XOGSQJTD6OQl5DlqG3CZY9rcv7IhW6eGnP8MFiR+848=
 github.com/ProtonMail/go-crypto v1.5.2 h1:cucYnvqcY7UOXVD//mSyjeaPY0SSN3v5cDkYPxumINk=
 github.com/ProtonMail/go-crypto v1.5.2/go.mod h1:/RaSu30DaKO4RY+XdV/ACcCcZkGr7AhUIduq5sjzzCo=
+github.com/W-Floyd/dextk v0.3.1-0.20261109223850-3fd3db2934e1 h1:LGzEt9Mqo+QdGHgVBISuhr7fbd3bx3er7+FvvMUM29g=
+github.com/W-Floyd/dextk v0.3.1-0.20261109223850-3fd3db2934e1/go.mod h1:Np28F0XJ3BAo+KC11wSpV/y3thfehy8bMPFtSKXgm4Q=
 github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76 h1:2sdGiMApn3lM4/9JFxzereqhFmWBfyKAavnzghwJQR8=
 github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76/go.mod h1:MXt561dV9n8r1ZOv9GmrLK3Tgi5sMFn3LGDahOiRqpM=
 github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf h1:NMcNq+Ns11chjyENI7PNrujHpgmrsS5hRrS6bP+ihNA=

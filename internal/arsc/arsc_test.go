@@ -67,8 +67,16 @@ func typeChunk(id int, entries [][3]uint32) []byte {
 	return chunk(chunkType, 8+len(hdr), hdr, cat(offs, body))
 }
 
-// buildAPK writes an APK holding a table with a string and a dimension.
-func buildAPK(t *testing.T, utf8 bool) []byte {
+// Package header sizes: Lollipop's aapt added typeIdOffset after keyStrings'
+// lastPublicKey; KitKat's ends there.
+const (
+	pkgHdrLollipop = 8 + 4 + 256 + 5*4
+	pkgHdrKitKat   = pkgHdrLollipop - 4
+)
+
+// buildAPK writes an APK holding a table with a string and a dimension, its
+// package header pkgHdr bytes long.
+func buildAPK(t *testing.T, utf8 bool, pkgHdr int) []byte {
 	global := stringPool(utf8, "M -35,0 L 35,0 Z")
 	types := stringPool(utf8, "string", "dimen")
 	keys := stringPool(utf8, "cutout", "corner")
@@ -77,12 +85,12 @@ func buildAPK(t *testing.T, utf8 bool) []byte {
 	for i, c := range utf16.Encode([]rune("com.example.rro")) {
 		le.PutUint16(name[2*i:], c)
 	}
-	const pkgHdr = 8 + 4 + 256 + 5*4
 	body := cat(types, keys,
 		typeChunk(1, [][3]uint32{{0, uint32(Str), 0}}),
 		typeChunk(2, [][3]uint32{{1, uint32(Dimension), 62<<8 | 0}}), // 62px
 	)
-	pkg := chunk(chunkPackage, pkgHdr, cat(u32(0x7f), name, u32(pkgHdr), u32(2), u32(uint32(pkgHdr+len(types))), u32(2), u32(0)), body)
+	hdr := cat(u32(0x7f), name, u32(uint32(pkgHdr)), u32(2), u32(uint32(pkgHdr+len(types))), u32(2), u32(0))
+	pkg := chunk(chunkPackage, pkgHdr, hdr[:pkgHdr-8], body)
 	table := chunk(chunkTable, 12, u32(1), cat(global, pkg))
 
 	var buf bytes.Buffer
@@ -94,25 +102,34 @@ func buildAPK(t *testing.T, utf8 bool) []byte {
 }
 
 func TestOpenAPK(t *testing.T) {
-	for _, utf8 := range []bool{true, false} {
-		tb, err := OpenAPK(buildAPK(t, utf8))
+	cases := []struct {
+		utf8   bool
+		pkgHdr int
+	}{
+		{true, pkgHdrLollipop},
+		{false, pkgHdrLollipop},
+		{true, pkgHdrKitKat},
+		{false, pkgHdrKitKat},
+	}
+	for _, c := range cases {
+		tb, err := OpenAPK(buildAPK(t, c.utf8, c.pkgHdr))
 		if err != nil {
-			t.Fatalf("utf8=%v: %v", utf8, err)
+			t.Fatalf("%+v: %v", c, err)
 		}
 		if tb.Package != "com.example.rro" || tb.ID != 0x7f {
-			t.Errorf("package %q id %#x", tb.Package, tb.ID)
+			t.Errorf("%+v: package %q id %#x", c, tb.Package, tb.ID)
 		}
 		s := tb.Lookup("string", "cutout")
 		if s == nil {
-			t.Fatalf("utf8=%v: string/cutout missing: %+v", utf8, tb.Entries)
+			t.Fatalf("%+v: string/cutout missing: %+v", c, tb.Entries)
 		}
 		if v, ok := s.Default(); !ok || v.Str != "M -35,0 L 35,0 Z" || s.ID != 0x7f010000 {
-			t.Errorf("string/cutout = %+v id %#x", v, s.ID)
+			t.Errorf("%+v: string/cutout = %+v id %#x", c, v, s.ID)
 		}
 		d := tb.Lookup("dimen", "corner")
 		v, ok := d.Default()
 		if n, unit, isDim := v.Dimension(); !ok || !isDim || n != 62 || unit != "px" {
-			t.Errorf("dimen/corner = %v %q (%v)", n, unit, isDim)
+			t.Errorf("%+v: dimen/corner = %v %q (%v)", c, n, unit, isDim)
 		}
 	}
 }

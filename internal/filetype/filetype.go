@@ -14,7 +14,7 @@ import (
 // Version is this package's current behavior version, for pkg/analysis/cache:
 // raise it whenever Detect's behavior changes in a way that could change what
 // is reported for bytes already seen.
-const Version = 1
+const Version = 2
 
 type Kind string
 
@@ -53,8 +53,10 @@ const (
 	ODEX              Kind = "dalvik-odex" // optimized DEX, pre-ART ("dey\n036")
 	DEX               Kind = "dalvik-dex"
 	Ogg               Kind = "ogg"
-	TelechipsBoot     Kind = "telechips-boot" // signed boot stage: "CERT" block, "HDR" at 0x100
-	ACDB              Kind = "qualcomm-acdb"  // audio calibration database: "QCMSNDDB" magic
+	TelechipsBoot     Kind = "telechips-boot"         // signed boot stage: "CERT" block, "HDR" at 0x100
+	ACDB              Kind = "qualcomm-acdb"          // audio calibration database: "QCMSNDDB" magic
+	AndroidXML        Kind = "android-binary-xml"     // compiled XML: AndroidManifest.xml, res/ layouts
+	ARSC              Kind = "android-resource-table" // resources.arsc
 	Unknown           Kind = "unknown"
 )
 
@@ -138,6 +140,12 @@ func Detect(head []byte) Kind {
 		return DEX
 	case len(head) >= 8 && bytes.Equal(head[:4], []byte("dey\n")):
 		return ODEX
+	// A resource chunk header, then (both) a string pool header; the four-byte
+	// chunk magics alone are too common in noise.
+	case len(head) >= 12 && bytes.Equal(head[:4], []byte("\x03\x00\x08\x00")) && bytes.Equal(head[8:12], []byte("\x01\x00\x1c\x00")):
+		return AndroidXML
+	case len(head) >= 16 && bytes.Equal(head[:4], []byte("\x02\x00\x0c\x00")) && bytes.Equal(head[12:16], []byte("\x01\x00\x1c\x00")):
+		return ARSC
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("QCDT")):
 		return QCDT
 	case len(head) >= 4 && bytes.Equal(head[:4], []byte("OggS")):

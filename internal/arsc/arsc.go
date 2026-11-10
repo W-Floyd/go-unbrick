@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 	"unicode/utf16"
 )
 
@@ -73,6 +74,9 @@ type Table struct {
 	Package string
 	ID      uint8
 	Entries []*Entry
+
+	nameOnce sync.Once
+	nameMap  map[uint32]string
 }
 
 // OpenAPK reads the table out of an APK held in memory.
@@ -180,7 +184,8 @@ func Parse(b []byte) (*Table, error) {
 
 func parsePackage(t *Table, b []byte, hdr int, global *pool) error {
 	le := binary.LittleEndian
-	if hdr < 288 {
+	// 284 through KitKat; Lollipop appended typeIdOffset, which isn't read.
+	if hdr < 284 || hdr > len(b) {
 		return fmt.Errorf("arsc: short package header")
 	}
 	t.ID = uint8(le.Uint32(b[8:]))
@@ -227,12 +232,19 @@ func parsePackage(t *Table, b []byte, hdr int, global *pool) error {
 
 func parseType(t *Table, byID map[uint32]*Entry, b []byte, hdr int, types, keys, global *pool) error {
 	le := binary.LittleEndian
-	if hdr < 20 {
+	if hdr < 20 || hdr > len(b) {
 		return fmt.Errorf("arsc: short type header")
 	}
 	typeID := uint32(b[8])
 	flags := b[9]
 	count := int(le.Uint32(b[12:]))
+	width := 4
+	if flags&typeOffset16 != 0 && flags&typeSparse == 0 {
+		width = 2
+	}
+	if count > (len(b)-hdr)/width {
+		return fmt.Errorf("arsc: entry offsets past the type chunk")
+	}
 	start := int(le.Uint32(b[16:]))
 	cfgSize := int(le.Uint32(b[20:]))
 	config := ""
@@ -273,6 +285,9 @@ func parseType(t *Table, byID map[uint32]*Entry, b []byte, hdr int, types, keys,
 		}
 		e.Name = keys.str(int(le.Uint32(b[pos+4:])))
 		if eflags&entryComplex != 0 {
+			if pos+16 > len(b) {
+				return fmt.Errorf("arsc: map entry past the type chunk")
+			}
 			n := int(le.Uint32(b[pos+12:]))
 			p := pos + esize
 			for i := 0; i < n && p+12 <= len(b); i++ {
@@ -356,7 +371,7 @@ type pool struct {
 
 func parsePool(b []byte) (*pool, error) {
 	typ, hdr, _, err := chunkAt(b, 0)
-	if err != nil || typ != chunkStringPool || hdr < 28 {
+	if err != nil || typ != chunkStringPool || hdr < 28 || hdr > len(b) {
 		return nil, fmt.Errorf("arsc: not a string pool")
 	}
 	le := binary.LittleEndian

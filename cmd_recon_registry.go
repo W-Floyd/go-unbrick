@@ -9,6 +9,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/bootelf"
 	"github.com/W-Floyd/go-unbrick/internal/bootimg"
 	"github.com/W-Floyd/go-unbrick/internal/carve"
+	"github.com/W-Floyd/go-unbrick/internal/dex"
 	"github.com/W-Floyd/go-unbrick/internal/dtbo"
 	"github.com/W-Floyd/go-unbrick/internal/fdt"
 	"github.com/W-Floyd/go-unbrick/internal/filetype"
@@ -51,6 +52,7 @@ func init() {
 	cache.VersionFuncs["secboot"] = func() int { return secboot.Version }
 	cache.VersionFuncs["lkrom"] = func() int { return telechips.LKROMVersion }
 	cache.VersionFuncs["carve-containers"] = func() int { return carve.FormatsVersion }
+	cache.VersionFuncs["dex"] = func() int { return dex.Version }
 	// facts: reconGraph() is the exact provider/check assembly recon's Bag
 	// construction uses (cmd_recon.go), so this can't drift from what's
 	// actually run the way a hand-maintained number could.

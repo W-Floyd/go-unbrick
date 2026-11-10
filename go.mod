@@ -11,6 +11,7 @@ require (
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/NurramoX/streakboard v0.1.0
+	github.com/W-Floyd/dextk v0.3.1-0.20261109223850-3fd3db2934e1
 	github.com/W-Floyd/erofs v0.8.1-0.20261012162035-00032a399f76
 	github.com/W-Floyd/go-ext4 v0.0.0-20260927073552-3926e5ef3caf
 	github.com/alecthomas/chroma/v2 v2.27.0

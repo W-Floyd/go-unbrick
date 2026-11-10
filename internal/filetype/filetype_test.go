@@ -43,6 +43,9 @@ func TestDetect(t *testing.T) {
 		{"ubi", []byte("UBI#\x01\x00\x00\x00"), UBI},
 		{"ogg", []byte("OggS\x00\x02"), Ogg},
 		{"acdb", []byte("QCMSNDDBextra"), ACDB},
+		{"axml", []byte("\x03\x00\x08\x00\x10\x00\x00\x00\x01\x00\x1c\x00"), AndroidXML},
+		{"arsc", []byte("\x02\x00\x0c\x00\x10\x00\x00\x00\x01\x00\x00\x00\x01\x00\x1c\x00"), ARSC},
+		{"axml without a pool", []byte("\x03\x00\x08\x00\x10\x00\x00\x00\x00\x00\x00\x00"), Unknown},
 		{"unknown", []byte("hello world"), Unknown},
 	}
 	for _, c := range cases {
