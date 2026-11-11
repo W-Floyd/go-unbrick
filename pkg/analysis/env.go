@@ -65,13 +65,15 @@ func LoadSecrets(dir string) (int, error) {
 // cipher's own 1-in-256 header check. The bounds here are deliberately lighter than go-unbrick's
 // own CLI defaults (max length 6) -- alphanumeric up to length 4 against a cheap-to-verify member
 // (a stored .zip-named one, checked by its 4-byte signature), a deflated member's own full-
-// decompress verify capped at length 2 and 1 MiB compressed, and a digits-only pass up to length 6
-// tried first -- so a server opening many packages at once pays little per encrypted member it
-// cannot otherwise open. Call before the first input is opened.
+// decompress verify capped at length 2 and 1 MiB compressed, and a digits-only pass tried first --
+// full length 10, the CLI's own default, since a deflated member still mins that against the
+// length-2 deflate cap above and so never pays for the longer digits-only reach: only a member
+// cheap to verify regardless of size (a stored .zip-named one, checked by its 4-byte signature)
+// does. Call before the first input is opened.
 func UseZipBruteforce() {
 	carve.BruteforceCharset = zipcrypto.DefaultBruteforceCharset
 	carve.BruteforceMaxLen = 4
 	carve.BruteforceMaxDeflateLen = 2
 	carve.BruteforceMaxDeflateSize = 1 << 20
-	carve.BruteforceMaxNumericLen = 6
+	carve.BruteforceMaxNumericLen = 10
 }
