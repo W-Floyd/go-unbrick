@@ -19,6 +19,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/infile"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/zipcrypto"
 	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis"
 )
@@ -37,7 +38,31 @@ func carveRoot(input string) (*carve.Node, error) {
 		// user-supplied list.
 		srcfile.ZipPasswords = func(string) []string { return zippasswords.Passwords() }
 		carve.Register(encryptedExpander())
+		_ = zippasswords.LoadCache()
+		carve.PasswordFound = func(zn *carve.Node, member, pw string) {
+			zippasswords.Remember(pw)
+			fmt.Fprintf(os.Stderr, "note: brute-forced zip password %q for %s, cached for reuse\n", pw, member)
+		}
+		carve.BruteforceSkipped = func(zn *carve.Node, member, reason string) {
+			fmt.Fprintf(os.Stderr, "note: not brute-forcing %s: %s (--bruteforce-zip-max-deflate-size raises this)\n", member, reason)
+		}
+		carve.BruteforceProgress = func(zn *carve.Node, member string, length int) {
+			fmt.Fprintf(os.Stderr, "note: brute-forcing %s: trying length %d...\n", member, length)
+		}
 	})
+	if bruteforceZip {
+		carve.BruteforceCharset = firstNonEmpty(bruteforceCharset, zipcrypto.DefaultBruteforceCharset)
+		carve.BruteforceMaxLen = bruteforceMaxLen
+		carve.BruteforceMaxDeflateLen = bruteforceMaxDeflateLen
+		carve.BruteforceMaxDeflateSize = bruteforceMaxDeflateBytes
+		carve.BruteforceMaxNumericLen = bruteforceMaxNumericLen
+	} else {
+		carve.BruteforceCharset = ""
+		carve.BruteforceMaxLen = 0
+		carve.BruteforceMaxDeflateLen = 0
+		carve.BruteforceMaxDeflateSize = 0
+		carve.BruteforceMaxNumericLen = 0
+	}
 	if secretsLoaded() == 0 {
 		dir := carveSecrets
 		if dir == "" && !infile.IsRemote(input) {
@@ -116,6 +141,7 @@ segment of path names a child; a container's children follow its name.
 			if len(args) == 2 {
 				p = args[1]
 			}
+			useCarveProgress()
 			n, err := carvePath(args[0], p)
 			if err != nil {
 				return err
@@ -200,6 +226,7 @@ name its format, which over a URL means fetching it.
 			if len(args) == 2 {
 				p = args[1]
 			}
+			useCarveProgress()
 			n, err := carvePath(args[0], p)
 			if err != nil {
 				return err
@@ -570,6 +597,7 @@ under a directory instead, named by their paths; nested containers stay whole.
 					return fmt.Errorf("--grep needs -r")
 				}
 			}
+			useCarveProgress()
 			n, err := carvePath(args[0], p)
 			if err != nil {
 				return err
@@ -759,4 +787,19 @@ func writeNode(n *carve.Node, dst string, force bool) error {
 		return err
 	}
 	return f.Close()
+}
+
+// useCarveProgress shows carve's slow work (decompressing, spooling) as a
+// status line on a terminal; elsewhere it stays silent, as before.
+func useCarveProgress() {
+	if !stderrIsTTY {
+		return
+	}
+	carve.Progress = func(format string, args ...any) {
+		if format == "" {
+			clearProgress()
+			return
+		}
+		progressLine(format, args...)
+	}
 }

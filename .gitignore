@@ -45,3 +45,5 @@ recon/
 
 .DS_Store
 .claude/settings.json
+*.dat
+secrets/

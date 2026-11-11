@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/binary"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/W-Floyd/erofs"
 	"github.com/pierrec/lz4/v4"
@@ -60,6 +62,7 @@ func init() {
 		// Before gzip: a boot image's ramdisk is often gzip, and is a cpio.
 		Expander{Kind: "ramdisk", Match: isRamdisk, Expand: expandRamdisk},
 		Expander{Kind: "gzip", Match: kind(filetype.Gzip), Expand: expandGzip},
+		Expander{Kind: "bzip2", Match: kind(filetype.Bzip2), Expand: expandBzip2},
 		Expander{Kind: "lz4", Match: kind(filetype.LZ4), Expand: expandLZ4},
 		Expander{Kind: "lz4 (legacy)", Match: kind(filetype.LZ4Legacy), Expand: expandLZ4Legacy},
 		Expander{Kind: "payload", Match: kind(filetype.OTAPayload), Expand: expandPayload},
@@ -349,6 +352,12 @@ func expandZip(n *Node) ([]*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	siblings := make([]string, 0, len(zr.File))
+	for _, f := range zr.File {
+		if !f.FileInfo().IsDir() {
+			siblings = append(siblings, f.Name)
+		}
+	}
 	var out []*Node
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
@@ -357,7 +366,7 @@ func expandZip(n *Node) ([]*Node, error) {
 		crc := fmt.Sprintf("%08x", f.CRC32)
 		size := int64(f.UncompressedSize64)
 		// An encrypted member is opened with the vendor's password, when it has one.
-		if k := decryptedZipMember(n, f, ra); k != nil {
+		if k := decryptedZipMember(n, f, ra, siblings); k != nil {
 			out = append(out, k)
 			continue
 		}
@@ -531,7 +540,14 @@ func expandGzip(n *Node) ([]*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		z, err := gzip.NewReader(rc)
+		src := newProgressReader(rc, path.Base(n.Name), n.Size)
+		if hr, ok := useHost("gzip", n.Size, src); ok {
+			return struct {
+				io.Reader
+				io.Closer
+			}{hr, closeBoth{hr, rc}}, nil
+		}
+		z, err := gzip.NewReader(src)
 		if err != nil {
 			rc.Close()
 			return nil, err
@@ -540,6 +556,40 @@ func expandGzip(n *Node) ([]*Node, error) {
 			io.Reader
 			io.Closer
 		}{z, rc}, nil
+	}
+	return []*Node{FromStream(name, -1, open)}, nil
+}
+
+// expandBzip2 has one child, the decompressed stream, named as bzip2 names it.
+// The decoder is sequential, so the child streams rather than seeks.
+func expandBzip2(n *Node) ([]*Node, error) {
+	name := path.Base(n.Name)
+	switch {
+	case strings.HasSuffix(name, ".tbz2"):
+		name = strings.TrimSuffix(name, ".tbz2") + ".tar"
+	case strings.HasSuffix(name, ".tbz"):
+		name = strings.TrimSuffix(name, ".tbz") + ".tar"
+	case strings.HasSuffix(name, ".bz2"):
+		name = strings.TrimSuffix(name, ".bz2")
+	default:
+		name += ".out"
+	}
+	open := func() (io.ReadCloser, error) {
+		rc, err := n.Reader()
+		if err != nil {
+			return nil, err
+		}
+		src := newProgressReader(rc, path.Base(n.Name), n.Size)
+		if hr, ok := useHost("bzip2", n.Size, src); ok {
+			return struct {
+				io.Reader
+				io.Closer
+			}{hr, closeBoth{hr, rc}}, nil
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{bzip2.NewReader(src), rc}, nil
 	}
 	return []*Node{FromStream(name, -1, open)}, nil
 }
@@ -878,7 +928,8 @@ type lazyOverlay struct {
 
 // Progress, when set, is told about work too slow to be silent (unpacking a
 // multi-gigabyte image to a temporary file). The command line points it at
-// stderr; a library user leaves it nil.
+// stderr; a library user leaves it nil. An empty format means the work is done
+// and its status line can go.
 var Progress func(format string, args ...any)
 
 func progress(format string, args ...any) {
@@ -960,4 +1011,35 @@ func spool(n *Node) (*os.File, error) {
 		return nil, fmt.Errorf("%s: %w", n.Name, err)
 	}
 	return f, nil
+}
+
+// progressReader reports how far through its compressed input a decompressor
+// has read, at most a few times a second. The compressed side is counted, not
+// the output, because only its size is known: that makes a percentage.
+type progressReader struct {
+	io.ReadCloser
+	label       string
+	total, read int64
+	last        time.Time
+}
+
+func newProgressReader(rc io.ReadCloser, label string, total int64) io.ReadCloser {
+	return &progressReader{ReadCloser: rc, label: label, total: total}
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	k, err := p.ReadCloser.Read(b)
+	p.read += int64(k)
+	if now := time.Now(); now.Sub(p.last) >= 250*time.Millisecond {
+		p.last = now
+		if p.total > 0 {
+			progress("decompressing %s: %d%% (%d of %d MiB)", p.label, p.read*100/p.total, p.read>>20, p.total>>20)
+		} else {
+			progress("decompressing %s: %d MiB", p.label, p.read>>20)
+		}
+	}
+	if err != nil {
+		progress("") // an empty message clears the status line
+	}
+	return k, err
 }

@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"testing"
@@ -65,15 +66,17 @@ func read(t *testing.T, n *Node) []byte {
 }
 
 func TestWalkNested(t *testing.T) {
+	bz2AVB, _ := hex.DecodeString("425a68393141592653590b8fd0cf0000008f8040003000010002001c0020002190c210c08da9472f8bb9229c284805c7e86780")
 	inner := tarOf(t, map[string][]byte{"images/vbmeta.img": []byte("AVB0rest"), "readme": []byte("hi")})
 	pkg := zipOf(t, map[string][]byte{
 		"rom.tar":          inner,
 		"rom.tar.gz":       gz(inner),
+		"avb.bz2":          bz2AVB, // the stdlib only reads bzip2: this is `printf AVB0rest | bzip2`
 		"META-INF/x/y.txt": []byte("deflated"),
 	}, map[string]bool{"rom.tar": true})
 	root := FromBytes("pkg.zip", pkg)
 
-	for _, p := range []string{"rom.tar/images/vbmeta.img", "rom.tar.gz/rom.tar/images/vbmeta.img"} {
+	for _, p := range []string{"rom.tar/images/vbmeta.img", "rom.tar.gz/rom.tar/images/vbmeta.img", "avb.bz2/avb"} {
 		n, err := root.Walk(p)
 		if err != nil {
 			t.Fatalf("Walk(%s): %v", p, err)
@@ -90,7 +93,7 @@ func TestWalkNested(t *testing.T) {
 		t.Error("Walk to a missing path succeeded")
 	}
 	kind, kids, err := root.Children()
-	if kind != "zip" || len(kids) != 3 || err != nil {
+	if kind != "zip" || len(kids) != 4 || err != nil {
 		t.Errorf("Children = %s %d %v", kind, len(kids), err)
 	}
 	// A stored member is read in place, not buffered.

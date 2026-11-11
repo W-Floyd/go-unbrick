@@ -118,6 +118,7 @@ func newReconCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&secrets, "secrets", "", "directory of hex key (*key*) and IV (*iv*) files tried on encrypted members, and *password*/*passwd*/*wordlist* files (one candidate per line) tried on encrypted zip members; a directory input finds ./secrets or ../secrets itself")
+	addBruteforce(c)
 	addSkipFlag(c, &reconSkip, "directory mode and --exhaustive-key-learn (files in a directory are still checked against the manifest)")
 	c.Flags().IntVar(&depth, "depth", 4, "how many container levels to cascade into (zip → radio → NON-HLOS → ext4)")
 	c.Flags().StringVar(&carve, "carve", "", "write every unique embedded cert (PEM+DER) and key (PEM) to this directory")
@@ -2102,6 +2103,8 @@ func typeLabel(name string, head []byte) string {
 		return "Qualcomm ACDB (audio calibration)"
 	case filetype.Gzip:
 		return "gzip"
+	case filetype.Bzip2:
+		return "bzip2"
 	case filetype.Zip:
 		return "zip"
 	case filetype.SevenZip:

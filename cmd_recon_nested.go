@@ -39,6 +39,8 @@ func printNestedZip(path string, m srcfile.Member, indent string) bool {
 	nestedZipDepth++
 	defer func() { nestedZipDepth-- }()
 	fmt.Printf("%s%-26s [zip]  %s, %d member(s)\n", indent, filepath.Base(m.Name), humanBytes(int64(m.Size)), len(kids))
+	printFjhdmiReport(kids, indent+"  ")
+	printNeusoftReport(kids, indent+"  ")
 	for _, k := range kids {
 		base := filepath.Base(k.Name)
 		head := k.Head()

@@ -53,6 +53,8 @@ func init() {
 	cache.VersionFuncs["lkrom"] = func() int { return telechips.LKROMVersion }
 	cache.VersionFuncs["carve-containers"] = func() int { return carve.FormatsVersion }
 	cache.VersionFuncs["dex"] = func() int { return dex.Version }
+	cache.VersionFuncs["alpine"] = func() int { return vendor.AlpineVersion }
+	cache.VersionFuncs["neusoft"] = func() int { return vendor.NeusoftVersion }
 	// facts: reconGraph() is the exact provider/check assembly recon's Bag
 	// construction uses (cmd_recon.go), so this can't drift from what's
 	// actually run the way a hand-maintained number could.

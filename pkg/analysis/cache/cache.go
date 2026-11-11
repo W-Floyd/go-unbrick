@@ -123,7 +123,7 @@ var (
 		"fsg-artifact", "qcom-artifact", "mediatek-artifact", "samsung-pit",
 		"androidkeys", "pemfile", "unixauth",
 		"npkg", "lkrom", "dtbo", "fdt", "ubi", "ubifs", "qcdt", "bootimg",
-		"blankflash", "bootelf", "secboot", "facts",
+		"blankflash", "bootelf", "secboot", "facts", "alpine", "neusoft",
 	}}
 	// Listing is a container's children (ls/tree/browse/extract): the
 	// neutral and vendor container Expanders that decide what a container

@@ -259,6 +259,9 @@ func (n *Node) ReaderAt() (io.ReaderAt, error) {
 		n.setRandom(f, fi.Size())
 		return f, nil
 	}
+	if n.Size < 0 {
+		return n.bufferUnknownSize()
+	}
 	b, err := n.Bytes()
 	if err != nil {
 		return nil, err
@@ -266,6 +269,50 @@ func (n *Node) ReaderAt() (io.ReaderAt, error) {
 	br := bytes.NewReader(b)
 	n.setRandom(br, int64(len(b)))
 	return br, nil
+}
+
+// memSpill is how much of a decompressed stream of unknown size is held in
+// memory before the rest goes to a temporary file: ReadAll of a multi-GiB tar
+// regrows and copies its buffer all the way up, and pins the lot in RAM.
+var memSpill int64 = 64 << 20
+
+// bufferUnknownSize reads a stream whose length is not known (a decompressed
+// one) into memory, or into a temporary file once it outgrows memSpill.
+func (n *Node) bufferUnknownSize() (io.ReaderAt, error) {
+	rc, err := n.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(io.LimitReader(rc, memSpill+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) <= memSpill {
+		br := bytes.NewReader(b)
+		n.setRandom(br, int64(len(b)))
+		return br, nil
+	}
+	progress("unpacking %s to a temporary file in %s", n.Name, os.TempDir())
+	f, err := os.CreateTemp("", "unbrick-spool-*")
+	if err != nil {
+		return nil, err
+	}
+	os.Remove(f.Name()) // gone once closed; Windows keeps it until exit
+	if _, err := f.Write(b); err == nil {
+		_, err = io.Copy(f, rc)
+	}
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%s: %w", n.Name, err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	n.setRandom(f, fi.Size())
+	return f, nil
 }
 
 // Bytes reads the whole node, up to MaxBuffer.

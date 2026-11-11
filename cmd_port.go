@@ -237,6 +237,9 @@ func (p *portProgress) say(format string, args ...any) {
 
 // detail reports progress inside the current stage.
 func (p *portProgress) detail(format string, args ...any) {
+	if format == "" {
+		return
+	}
 	msg := fmt.Sprintf(format, args...)
 	if p.bar == nil {
 		fmt.Fprintf(os.Stderr, "port: [%3.0fs] %s\n", time.Since(p.start).Seconds(), msg)

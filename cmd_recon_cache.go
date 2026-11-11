@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,6 +10,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/aeskeys"
 	"github.com/W-Floyd/go-unbrick/internal/hashcache"
 	"github.com/W-Floyd/go-unbrick/internal/infile"
+	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 	"github.com/W-Floyd/go-unbrick/pkg/analysis/cache"
 )
 
@@ -77,11 +80,28 @@ func reconCacheKey(path string) string {
 	return strings.Join([]string{
 		id,
 		"secrets=" + strings.Join(secretNames, ","),
+		"zippasswords=" + zipPasswordsFingerprint(),
+		fmt.Sprintf("bruteforce=%v,%d,%s", bruteforceZip, bruteforceMaxLen, bruteforceCharset),
 		fmt.Sprintf("verify=%v", reconVerify),
 		fmt.Sprintf("with=%s", reconWith), // the request, not yet resolved -- "", "none", or a path all mean different things
 		fmt.Sprintf("depth=%d", reconDepth),
 		fmt.Sprintf("why=%s", reconWhy),
 	}, "\x00")
+}
+
+// zipPasswordsFingerprint stands for the zip passwords currently loaded
+// (a vendor's own, a --secrets wordlist, and whatever a brute force has
+// cached from an earlier run): a report that opened an encrypted zip member
+// with one password set must not be served back once a different set is
+// loaded, even though neither changes cache.Recon's own Version. Hashed, not
+// joined in plainly as aeskeys' secret names are -- a password has no
+// filename standing in for it the way a key file does, so the value itself
+// is all there is, and a cache key is not where it belongs in the clear.
+func zipPasswordsFingerprint() string {
+	pws := append([]string(nil), zippasswords.Passwords()...)
+	sort.Strings(pws)
+	sum := sha256.Sum256([]byte(strings.Join(pws, "\x00")))
+	return hex.EncodeToString(sum[:8])
 }
 
 // contentOrPathIdentity prefers path's content digest, qualified by its own

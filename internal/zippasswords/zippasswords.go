@@ -13,6 +13,8 @@ package zippasswords
 
 import (
 	"bufio"
+	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -94,6 +96,84 @@ func Load(dir string) error {
 	}
 	Set(out)
 	return nil
+}
+
+// Remember adds pw to the loaded candidates, if it is new, and persists it to
+// the found-password cache (cacheFile): a password a brute force paid to find
+// (internal/carve.PasswordFound) is then free on every later run, with no
+// --secrets directory needed to keep it.
+func Remember(pw string) {
+	mu.Lock()
+	for _, p := range loaded {
+		if p == pw {
+			mu.Unlock()
+			return
+		}
+	}
+	loaded = append(loaded, pw)
+	mu.Unlock()
+	appendCache(pw)
+}
+
+// cacheFile is where Remember persists passwords and LoadCache reads them
+// back from: the user's cache directory, not a --secrets directory, since a
+// found password is not something the user supplied.
+func cacheFile() (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "go-unbrick", "zippasswords", "found.txt"), nil
+}
+
+// LoadCache loads every password Remember has ever persisted, on top of
+// whatever is already loaded (a --secrets directory's own wordlists among
+// them). A missing cache, or no cache directory at all, is not an error:
+// brute force still works, it just has nothing free to start from.
+func LoadCache() error {
+	file, err := cacheFile()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	seen := make(map[string]bool, len(loaded))
+	for _, p := range loaded {
+		seen[p] = true
+	}
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() {
+		pw := strings.TrimRight(sc.Text(), "\r\n")
+		if pw == "" || seen[pw] {
+			continue
+		}
+		seen[pw] = true
+		loaded = append(loaded, pw)
+	}
+	return nil
+}
+
+// appendCache adds pw to the found-password cache file. Failing to (no cache
+// directory, a read-only one) is not an error a caller need act on: the
+// password is still usable this run, Remember already added it to loaded.
+func appendCache(pw string) {
+	file, err := cacheFile()
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(filepath.Dir(file), 0o755) != nil {
+		return
+	}
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, pw)
 }
 
 // WithVendor returns a carve.ZipPasswords-compatible function that tries

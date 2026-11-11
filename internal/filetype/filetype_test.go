@@ -46,6 +46,8 @@ func TestDetect(t *testing.T) {
 		{"axml", []byte("\x03\x00\x08\x00\x10\x00\x00\x00\x01\x00\x1c\x00"), AndroidXML},
 		{"arsc", []byte("\x02\x00\x0c\x00\x10\x00\x00\x00\x01\x00\x00\x00\x01\x00\x1c\x00"), ARSC},
 		{"axml without a pool", []byte("\x03\x00\x08\x00\x10\x00\x00\x00\x00\x00\x00\x00"), Unknown},
+		{"bzip2", []byte("BZh91AY&SYrest"), Bzip2},
+		{"bzip2 magic without a block", []byte("BZh9 not bzip2"), Unknown},
 		{"unknown", []byte("hello world"), Unknown},
 	}
 	for _, c := range cases {

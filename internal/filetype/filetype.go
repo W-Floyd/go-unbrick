@@ -38,6 +38,7 @@ const (
 	FAT               Kind = "fat"
 	Tar               Kind = "tar"
 	Gzip              Kind = "gzip"
+	Bzip2             Kind = "bzip2"
 	LZ4               Kind = "lz4"
 	LZ4Legacy         Kind = "lz4-legacy" // the older LZ4 stream format: blocks with no frame header or end
 	PE                Kind = "pe"
@@ -79,6 +80,9 @@ func Detect(head []byte) Kind {
 	// (deflate) and no reserved flag bits, and a key that turns noise into 1f 8b should not pass.
 	case len(head) >= 4 && head[0] == 0x1f && head[1] == 0x8b && head[2] == 8 && head[3]&0xe0 == 0:
 		return Gzip
+	// "BZh", a level 1-9, then the first block's magic (pi): "BZh" alone is plain text.
+	case len(head) >= 10 && bytes.Equal(head[:3], []byte("BZh")) && head[3] >= '1' && head[3] <= '9' && bytes.Equal(head[4:10], []byte{0x31, 0x41, 0x59, 0x26, 0x53, 0x59}):
+		return Bzip2
 	case len(head) >= 4 && le.Uint32(head[:4]) == 0x184d2204: // frame format
 		return LZ4
 	case len(head) >= 8 && le.Uint32(head[:4]) == 0x184c2102 && le.Uint32(head[4:8]) != 0: // legacy: magic, then a first block size

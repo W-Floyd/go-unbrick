@@ -382,18 +382,23 @@ func hostKeyCallback(o Options) (ssh.HostKeyCallback, error) {
 		// Want non-empty: the host is known and presents a *different* key.
 		// Never accepted silently — on a phone it usually means "reflashed",
 		// but it is also what interception looks like, so the operator decides.
-		if len(ke.Want) > 0 {
-			var where []string
-			for _, k := range ke.Want {
+		// Only a known key of the offered type counts: Go cannot steer the
+		// server to the type known_hosts holds, so a host recorded under another
+		// key type (or address) is merely unknown here, not changed.
+		var where []string
+		for _, k := range ke.Want {
+			if k.Key.Type() == key.Type() {
 				where = append(where, fmt.Sprintf("%s:%d", k.Filename, k.Line))
 			}
+		}
+		if len(where) > 0 {
 			return fmt.Errorf("host key for %s has changed (known key at %s). "+
-				"A reflashed device is the usual cause; remove the stale line, or pass --host-keys=off to skip verification",
+				"A reflashed device is the usual cause; remove the stale line, or set the host-key policy to off (--host-keys on ssh, --ssh-host-keys elsewhere) to skip verification",
 				hostname, strings.Join(where, ", "))
 		}
 		if !acceptNew {
 			return fmt.Errorf("host key for %s is unknown (%s %s). "+
-				"Pass --host-keys=accept-new to record it, or add it to %s yourself",
+				"Set the host-key policy to accept-new (--host-keys on ssh, --ssh-host-keys elsewhere) to record it, or add it to %s yourself",
 				hostname, key.Type(), ssh.FingerprintSHA256(key), path)
 		}
 		return appendKnownHost(path, hostname, remote, key)
