@@ -7,6 +7,7 @@ import (
 	"github.com/W-Floyd/go-unbrick/internal/carve"
 	"github.com/W-Floyd/go-unbrick/internal/srcfile"
 	"github.com/W-Floyd/go-unbrick/internal/vendor"
+	"github.com/W-Floyd/go-unbrick/internal/zipcrypto"
 	"github.com/W-Floyd/go-unbrick/internal/zippasswords"
 )
 
@@ -56,4 +57,21 @@ func LoadSecrets(dir string) (int, error) {
 	}
 	secretsOnce.Do(func() { carve.Register(aeskeys.Expander()) })
 	return aeskeys.Count(), nil
+}
+
+// UseZipBruteforce turns on the brute-force fallback for an encrypted zip member that no
+// vendor's or loaded wordlist's password opens (see internal/carve's Bruteforce* vars): filename-
+// derived guesses first, then a short exhaustive search, verified by structure rather than the
+// cipher's own 1-in-256 header check. The bounds here are deliberately lighter than go-unbrick's
+// own CLI defaults (max length 6) -- alphanumeric up to length 4 against a cheap-to-verify member
+// (a stored .zip-named one, checked by its 4-byte signature), a deflated member's own full-
+// decompress verify capped at length 2 and 1 MiB compressed, and a digits-only pass up to length 6
+// tried first -- so a server opening many packages at once pays little per encrypted member it
+// cannot otherwise open. Call before the first input is opened.
+func UseZipBruteforce() {
+	carve.BruteforceCharset = zipcrypto.DefaultBruteforceCharset
+	carve.BruteforceMaxLen = 4
+	carve.BruteforceMaxDeflateLen = 2
+	carve.BruteforceMaxDeflateSize = 1 << 20
+	carve.BruteforceMaxNumericLen = 6
 }
